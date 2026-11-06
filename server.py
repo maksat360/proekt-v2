@@ -748,6 +748,8 @@ def analytics(me: dict) -> dict:
 # ------------------------------------------------------------------ server
 class Handler(BaseHTTPRequestHandler):
     server_version = "ProjectV2.1/1.0"
+    # тайм-аут сокета: телефон, пропавший из Wi-Fi посреди POST, не держит WRITE_LOCK вечно
+    timeout = 30
 
     def log_message(self, fmt, *args):  # noqa: A003
         if VERBOSE:
@@ -1681,7 +1683,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/shop" and method == "GET":
             try:
                 import shop_sync
-                shop_sync.sync_if_changed()
+                with WRITE_LOCK:  # перезаписывает products.xlsx — не пересекаться с продажей
+                    shop_sync.sync_if_changed()
                 shop_state = shop_sync.status()
             except Exception as exc:  # noqa: BLE001
                 shop_state = {"error": str(exc)}
@@ -2367,7 +2370,8 @@ def main():
     def _boot_sync():
         try:
             import shop_sync
-            shop_sync.sync_if_changed()
+            with WRITE_LOCK:
+                shop_sync.sync_if_changed()
         except Exception as exc:  # noqa: BLE001
             print("каталог магазина не синхронизирован:", exc)
         try:
