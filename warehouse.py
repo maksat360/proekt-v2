@@ -1301,8 +1301,8 @@ def apply_ops(ops: list, who: str, base_version: str = "") -> dict:
 
         with _LOCK:
             led = _ledger()
+            # не обрезаем: иначе старая офлайн-очередь с телефона применится повторно
             led.setdefault("applied", []).append(uid)
-            led["applied"] = led["applied"][-500:]
             _save_ledger(led)
         applied_count += 1
         results.append({"uuid": uid, "ok": True, "type": kind, "результат": res})

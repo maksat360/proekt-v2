@@ -41,6 +41,9 @@ for _p in (DATA, STATIC, REPORT_DIR, BACKUP_DIR):
     _p.mkdir(parents=True, exist_ok=True)
 
 IO_LOCK = threading.RLock()
+# Все POST идут по одному: «прочитать лист → поменять → записать» не должны пересекаться,
+# иначе вторая запись затирает первую, а проверка остатка проходит дважды.
+WRITE_LOCK = threading.Lock()
 SESSIONS: dict[str, dict] = {}
 SESSIONS_LOCK = threading.Lock()
 SESSIONS_FILE = DATA / "sessions.json"
@@ -863,7 +866,11 @@ class Handler(BaseHTTPRequestHandler):
         path, query = url.path, parse_qs(url.query)
         try:
             if path.startswith("/api/"):
-                self._api(method, path, query)
+                if method == "POST":
+                    with WRITE_LOCK:
+                        self._api(method, path, query)
+                else:
+                    self._api(method, path, query)
                 return
             if path in ("/", "/index.html"):
                 self._static("index.html")
