@@ -88,7 +88,7 @@ async function boot() {
   }
   if (multiRole()) {
     const only = asTabs();
-    ST.workMode = asRole() === 'user' ? 'mine' : 'all';
+    ST.workMode = ['user', 'sew'].includes(asRole()) ? 'mine' : 'all';
     if (only && !want) ST.view = only[0];
     if (only && !only.includes(ST.view)) ST.view = only[0];
   }
@@ -170,6 +170,7 @@ const AS_ROLES = {
   designer: { label: 'Конструктор', tabs: ['design', 'list'] },
   supply: { label: 'Снабженец', tabs: ['supply', 'list'] },
   storekeeper: { label: 'Складчик', tabs: ['new', 'list'] },
+  sew: { label: 'Швейные этапы', tabs: ['work', 'payroll'] },
   technologist: { label: 'Технолог', tabs: ['tech', 'assign', 'route_ord', 'route', 'route_fin', 'work', 'list', 'staff', 'stages', 'access'] },
   cutter: { label: 'Закройщик', tabs: ['cut'] },
   user: { label: 'Швея', tabs: ['work', 'payroll'] },
@@ -178,10 +179,14 @@ const AS_ROLES = {
 };
 
 function isChief() { return ['admin', 'manager'].includes((ST.user || {}).роль); }
-function myRoles() { return (ST.user || {}).роли || [(ST.user || {}).роль]; }
+// назначенные швейные этапы — тоже роль: даёт пункт «Швейные этапы» в «Работаю как»
+function myRoles() {
+  const r = (ST.user || {}).роли || [(ST.user || {}).роль];
+  return ST.права.работать && !r.includes('user') ? [...r, 'sew'] : r;
+}
 function multiRole() { return isChief() || myRoles().length > 1; }
 // варианты «Работаю как»: начальнику — все роли, остальным — «все мои работы» и свои роли
-function asOptions() { return isChief() ? Object.keys(AS_ROLES).filter((k) => k !== 'all') : ['all', ...myRoles().filter((r) => AS_ROLES[r])]; }
+function asOptions() { return isChief() ? Object.keys(AS_ROLES).filter((k) => k !== 'all' && k !== 'sew') : ['all', ...myRoles().filter((r) => AS_ROLES[r])]; }
 
 function asRole() {
   if (!multiRole()) return (ST.user || {}).роль;
@@ -196,7 +201,7 @@ function asTabs() { const r = AS_ROLES[asRole()]; return r ? r.tabs : null; }
 
 async function setAsRole(role) {
   try { localStorage.setItem(`cx_as_${(ST.user || {}).логин}`, role); } catch (e) { /* нет хранилища */ }
-  ST.workMode = role === 'user' ? 'mine' : 'all';
+  ST.workMode = role === 'user' || role === 'sew' ? 'mine' : 'all';
   const tabs = asTabs();
   if (tabs && !tabs.includes(ST.view)) ST.view = tabs[0];
   await loadView(ST.view);

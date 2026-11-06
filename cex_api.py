@@ -117,6 +117,17 @@ def _can(me: dict | None, code: str) -> bool:
     return perms.allowed(me, code)
 
 
+def _can_work(me: dict | None) -> bool:
+    """Швейный этап — это роль: назначенный этап сам даёт право работать,
+    если начальник не забрал это право у человека лично."""
+    if not me:
+        return False
+    own = (perms.load()["сотрудники"].get(_s(me.get("логин"))) or {})
+    if "cex.work" in own:
+        return bool(own["cex.work"])
+    return _can(me, "cex.work") or bool(roles_of(_s(me.get("логин"))))
+
+
 def _int(v, default=0) -> int:
     try:
         return int(float(str(v).replace(",", ".")))
@@ -1098,7 +1109,8 @@ def _ops() -> dict[str, dict]:
             except ValueError:
                 rate = 0.0
             base[code] = {"код": code, "название": _s(r.get("операция")) or code,
-                          "ставка": rate, "порядок": _int(r.get("порядок"), 500)}
+                          "ставка": rate, "порядок": _int(r.get("порядок"), 500),
+                          "отключён": _yes(r.get("отключён"))}
     except Exception:
         pass
     return base
@@ -1502,6 +1514,12 @@ def save_route(me: dict, body: dict) -> dict:
     if check["ошибки"]:
         raise ValueError(check["ошибки"][0])
     party = _s(body.get("партия"))
+    # отключённый этап остаётся там, где уже был, но в новые маршруты не добавляется
+    had = {_s(r.get("этап")).upper() for r in (_party_snapshots(kind).get(party, []) if party else
+           route_templates(kind).get(_s(body.get("старое_имя")) or _s(body.get("шаблон")), []))}
+    off = [st["код"] for st in stages if (ops.get(st["код"]) or {}).get("отключён") and st["код"].upper() not in had]
+    if off:
+        raise ValueError(f"Этап {off[0]} отключён — в новый маршрут его не добавить")
     if party:
         return _save_party_route(party, _s(body.get("шаблон")) or MAIN_ROUTE, stages, check, kind)
 
@@ -1698,10 +1716,13 @@ def set_roles(me: dict, body: dict) -> dict:
             new.append(code)
     if START_STAGE in new:
         raise ValueError("Крой назначается ролью «закройщик» в портале, а не этапом")
-    known = set(_ops())
-    bad = [c for c in new if c not in known and c not in current]
+    ops = _ops()
+    bad = [c for c in new if c not in ops and c not in current]
     if bad:
         raise ValueError(f"Нет такого этапа: {', '.join(bad)}")
+    off = [c for c in new if c not in current and ops[c].get("отключён")]
+    if off:
+        raise ValueError(f"Этап {ops[off[0]]['название']} отключён — новым людям его не назначить")
     row["этап"] = ";".join(new)
     store.write_sheets([(STAFF[0], STAFF[1], rows)])
     added = [c for c in new if c not in current]
@@ -1714,7 +1735,7 @@ def set_roles(me: dict, body: dict) -> dict:
 
 # ------------------------------------------- сотрудники, этапы и права (раздел «Доступ»)
 ACCOUNTS = "сотрудники"          # лист рабочей книги — источник учёток портала
-RATES_SHEET = ("расценки", ["код", "операция", "расценка за шт", "порядок", "обязательная"])
+RATES_SHEET = ("расценки", ["код", "операция", "расценка за шт", "порядок", "обязательная", "отключён"])
 _LOGIN_RE = re.compile(r"[A-Za-zА-Яа-яЁё0-9_.\-]{2,32}")
 _CODE_RE = re.compile(r"[A-ZА-ЯЁ0-9_]{2,12}")
 
@@ -1767,6 +1788,7 @@ def access_state(me: dict) -> dict:
             continue  # крой — роль «закройщик», не этап швейного производства
         stages.append({"код": code, "название": op["название"], "ставка": op["ставка"],
                        "порядок": op["порядок"], "используется": used.get(code, ""),
+                       "отключён": op.get("отключён", False),
                        "люди": [p["логин"] for p in people if code in p["этапы"]]})
     out = {"я": _s(me.get("логин")), "мои_права": perms.effective(me, data),
            "люди": people, "этапы": stages, "каталог": perms.catalog(),
@@ -1957,6 +1979,24 @@ def save_stage(me: dict, body: dict) -> dict:
     return {"код": code, "создан": create}
 
 
+def toggle_stage(me: dict, body: dict) -> dict:
+    """Отключить/включить этап. Отключённый доводит начатые партии, но не назначается заново."""
+    _need(me, "stages.edit")
+    code = _s(body.get("код")).upper()
+    if code == START_STAGE:
+        raise ValueError("Крой отключить нельзя")
+    off = bool(body.get("отключён"))
+    rows = store.read_sheet(RATES_SHEET[0])
+    row = next((r for r in rows if _s(r.get("код")).upper() == code), None)
+    if row is None:
+        raise ValueError("Этап не найден")
+    row["отключён"] = "да" if off else ""
+    store.write_sheet(RATES_SHEET[0], RATES_SHEET[1], rows)
+    _sync_process(code, {"отключён": 1 if off else 0})
+    perms.log_event(me, "этап отключён" if off else "этап включён", code)
+    return {"код": code, "отключён": off}
+
+
 def delete_stage(me: dict, body: dict) -> dict:
     _need(me, "stages.delete")
     code = _s(body.get("код")).upper()
@@ -2129,8 +2169,8 @@ def work_state(me: dict, as_worker: bool = False) -> dict:
                 who = assign.get(key, "")
                 if not who:
                     unassigned += 1
-                if not boss and who != login:
-                    continue
+                if not boss and (who != login or code not in my_stages):
+                    continue  # швея видит только свои этапы, даже если раздел закреплён за ней
                 src = _src_nastil(num, n["настил"], st, stages, done, n["шт"])
                 d, w = done.get(key, 0), inwork.get(key, 0)
                 avail = max(0, src - d - w)
@@ -3280,7 +3320,7 @@ def _dispatch(ctx) -> None:
                      "роли": perms.roles_of(me),
                      "цех": _s(me.get("цех"))},
             "права": {"создать": _can(me, "cex.create"), "принимать": _can(me, "cex.tech"),
-                      "кроить": _can(me, "cex.cut"), "работать": _can(me, "cex.work"),
+                      "кроить": _can(me, "cex.cut"), "работать": _can_work(me),
                       "упаковывать": _can(me, "cex.pack"), "зарплата": _can(me, "cex.pay"),
                       "маршрут": _can(me, "cex.routes"), "вся_работа": _can(me, "cex.work.all"),
                       "чужая_работа": _can(me, "cex.boss"),
@@ -3532,7 +3572,7 @@ def _dispatch(ctx) -> None:
         return
 
     if path == "/api/cex/work/take" and method == "POST":
-        if not _can(me, "cex.work"):
+        if not _can_work(me):
             _deny(ctx, "cex.work")
             return
         ensure_sheets()
@@ -3675,6 +3715,7 @@ def _dispatch(ctx) -> None:
     access_post = {"/api/cex/access/role": set_role_perm, "/api/cex/access/user": set_user_perm,
                    "/api/cex/access/account": save_account, "/api/cex/access/stage": save_stage,
                    "/api/cex/access/stage/delete": delete_stage,
+                   "/api/cex/access/stage/toggle": toggle_stage,
                    "/api/cex/access/roles": set_extra_roles}
     if path in access_post and method == "POST":
         ensure_sheets()

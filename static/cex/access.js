@@ -76,11 +76,13 @@ function acCardHtml(p) {
   const roles = Object.entries(AC.data.роли_названия || {});
   const stages = AC.data.этапы || [];
   const canStages = acCan('stages.assign');
-  const stageChips = stages.map((s) => {
+  const stageChips = stages.filter((s) => !s.отключён || p.этапы.includes(s.код)).map((s) => {
     const on = p.этапы.includes(s.код);
-    return `<label class="ac-chip ${on ? 'on' : ''} ${canStages ? '' : 'ro'}">
-      <input type="checkbox" data-ac-stage-person="${esc(p.логин)}" data-code="${esc(s.код)}" ${on ? 'checked' : ''} ${canStages ? '' : 'disabled'}>
-      ${esc(s.название)}</label>`;
+    // отключённый этап можно только снять, назначить заново нельзя
+    const can = canStages && (on || !s.отключён);
+    return `<label class="ac-chip ${on ? 'on' : ''} ${can ? '' : 'ro'}">
+      <input type="checkbox" data-ac-stage-person="${esc(p.логин)}" data-code="${esc(s.код)}" ${on ? 'checked' : ''} ${can ? '' : 'disabled'}>
+      ${esc(s.название)}${s.отключён ? ' · отключён' : ''}</label>`;
   }).join('');
   return `
     <div class="cx-card">
@@ -113,10 +115,10 @@ function acCardHtml(p) {
       </div>
     </div>
     <div class="cx-card">
-      <div class="cx-card-h"><h3>Производственные этапы</h3><span class="cx-hint">${p.этапы.length ? `${nf(p.этапы.length)} из ${nf(stages.length)}` : 'не назначены — работы на этапах нет'}</span></div>
+      <div class="cx-card-h"><h3>Роли: швейные этапы</h3><span class="cx-hint">${p.этапы.length ? `${nf(p.этапы.length)} из ${nf(stages.length)}` : 'не назначены — работы на этапах нет'}</span></div>
       <div class="cx-card-b">
         <div class="ac-chips">${stageChips || '<span class="cx-hint">Этапов пока нет</span>'}</div>
-        <div class="cx-hint" style="margin-top:8px">${canStages ? 'Отметьте все этапы, которые человек выполняет. Каждый сохраняется сразу и не влияет на остальные.' : 'Назначать этапы может сотрудник с правом «Назначение этапов сотрудникам».'}</div>
+        <div class="cx-hint" style="margin-top:8px">${canStages ? 'Каждый этап — отдельная роль: человек видит и берёт работу только на отмеченных этапах, в работе переключается между ними. Сохраняется сразу.' : 'Назначать этапы может сотрудник с правом «Назначение этапов сотрудникам».'}</div>
       </div>
     </div>
     ${p.права ? acPersonPerms(p, me || adminLocked) : ''}`;
@@ -180,7 +182,7 @@ function acStagesHtml() {
     return `<div class="cx-card ac-stage ${open ? 'open' : ''}">
       <button class="ac-stage-h" data-act="ac-stage-open" data-code="${esc(s.код)}" aria-expanded="${open}">
         <span class="ac-arrow" aria-hidden="true"></span>
-        <span class="ac-stage-title"><b>${esc(s.название)}</b><span class="cx-hint">${esc(s.код)} · ${nf(s.ставка)} сом/шт</span></span>
+        <span class="ac-stage-title"><b>${esc(s.название)}</b>${s.отключён ? ' <span class="cx-pill grey">отключён</span>' : ''}<span class="cx-hint">${esc(s.код)} · ${nf(s.ставка)} сом/шт</span></span>
         <span class="ac-stage-who">${who.length ? `${nf(who.length)} чел.` : '<span class="cx-warn">никого</span>'}</span>
       </button>
       <div class="ac-collapse"><div class="ac-collapse-in"><div class="cx-card-b">
@@ -191,14 +193,16 @@ function acStagesHtml() {
         </div>
         <div class="cx-btn-row" style="margin:10px 0 14px">
           <button class="btn primary" data-act="ac-stage-save" data-code="${esc(s.код)}">Сохранить</button>
+          <button class="btn ghost" data-act="ac-stage-toggle" data-code="${esc(s.код)}" data-off="${s.отключён ? 0 : 1}">${s.отключён ? 'Включить' : 'Отключить'}</button>
           ${acCan('stages.delete') ? `<button class="btn ghost danger" data-act="ac-stage-del" data-code="${esc(s.код)}" ${s.используется ? `disabled title="Используется: ${esc(s.используется)}"` : ''}>Удалить</button>` : ''}
-          ${s.используется ? `<span class="cx-hint">используется: ${esc(s.используется)} — удалить нельзя</span>` : ''}
+          ${s.используется ? `<span class="cx-hint">используется: ${esc(s.используется)} — удалить нельзя, можно отключить</span>` : ''}
         </div>` : ''}
         <div class="cx-field"><label>Кто выполняет этот этап</label>
           <div class="ac-chips">${people.map((p) => {
             const on = s.люди.includes(p.логин);
-            return `<label class="ac-chip ${on ? 'on' : ''} ${canAssign ? '' : 'ro'}">
-              <input type="checkbox" data-ac-stage-person="${esc(p.логин)}" data-code="${esc(s.код)}" ${on ? 'checked' : ''} ${canAssign ? '' : 'disabled'}>
+            const can = canAssign && (on || !s.отключён);
+            return `<label class="ac-chip ${on ? 'on' : ''} ${can ? '' : 'ro'}">
+              <input type="checkbox" data-ac-stage-person="${esc(p.логин)}" data-code="${esc(s.код)}" ${on ? 'checked' : ''} ${can ? '' : 'disabled'}>
               ${esc(p.ФИО)}</label>`;
           }).join('') || '<span class="cx-hint">Сотрудников нет</span>'}</div>
         </div>
@@ -243,6 +247,9 @@ function acRolesHtml() {
     <td>${acLogVal(e.было)} → ${acLogVal(e.стало)}</td></tr>`).join('');
   return `${acHero('Роли и права', 'Права роли — стандарт для всех с этой ролью. Отдельному сотруднику права меняются в его карточке')}
     <div class="ac-rolechips">${chips}</div>
+    ${(AC.data.этапы || []).length ? `<div class="ac-rolechips"><span class="cx-hint">Швейные этапы — тоже роли (назначаются в карточке сотрудника или во вкладке «Этапы»):</span>
+      ${(AC.data.этапы || []).map((s) => `<button class="rt-chip" data-act="tab" data-tab="stages" title="${esc(s.люди.map((l) => (acPerson(l) || { ФИО: l }).ФИО).join(', '))}">
+        ${esc(s.название)}${s.отключён ? ' · отключён' : ''} <span>${nf(s.люди.length)}</span></button>`).join('')}</div>` : ''}
     <div class="ac-split">
       <div class="cx-card">
         <div class="cx-card-h"><h3>${esc(cur.название)}</h3>
@@ -384,6 +391,12 @@ document.addEventListener('click', async (ev) => {
       const c = el.dataset.code;
       await acPost('/stage', { код: c, название: $(`#ac-s-name-${CSS.escape(c)}`).value.trim(),
         ставка: $(`#ac-s-rate-${CSS.escape(c)}`).value, порядок: $(`#ac-s-order-${CSS.escape(c)}`).value }, 'Этап сохранён');
+    }
+    if (act === 'ac-stage-toggle') {
+      const s = acStage(el.dataset.code);
+      const off = el.dataset.off === '1';
+      if (off && !confirm(`Отключить этап «${s.название}»? Начатые партии его пройдут, но новым людям и в новые маршруты его не добавить.`)) return;
+      await acPost('/stage/toggle', { код: s.код, отключён: off }, off ? 'Этап отключён' : 'Этап включён');
     }
     if (act === 'ac-stage-del') {
       const s = acStage(el.dataset.code);

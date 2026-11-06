@@ -837,8 +837,8 @@ def _fill_staff_sheet(wb, counts: dict) -> None:
 
 def _fill_rates_sheet(wb, counts: dict) -> None:
     proc_path = DATA / "processes.xlsx"
-    ws = _sheet(wb, "расценки", ["код", "операция", "расценка за шт", "порядок", "обязательная"],
-                [12, 30, 15, 10, 13])
+    ws = _sheet(wb, "расценки", ["код", "операция", "расценка за шт", "порядок", "обязательная", "отключён"],
+                [12, 30, 15, 10, 13, 11])
     m = 0
     if proc_path.exists():
         src = load_workbook(proc_path, data_only=True)
@@ -851,7 +851,9 @@ def _fill_rates_sheet(wb, counts: dict) -> None:
                     continue
                 values = [raw[idx.get("код", 0)], raw[idx.get("название", 1)],
                           raw[idx.get("тариф", 3)] or 0, raw[idx.get("порядок", 2)] or 0,
-                          "да" if str(raw[idx.get("обязательный", 5)]) in ("1", "True", "true") else "нет"]
+                          "да" if str(raw[idx.get("обязательный", 5)]) in ("1", "True", "true") else "нет",
+                          # отключённый в цехе этап — колонки может не быть в старом processes.xlsx
+                          "да" if "отключён" in idx and str(raw[idx["отключён"]]) in ("1", "True", "true") else ""]
                 for c, v in enumerate(values, start=1):
                     ws.cell(row=m + 2, column=c, value=v)
                 m += 1

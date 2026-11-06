@@ -18,6 +18,23 @@ function sewTick() {
   el.textContent = sewClock(el.dataset.start);
 }
 
+// «Мой этап»: у кого несколько швейных этапов, выбирает, с каким работает сейчас.
+// Это только фильтр экрана — взятое и сданное по каждому этапу хранится как раньше.
+function sewStageKey() { return `cx_stage_${(ST.user || {}).логин}`; }
+function sewStage() {
+  const mine = ((ST.work || {}).мои_этапы || []).map((x) => x.код);
+  let v = '';
+  try { v = localStorage.getItem(sewStageKey()) || ''; } catch (e) { /* нет хранилища */ }
+  return mine.includes(v) ? v : '';
+}
+function sewStageSwitch() {
+  const mine = (ST.work || {}).мои_этапы || [];
+  if (mine.length < 2) return '';
+  const cur = sewStage();
+  return `<div class="cx-tabs sew-stages">${[{ код: '', название: 'Все мои этапы' }, ...mine].map((x) =>
+    `<button class="cx-tab ${x.код === cur ? 'on' : ''}" data-act="sew-stage" data-code="${esc(x.код)}">${esc(x.название)}</button>`).join('')}</div>`;
+}
+
 function sewHtml() {
   const w = ST.work || {};
   const mine = w.мои || [];
@@ -41,7 +58,8 @@ function sewHtml() {
 
   const blocks = cards.map((c) => {
     const items = [];
-    (c.настилы || []).forEach((l) => l.задачи.forEach((tk) => items.push({ l, tk })));
+    const only = sewStage();
+    (c.настилы || []).forEach((l) => l.задачи.forEach((tk) => { if (!only || tk.этап === only) items.push({ l, tk }); }));
     if (!items.length) return '';
     return `
       <div class="sew-party">
@@ -71,6 +89,7 @@ function sewHtml() {
         <div class="sew-today">Сегодня: <b>${nf(t.сегодня_шт || 0)}</b> шт · <b>${nf(t.сегодня_сумма || 0)}</b> сом</div></div>
       <button class="btn" data-act="refresh">Обновить</button>
     </div>
+    ${sewStageSwitch()}
     ${blocks || `<div class="sew-empty"><b>Работы пока нет</b>Технолог ещё не закрепил за вами разделы. Нажмите «Обновить» позже.</div>`}`;
 }
 
@@ -78,6 +97,11 @@ document.addEventListener('click', async (ev) => {
   const el = ev.target.closest('[data-act^="sew-"]');
   if (!el) return;
   const act = el.dataset.act;
+  if (act === 'sew-stage') {
+    try { localStorage.setItem(sewStageKey(), el.dataset.code); } catch (e) { /* нет хранилища */ }
+    render();
+    return;
+  }
   el.disabled = true;
   try {
     if (act === 'sew-take') {

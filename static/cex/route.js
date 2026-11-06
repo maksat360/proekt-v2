@@ -298,7 +298,8 @@ function rtSide(party) {
     </div>${offHtml}`;
   }
   const others = rtActive().filter((x) => x.код !== s.код);
-  const ops = (RT.data.операции || []).filter((o) => o.код !== rtStart());
+  // отключённый этап остаётся там, где уже стоит, но новым не выбирается
+  const ops = (RT.data.операции || []).filter((o) => o.код !== rtStart() && (!o.отключён || o.код === s.код));
   const dis = can ? '' : 'disabled';
   return `
     <div class="rt-form">
@@ -441,7 +442,7 @@ function rtTouch() {
 function rtFind(code) { return (RT.draft || []).find((x) => x.код === code); }
 function rtFreeCode(base) {
   const used = new Set((RT.draft || []).map((s) => s.код));
-  const free = (RT.data.операции || []).find((o) => !used.has(o.код) && o.код !== rtStart());
+  const free = (RT.data.операции || []).find((o) => !used.has(o.код) && o.код !== rtStart() && !o.отключён);
   if (free && !base) return free.код;
   let i = 1, c = base || 'ЭТАП';
   while (used.has(c)) c = `${base || 'ЭТАП'}${++i}`;
