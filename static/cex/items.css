@@ -1,0 +1,34 @@
+* { box-sizing: border-box; }
+body { margin: 0; background: #eef0f4; font-family: Arial, "Helvetica Neue", sans-serif; color: #111; }
+.bar { display: flex; align-items: center; gap: 14px; padding: 10px 16px; background: #fff; border-bottom: 1px solid #e5e7eb; position: sticky; top: 0; z-index: 5; font-size: 13px; flex-wrap: wrap; }
+.bar b { font-size: 14px; }
+.bar .sp { flex: 1; }
+.bar button { border: 0; background: #0071e3; color: #fff; padding: 8px 18px; border-radius: 10px; font-size: 13px; cursor: pointer; }
+.bar button:disabled { opacity: .4; cursor: default; }
+.bar .back { color: #0071e3; text-decoration: none; }
+.pick { max-width: 760px; margin: 14px auto; background: #fff; border-radius: 14px; padding: 12px 16px; font-size: 13px; }
+.pick table { width: 100%; border-collapse: collapse; }
+.pick th, .pick td { padding: 6px 8px; border-bottom: 1px solid #f0f1f4; text-align: left; }
+.pick th { color: #6b7280; font-weight: 500; font-size: 12px; }
+.pick td.n { text-align: right; width: 110px; }
+.pick input[type=number] { width: 80px; padding: 5px 8px; border: 1px solid #d1d5db; border-radius: 8px; text-align: right; font: inherit; }
+.pick .note { color: #6b7280; margin: 6px 0 10px; }
+.pick .warn { color: #b45309; }
+
+.sheet { display: flex; flex-wrap: wrap; gap: 3mm; padding: 6mm; justify-content: center; }
+.lbl {
+  width: var(--w, 40mm); height: var(--h, 30mm); background: #fff; overflow: hidden;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 1.5mm 2mm; gap: 1mm; border-radius: 1.5mm;
+}
+.lbl .dm { height: 46%; aspect-ratio: 1; flex: 0 0 auto; }
+.lbl .dm svg { width: 100%; height: 100%; display: block; shape-rendering: crispEdges; }
+.lbl .nm { font-weight: 700; font-size: 10.5pt; line-height: 1.05; text-align: center; overflow-wrap: anywhere; height: 46%; width: 100%; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+.more { width: 100%; text-align: center; color: #6b7280; font-size: 13px; padding: 10px; }
+
+@media print {
+  body { background: #fff; }
+  .no-print, .more { display: none !important; }
+  .sheet { display: block; padding: 0; }
+  .lbl { border-radius: 0; page-break-after: always; break-after: page; }
+}

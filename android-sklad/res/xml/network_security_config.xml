@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Портал работает по HTTP внутри локальной сети (192.168.x.x / 10.x.x.x).
+  Разрешаем cleartext только для этого приложения (не для всей системы).
+  Публичные адреса в приложении блокируются: см. AppConfig.isAllowed().
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

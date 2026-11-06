@@ -1,0 +1,24 @@
+# Проект для XcodeGen: brew install xcodegen && xcodegen generate
+name: CehV2
+options:
+  bundleIdPrefix: com.projectv2
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+targets:
+  CehV2:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+    info:
+      path: Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.projectv2.cehios
+        PRODUCT_NAME: CehV2
+        INFOPLIST_FILE: Info.plist
+        CODE_SIGN_STYLE: Automatic
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_VERSION: "5.0"
+        ENABLE_BITCODE: NO

@@ -1,0 +1,30 @@
+# Секреты и токены
+secrets/
+.env
+*.env
+
+# Рабочие данные (пользователи, сессии, кабинеты WB, Excel-база)
+data/
+
+# Резервные копии и логи
+backups/
+*.bak
+*.log
+
+# Python
+__pycache__/
+*.pyc
+
+# macOS / Excel
+.DS_Store
+~$*
+
+# Сборки мобильных приложений
+**/build/
+**/.gradle/
+*.apk
+
+# Ключи подписи Android
+*.jks
+*.keystore
+*.idsig

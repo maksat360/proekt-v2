@@ -1,0 +1,17 @@
+{
+  "name": "Швейный цех V2",
+  "short_name": "Цех V2",
+  "description": "Портал швейного цеха: партии, склад, магазин, отчёты",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#eef1f6",
+  "theme_color": "#eef1f6",
+  "lang": "ru",
+  "icons": [
+    { "src": "/static/icons/app-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icons/app-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/static/icons/app-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

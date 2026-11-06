@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#eceff5" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#07080c" media="(prefers-color-scheme: dark)">
+<link rel="manifest" href="/manifest-sklad.webmanifest">
+<link rel="apple-touch-icon" href="/static/icons/sklad-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Склад">
+<title>Швейный цех · Проект V2</title>
+<link rel="stylesheet" href="/static/style.css?v=20261106f">
+</head>
+<body>
+<script>
+  try { localStorage.setItem('v2mode', 'sklad'); } catch (e) {}
+</script>
+  <div id="app" class="boot">
+    <div class="boot-mark">V2</div>
+    <div class="boot-text">Открываем цех…</div>
+  </div>
+  <div id="modal-root"></div>
+  <div id="toasts" class="toasts"></div>
+  <script src="/static/accounts.js?v=20261106f"></script>
+  <script src="/static/app.js?v=20261106f"></script>
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    });
+  }
+</script>
+</body>
+</html>
