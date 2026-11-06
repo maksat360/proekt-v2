@@ -336,6 +336,7 @@ def public_user(u: dict) -> dict:
         "фио": u.get("фио", ""),
         "роль": u.get("роль", "user"),
         "роль_название": ROLE_LABELS.get(str(u.get("роль")), str(u.get("роль"))),
+        "роли": perms.roles_of(u),
         "цех": u.get("цех", ""),
         "активен": str(u.get("активен", "1")) in ("1", "True", "true"),
     }

@@ -45,6 +45,24 @@ class PermsTests(unittest.TestCase):
         self.assertTrue(perms.allowed(store, "cex.create"))
         self.assertFalse(perms.allowed(TECH, "cex.design"))
 
+    def test_extra_roles_add_rights(self):
+        worker = {"логин": "multi", "роль": "designer", "активен": 1}
+        users = USERS + [worker]
+        self.assertFalse(perms.allowed(worker, "cex.supply"))
+        perms.set_extra_roles(ADMIN, users, worker, ["supply", "storekeeper", "designer"])
+        self.assertEqual(perms.roles_of(worker), ["designer", "supply", "storekeeper"])
+        self.assertTrue(perms.allowed(worker, "cex.supply"))
+        self.assertTrue(perms.allowed(worker, "wh.write"))
+        self.assertTrue(perms.user_view(worker)["cex.supply"]["по_роли"])
+        with self.assertRaises(perms.AccessError):  # начальника доп. ролью не выдать
+            perms.set_extra_roles(ADMIN, users, worker, ["admin"])
+        with self.assertRaises(perms.AccessError):  # себе — нельзя
+            perms.set_extra_roles(TECH, users, TECH, ["supply"])
+        with self.assertRaises(perms.AccessError):  # технолог не выдаст права, которых у него нет
+            perms.set_extra_roles(TECH, users, SEW, ["storekeeper"])
+        perms.set_extra_roles(ADMIN, users, worker, [])
+        self.assertFalse(perms.allowed(worker, "cex.supply"))
+
     def test_technologist_has_default_staff_rights(self):
         for code in ("staff.add", "staff.edit", "stages.create", "stages.edit", "stages.assign"):
             self.assertTrue(perms.allowed(TECH, code), code)

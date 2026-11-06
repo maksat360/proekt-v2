@@ -287,7 +287,9 @@ function bindNeedNet() {
 }
 
 function visibleNav(role) {
-  const all = NAV.filter((n) => n.roles.includes(role));
+  // доп. роли из «Роли и права» добавляют свои разделы к основной роли
+  const mine = (STATE.me && STATE.me.роль === role && STATE.me.роли) || [role];
+  const all = NAV.filter((n) => n.roles.some((r) => mine.includes(r)));
   const allowed = role === 'client' ? (STATE.clientVisible || []) : (STATE.visible || null);
   if (!Array.isArray(allowed) || !allowed.length) {
     return role === 'client' ? [] : all;
@@ -297,7 +299,8 @@ function visibleNav(role) {
 
 function renderShell() {
   const role = STATE.me.роль;
-  if (['cutter', 'packer', 'user', 'designer', 'supply'].includes(role)) { location.replace('/cex/'); return; }
+  const cexOnly = ['cutter', 'packer', 'user', 'designer', 'supply'];
+  if ((STATE.me.роли || [role]).every((r) => cexOnly.includes(r))) { location.replace('/cex/'); return; }
   let nav = visibleNav(role);
   const canWh = !!(STATE.caps && STATE.caps['wh.view']);
   if (MODE.sklad && canWh) nav = nav.filter((n) => n.id === 'wh');

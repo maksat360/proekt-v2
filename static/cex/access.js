@@ -96,6 +96,13 @@ function acCardHtml(p) {
             ${roles.map(([k, v]) => `<option value="${k}" ${k === p.роль ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></div>
           <div class="cx-field"><label>Новый пароль</label><input class="input" id="ac-pass" type="password" autocomplete="new-password" placeholder="не менять" ${canEdit ? '' : 'disabled'}></div>
         </div>
+        ${p.роль !== AC.data.закрытая_роль ? `<div class="cx-field" style="margin-top:12px"><label>Дополнительные роли</label>
+          <div class="ac-chips">${roles.filter(([k]) => k !== p.роль && k !== AC.data.закрытая_роль && k !== 'client').map(([k, v]) => {
+            const on = (p.доп_роли || []).includes(k);
+            return `<label class="ac-chip ${on ? 'on' : ''} ${canEdit ? '' : 'ro'}">
+              <input type="checkbox" data-ac-extra-role="${esc(p.логин)}" data-code="${esc(k)}" ${on ? 'checked' : ''} ${canEdit ? '' : 'disabled'}>${esc(v)}</label>`;
+          }).join('')}</div>
+          <div class="cx-hint" style="margin-top:6px">Если человек делает несколько работ — отметьте их. Права складываются, в цехе он выбирает «Работаю как». Сохраняется сразу.</div></div>` : ''}
         ${me ? '<div class="cx-hint">Свою роль, пароль и права здесь менять нельзя — это делает другой администратор.</div>' : ''}
         ${adminLocked ? '<div class="cx-hint">Карточку начальника (администратора) меняет только начальник.</div>' : ''}
         <div class="cx-btn-row" style="margin-top:12px">
@@ -283,6 +290,14 @@ async function acToggle(el) {
       toast(`${(acPerson(login) || {}).ФИО || login}: ${want ? '+' : '−'} ${(acStage(code) || {}).название || code}`, 'ok');
       return;
     }
+    if (el.dataset.acExtraRole !== undefined) {
+      const login = el.dataset.acExtraRole;
+      const cur = (acPerson(login) || {}).доп_роли || [];
+      const next = want ? [...cur, code] : cur.filter((r) => r !== code);
+      await acPost('/roles', { логин: login, роли: next },
+        `${(acPerson(login) || {}).ФИО || login}: ${want ? '+' : '−'} ${acRoleName(code)}`);
+      return;
+    }
     if (AC_IMPORTANT.has(code) && !confirm(`${want ? 'Выдать' : 'Забрать'} право «${label}»?`)) { el.checked = !want; return; }
     if (el.dataset.acRolePerm !== undefined) {
       await acPost('/role', { роль: el.dataset.acRolePerm, право: code, значение: want },
@@ -298,7 +313,7 @@ async function acToggle(el) {
 document.addEventListener('change', (ev) => {
   const el = ev.target;
   if (!el || el.type !== 'checkbox') return;
-  if (el.dataset.acStagePerson !== undefined || el.dataset.acRolePerm !== undefined || el.dataset.acUserPerm !== undefined) acToggle(el);
+  if (el.dataset.acStagePerson !== undefined || el.dataset.acExtraRole !== undefined || el.dataset.acRolePerm !== undefined || el.dataset.acUserPerm !== undefined) acToggle(el);
 });
 
 document.addEventListener('input', (ev) => {

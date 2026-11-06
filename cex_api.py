@@ -1753,7 +1753,8 @@ def access_state(me: dict) -> dict:
         item = {"логин": login, "ФИО": _s(u.get("фио")) or login, "роль": _s(u.get("роль")),
                 "роль_название": perms.ROLE_LABELS.get(_s(u.get("роль")), _s(u.get("роль"))),
                 "цех": _s(u.get("цех")), "активен": _flag(u.get("активен"), True),
-                "этапы": [c.upper() for c in _deps((cards.get(login) or {}).get("этап"))]}
+                "этапы": [c.upper() for c in _deps((cards.get(login) or {}).get("этап"))],
+                "доп_роли": perms.extra_roles(login, data)}
         if see_perms:
             item["права"] = perms.user_view(u, data)
         people.append(item)
@@ -1791,6 +1792,14 @@ def set_user_perm(me: dict, body: dict) -> dict:
     value = body.get("значение")
     return perms.set_user_perm(me, _all_users(), target, _s(body.get("право")),
                                None if value is None else bool(value))
+
+
+def set_extra_roles(me: dict, body: dict) -> dict:
+    _need(me, "staff.edit")
+    target = _find_user(_s(body.get("логин")), _s(me.get("цех")))
+    if not target:
+        raise ValueError("Сотрудник не найден в этом цехе")
+    return perms.set_extra_roles(me, _all_users(), target, body.get("роли") or [])
 
 
 def save_account(me: dict, body: dict) -> dict:
@@ -3268,6 +3277,7 @@ def _dispatch(ctx) -> None:
         seed_refs()
         data = {
             "user": {"логин": _s(me.get("логин")), "фио": _s(me.get("фио")), "роль": role,
+                     "роли": perms.roles_of(me),
                      "цех": _s(me.get("цех"))},
             "права": {"создать": _can(me, "cex.create"), "принимать": _can(me, "cex.tech"),
                       "кроить": _can(me, "cex.cut"), "работать": _can(me, "cex.work"),
@@ -3281,8 +3291,8 @@ def _dispatch(ctx) -> None:
                       "права": _can(me, "perms.roles") or _can(me, "perms.users")},
             "все_права": perms.effective(me),
             "refs": refs(),
-            "заказы": orders() if role in {"admin", "manager", "technologist", "accountant",
-                                          "storekeeper", "cutter", "designer", "supply"} else [],
+            "заказы": orders() if set(perms.roles_of(me)) & {"admin", "manager", "technologist", "accountant",
+                                                             "storekeeper", "cutter", "designer", "supply"} else [],
             "клиенты": _client_list(),
             "поставщики": supplier_list(),
             "источник": str(store.source_path()),
@@ -3664,7 +3674,8 @@ def _dispatch(ctx) -> None:
 
     access_post = {"/api/cex/access/role": set_role_perm, "/api/cex/access/user": set_user_perm,
                    "/api/cex/access/account": save_account, "/api/cex/access/stage": save_stage,
-                   "/api/cex/access/stage/delete": delete_stage}
+                   "/api/cex/access/stage/delete": delete_stage,
+                   "/api/cex/access/roles": set_extra_roles}
     if path in access_post and method == "POST":
         ensure_sheets()
         try:

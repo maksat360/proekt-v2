@@ -164,10 +164,12 @@ function cartQty() {
 // «Работаю как»: человек с несколькими ролями выбирает, чем сейчас занят —
 // видит только вкладки этой работы, чтобы не было каши.
 const AS_ROLES = {
+  all: { label: 'Все мои работы', tabs: null },
   admin: { label: 'Начальник', tabs: null },
   manager: { label: 'Менеджер', tabs: ['new', 'list', 'tech', 'payroll', 'sum', 'staff', 'stages', 'access'] },
   designer: { label: 'Конструктор', tabs: ['design', 'list'] },
   supply: { label: 'Снабженец', tabs: ['supply', 'list'] },
+  storekeeper: { label: 'Складчик', tabs: ['new', 'list'] },
   technologist: { label: 'Технолог', tabs: ['tech', 'assign', 'route_ord', 'route', 'route_fin', 'work', 'list', 'staff', 'stages', 'access'] },
   cutter: { label: 'Закройщик', tabs: ['cut'] },
   user: { label: 'Швея', tabs: ['work', 'payroll'] },
@@ -175,15 +177,19 @@ const AS_ROLES = {
   accountant: { label: 'Бухгалтер', tabs: ['payroll', 'sum'] },
 };
 
-function multiRole() { return ['admin', 'manager'].includes((ST.user || {}).роль); }
+function isChief() { return ['admin', 'manager'].includes((ST.user || {}).роль); }
+function myRoles() { return (ST.user || {}).роли || [(ST.user || {}).роль]; }
+function multiRole() { return isChief() || myRoles().length > 1; }
+// варианты «Работаю как»: начальнику — все роли, остальным — «все мои работы» и свои роли
+function asOptions() { return isChief() ? Object.keys(AS_ROLES).filter((k) => k !== 'all') : ['all', ...myRoles().filter((r) => AS_ROLES[r])]; }
 
 function asRole() {
   if (!multiRole()) return (ST.user || {}).роль;
   try {
     const v = localStorage.getItem(`cx_as_${(ST.user || {}).логин}`);
-    if (v && AS_ROLES[v]) return v;
+    if (v && asOptions().includes(v)) return v;
   } catch (e) { /* нет хранилища */ }
-  return (ST.user || {}).роль;
+  return isChief() ? (ST.user || {}).роль : 'all';
 }
 
 function asTabs() { const r = AS_ROLES[asRole()]; return r ? r.tabs : null; }
@@ -221,8 +227,8 @@ function renderUser() {
   const roleBox = multiRole() ? `
     <label class="cx-asrole" title="Чем вы сейчас заняты — видны только нужные вкладки">
       <span>Работаю как</span>
-      <select id="cx-asrole">${Object.entries(AS_ROLES).map(([k, v]) =>
-        `<option value="${k}" ${k === cur ? 'selected' : ''}>${v.label}${k === u.роль ? ' (все вкладки)' : ''}</option>`).join('')}</select>
+      <select id="cx-asrole">${asOptions().map((k) =>
+        `<option value="${k}" ${k === cur ? 'selected' : ''}>${AS_ROLES[k].label}${isChief() && k === u.роль ? ' (все вкладки)' : ''}</option>`).join('')}</select>
     </label>` : `<span class="cx-pill grey cx-asrole-fixed">${esc(roleLabel(u.роль))}</span>`;
   $('#cx-user').innerHTML = `${roleBox}
     <button class="v2acc-anchor" id="cx-acc" data-v2acc-anchor title="Аккаунты">

@@ -102,7 +102,7 @@ class AccessError(ValueError):
 
 # ------------------------------------------------------------------ хранение
 def _empty() -> dict:
-    return {"роли": {}, "сотрудники": {}}
+    return {"роли": {}, "сотрудники": {}, "доп_роли": {}}
 
 
 def load() -> dict:
@@ -115,7 +115,8 @@ def load() -> dict:
         return _CACHE["data"]
     try:
         raw = json.loads(FILE.read_text(encoding="utf-8"))
-        data = {"роли": dict(raw.get("роли") or {}), "сотрудники": dict(raw.get("сотрудники") or {})}
+        data = {"роли": dict(raw.get("роли") or {}), "сотрудники": dict(raw.get("сотрудники") or {}),
+                "доп_роли": dict(raw.get("доп_роли") or {})}
     except Exception:  # noqa: BLE001 — битый файл не должен ронять портал
         data = _empty()
     _CACHE.update(sig=sig, data=data)
@@ -178,7 +179,20 @@ def allowed(user: dict | None, code: str, data: dict | None = None) -> bool:
     own = data["сотрудники"].get(login) or {}
     if login and code in own:
         return bool(own[code])
-    return role_value(str(user.get("роль", "")), code, data)
+    return any(role_value(r, code, data) for r in roles_of(user, data))
+
+
+def extra_roles(login: str, data: dict | None = None) -> list[str]:
+    """Дополнительные роли сотрудника (кроме основной из листа «сотрудники»)."""
+    data = data or load()
+    return [r for r in (data.get("доп_роли") or {}).get(str(login), [])
+            if r in ROLE_LABELS and r != LOCKED_ROLE]
+
+
+def roles_of(user: dict, data: dict | None = None) -> list[str]:
+    """Основная роль + дополнительные: права сотрудника — объединение прав всех его ролей."""
+    main = str(user.get("роль", ""))
+    return [main] + [r for r in extra_roles(str(user.get("логин", "")), data) if r != main]
 
 
 def effective(user: dict, data: dict | None = None) -> dict[str, bool]:
@@ -199,8 +213,8 @@ def user_view(user: dict, data: dict | None = None) -> dict:
     """Права сотрудника с источником: роль или индивидуально."""
     data = data or load()
     own = data["сотрудники"].get(str(user.get("логин", ""))) or {}
-    role = str(user.get("роль", ""))
-    return {c: {"значение": allowed(user, c, data), "по_роли": role_value(role, c, data),
+    roles = roles_of(user, data)
+    return {c: {"значение": allowed(user, c, data), "по_роли": any(role_value(r, c, data) for r in roles),
                 "индивидуально": c in own} for c in CODES}
 
 
@@ -270,7 +284,7 @@ def set_user_perm(actor: dict, users: list[dict], target: dict, code: str, on: b
     before = allowed(target, code, data)
     new = json.loads(json.dumps(data))
     own = new["сотрудники"].setdefault(login, {})
-    if on is None or bool(on) == role_value(str(target.get("роль", "")), code, new):
+    if on is None or bool(on) == any(role_value(r, code, new) for r in roles_of(target, new)):
         own.pop(code, None)
     else:
         own[code] = bool(on)
@@ -282,6 +296,43 @@ def set_user_perm(actor: dict, users: list[dict], target: dict, code: str, on: b
         _save(new)
         _log(actor, "сотрудник", login, code, before, after)
     return {"логин": login, "право": code, "значение": after}
+
+
+def set_extra_roles(actor: dict, users: list[dict], target: dict, roles: list) -> dict:
+    """Выдать сотруднику дополнительные роли (2–3 работы у одного человека)."""
+    login = str(target.get("логин", ""))
+    if login == str(actor.get("логин", "")):
+        raise AccessError("Нельзя менять собственные роли")
+    if str(target.get("роль")) == LOCKED_ROLE:
+        raise ValueError("У начальника и так все права — дополнительные роли не нужны")
+    want = []
+    for r in roles or []:
+        r = str(r)
+        if r not in ROLE_LABELS:
+            raise ValueError(f"Неизвестная роль: {r}")
+        if r == LOCKED_ROLE:
+            raise AccessError("Начальника назначают только основной ролью")
+        if r != str(target.get("роль")) and r not in want:
+            want.append(r)
+    data = load()
+    before = extra_roles(login, data)
+    if str(actor.get("роль")) != LOCKED_ROLE:
+        for r in set(want) - set(before):  # роль не должна дать больше, чем есть у назначающего
+            extra = [c for c in CODES if role_value(r, c, data) and not allowed(actor, c, data)]
+            if extra:
+                raise AccessError("У роли «%s» есть права, которых нет у вас: %s"
+                                  % (ROLE_LABELS[r], ", ".join(LABELS[c] for c in extra[:3])))
+    new = json.loads(json.dumps(data))
+    if want:
+        new["доп_роли"][login] = want
+    else:
+        new["доп_роли"].pop(login, None)
+    guard_last_admin(users, new)
+    if want != before:
+        _save(new)
+        log_event(actor, "доп. роли", login, ", ".join(ROLE_LABELS[r] for r in before),
+                  ", ".join(ROLE_LABELS[r] for r in want))
+    return {"логин": login, "доп_роли": want}
 
 
 def check_role_change(actor: dict, users: list[dict], target: dict, new_role: str | None,
