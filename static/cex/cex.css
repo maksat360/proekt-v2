@@ -304,6 +304,8 @@ select.input {
 .cx-tabs { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
 .cx-tabs::-webkit-scrollbar { display: none; }
 .cx-tab { flex: 0 0 auto; white-space: nowrap; }
+/* на компьютере вкладки переносятся на вторую строку — скрытая прокрутка мышью незаметна */
+@media (min-width: 760px) { .cx-tabs { flex-wrap: wrap; overflow-x: visible; border-radius: 24px; } }
 .cx-gall { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink-2); cursor: pointer; margin-left: auto; }
 
 /* работа по настилам */
