@@ -17,7 +17,7 @@ ADMIN2 = {"логин": "boss2", "роль": "admin", "активен": 1}
 MANAGER = {"логин": "ivanov", "роль": "manager", "активен": 1}
 TECH = {"логин": "petrov", "роль": "technologist", "активен": 1}
 TECH2 = {"логин": "tech2", "роль": "technologist", "активен": 1}
-SEW = {"логин": "kozlova", "роль": "user", "активен": 1}
+SEW = {"логин": "kozlova", "роль": "ОВЕРЛ", "активен": 1}
 USERS = [ADMIN, MANAGER, TECH, TECH2, SEW]
 
 
@@ -28,8 +28,16 @@ class PermsTests(unittest.TestCase):
         perms.FILE = Path(self.tmp.name) / "permissions.json"
         perms.LOG = Path(self.tmp.name) / "log.jsonl"
         perms._CACHE.update(sig=None, data=None)
+        # роли цеха без Excel: две производственные роли и доп. роли из «Сотрудники цеха»
+        self.extra: dict[str, list[str]] = {}
+        self._src = dict(perms.SOURCES)
+        perms.SOURCES.clear()
+        perms.SOURCES.update(prod=lambda: {"ОВЕРЛ": "Оверлок", "КАРМАН": "Карман"},
+                             extra=lambda login: self.extra.get(login, []))
 
     def tearDown(self):
+        perms.SOURCES.clear()
+        perms.SOURCES.update(self._src)
         perms.FILE, perms.LOG = self._old
         perms._CACHE.update(sig=None, data=None)
         self.tmp.cleanup()
@@ -45,23 +53,34 @@ class PermsTests(unittest.TestCase):
         self.assertTrue(perms.allowed(store, "cex.create"))
         self.assertFalse(perms.allowed(TECH, "cex.design"))
 
-    def test_extra_roles_add_rights(self):
+    def test_one_role_system(self):
+        self.assertNotIn("user", perms.all_roles())  # роли «Швея» больше нет
+        self.assertEqual(perms.role_label("ОВЕРЛ"), "Оверлок")
+        # производственная роль: вход в цех и работа, без управления
+        self.assertTrue(perms.allowed(SEW, "cex.work"))
+        self.assertFalse(perms.allowed(SEW, "stages.assign"))
         worker = {"логин": "multi", "роль": "designer", "активен": 1}
-        users = USERS + [worker]
         self.assertFalse(perms.allowed(worker, "cex.supply"))
-        perms.set_extra_roles(ADMIN, users, worker, ["supply", "storekeeper", "designer"])
-        self.assertEqual(perms.roles_of(worker), ["designer", "supply", "storekeeper"])
+        self.extra["multi"] = ["supply", "storekeeper", "КАРМАН", "admin", "нет_такой"]
+        self.assertEqual(perms.roles_of(worker), ["designer", "supply", "storekeeper", "КАРМАН"])
         self.assertTrue(perms.allowed(worker, "cex.supply"))
-        self.assertTrue(perms.allowed(worker, "wh.write"))
+        self.assertTrue(perms.allowed(worker, "cex.work"))
         self.assertTrue(perms.user_view(worker)["cex.supply"]["по_роли"])
         with self.assertRaises(perms.AccessError):  # начальника доп. ролью не выдать
-            perms.set_extra_roles(ADMIN, users, worker, ["admin"])
+            perms.check_role_grant(ADMIN, worker, "admin", True)
         with self.assertRaises(perms.AccessError):  # себе — нельзя
-            perms.set_extra_roles(TECH, users, TECH, ["supply"])
+            perms.check_role_grant(TECH, TECH, "КАРМАН", True)
         with self.assertRaises(perms.AccessError):  # технолог не выдаст права, которых у него нет
-            perms.set_extra_roles(TECH, users, SEW, ["storekeeper"])
-        perms.set_extra_roles(ADMIN, users, worker, [])
-        self.assertFalse(perms.allowed(worker, "cex.supply"))
+            perms.check_role_grant(TECH, SEW, "storekeeper", True)
+        perms.check_role_grant(TECH, SEW, "КАРМАН", True)  # операцию — можно
+        # разрешение на управление ролями выдаётся и забирается отдельно от ролей
+        perms.set_user_perm(ADMIN, USERS, TECH, "perms.users", True)
+        self.assertTrue(perms.allowed(TECH, "perms.users"))
+        perms.set_user_perm(ADMIN, USERS, TECH, "perms.users", None)
+        self.assertFalse(perms.allowed(TECH, "perms.users"))
+        # разрешения производственной роли настраиваются так же, как у служебной
+        perms.set_role_perm(ADMIN, USERS, "ОВЕРЛ", "wh.view", True)
+        self.assertTrue(perms.allowed(SEW, "wh.view"))
 
     def test_technologist_has_default_staff_rights(self):
         for code in ("staff.add", "staff.edit", "stages.create", "stages.edit", "stages.assign"):
@@ -83,7 +102,7 @@ class PermsTests(unittest.TestCase):
         perms.set_user_perm(ADMIN, USERS, SEW, "staff.view", True)
         perms.set_user_perm(ADMIN, USERS, TECH, "stages.create", False)
         self.assertTrue(perms.allowed(SEW, "staff.view"))
-        self.assertFalse(perms.allowed({"логин": "other", "роль": "user"}, "staff.view"))
+        self.assertFalse(perms.allowed({"логин": "other", "роль": "ОВЕРЛ"}, "staff.view"))
         self.assertFalse(perms.allowed(TECH, "stages.create"))
         self.assertTrue(perms.allowed(TECH2, "stages.create"))
         perms.set_user_perm(ADMIN, USERS, TECH, "stages.create", None)  # «как у роли»
@@ -98,7 +117,7 @@ class PermsTests(unittest.TestCase):
         with self.assertRaises(perms.AccessError):  # своей роли
             perms.set_role_perm(ADMIN2 | {"роль": "admin"}, USERS, "admin", "staff.add", False)
         with self.assertRaises(perms.AccessError):  # без права управлять ролями
-            perms.set_role_perm(MANAGER, USERS, "user", "staff.view", True)
+            perms.set_role_perm(MANAGER, USERS, "ОВЕРЛ", "staff.view", True)
 
     def test_last_admin_is_protected(self):
         with self.assertRaises(perms.AccessError):  # отключить единственного админа

@@ -690,7 +690,7 @@ def _expand_tables(ws, last_row: int | None = None) -> None:
 
 ROLE_RU = {
     "admin": "Начальник", "manager": "Менеджер", "accountant": "Бухгалтер",
-    "technologist": "Технолог", "storekeeper": "Складчик", "user": "Швея",
+    "technologist": "Технолог", "storekeeper": "Складчик",
     "client": "Клиент",
 }
 
@@ -1327,7 +1327,7 @@ def _read_staff_rows() -> list[dict]:
                     "логин": login,
                     "пароль": val(r, "пароль", "password"),
                     "фио": val(r, "фио", "имя"),
-                    "роль": val(r, "роль", "role", default="user"),
+                    "роль": val(r, "роль", "role"),
                     "цех": val(r, "цех", "workshop"),
                     "ставка_час": _num(val(r, "ставка за час", "ставка")),
                     "активен": 0 if val(r, "активен", "active").lower() in ("нет", "0", "false") else 1,

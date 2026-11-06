@@ -40,10 +40,11 @@ class StageRolesTests(unittest.TestCase):
 
     def test_stage_gives_right_to_work(self):
         self.assertFalse(cex_api._can_work(KEEPER))  # у складчика нет права работать на этапах
+        # старая колонка «этап» читается как «роли» (до переноса данных)
         self.st.sheets[cex_api.STAFF[0]] = [{"логин": "keeper", "этап": "ОВЕРЛ;КАРМАН"}]
         self.assertTrue(cex_api._can_work(KEEPER))
-        self.assertEqual(cex_api.roles_of("keeper"), ["ОВЕРЛ", "КАРМАН"])
-        perms._save({"роли": {}, "сотрудники": {"keeper": {"cex.work": False}}, "доп_роли": {}})
+        self.assertEqual(cex_api.roles_of(KEEPER), ["ОВЕРЛ", "КАРМАН"])
+        perms._save({"роли": {}, "сотрудники": {"keeper": {"cex.work": False}}})
         self.assertFalse(cex_api._can_work(KEEPER))  # личный запрет начальника сильнее
 
     def test_disabled_stage_kept_but_not_added(self):

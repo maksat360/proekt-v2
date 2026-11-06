@@ -7,6 +7,10 @@
 
 Хранится в data/permissions.json, журнал — data/журнал_прав.jsonl.
 Роль «admin» не настраивается: у неё всегда все права (иначе можно запереть систему).
+
+Роль одна на всё: служебные роли (ниже, за ними стоят экраны) и производственные роли —
+операции цеха (Оверлок, Карман…) из листа «расценки». Какие роли у человека — решает цех
+(основная в листе «сотрудники», остальные в «Сотрудники цеха».роли); разрешения — здесь.
 """
 from __future__ import annotations
 
@@ -19,14 +23,13 @@ BASE = Path(__file__).resolve().parent
 FILE = BASE / "data" / "permissions.json"
 LOG = BASE / "data" / "журнал_прав.jsonl"
 
-# названия ролей как в портале и в листе «сотрудники» (по ним читается Excel — не менять)
+# служебные роли: названия как в портале и в листе «сотрудники» (по ним читается Excel — не менять)
 ROLE_LABELS = {
     "admin": "Начальник",
     "accountant": "Бухгалтер",
     "manager": "Менеджер",
     "technologist": "Технолог",
     "storekeeper": "Складчик",
-    "user": "Швея",
     "cutter": "Закройщик",
     "packer": "Упаковщик",
     "designer": "Конструктор",
@@ -36,22 +39,24 @@ ROLE_LABELS = {
 LOCKED_ROLE = "admin"
 
 _A, _M, _T = "admin", "manager", "technologist"
-_STAFF = {"admin", "manager", "technologist", "accountant", "storekeeper", "cutter", "packer", "user",
+_STAFF = {"admin", "manager", "technologist", "accountant", "storekeeper", "cutter", "packer",
           "designer", "supply"}
+# производственная роль по умолчанию: вход в цех и работа на своей операции; остальное — настройкой
+PROD_DEFAULT = {"cex.view", "cex.work"}
 
 # код, группа, название, роли по умолчанию
 CATALOG: list[tuple[str, str, str, set[str]]] = [
-    # сотрудники, этапы, права
-    ("staff.view", "Сотрудники", "Просмотр карты сотрудников", {_A, _M, _T}),
-    ("staff.add", "Сотрудники", "Добавление сотрудников", {_A, _M, _T}),
-    ("staff.edit", "Сотрудники", "Редактирование карточек сотрудников", {_A, _M, _T}),
-    ("staff.delete", "Сотрудники", "Отключение сотрудников", {_A, _M}),
-    ("stages.create", "Производственные этапы", "Создание этапов", {_A, _M, _T}),
-    ("stages.edit", "Производственные этапы", "Редактирование этапов", {_A, _M, _T}),
-    ("stages.delete", "Производственные этапы", "Удаление этапов", {_A, _M}),
-    ("stages.assign", "Производственные этапы", "Назначение этапов сотрудникам", {_A, _M, _T}),
-    ("perms.users", "Права доступа", "Изменение индивидуальных прав сотрудников", {_A}),
-    ("perms.roles", "Права доступа", "Управление правами ролей", {_A}),
+    # управление: сотрудники, роли, права (коды stages.* оставлены ради сохранённых настроек)
+    ("staff.view", "Сотрудники и роли", "Просмотр сотрудников и ролей", {_A, _M, _T}),
+    ("staff.add", "Сотрудники и роли", "Добавление сотрудников", {_A, _M, _T}),
+    ("staff.edit", "Сотрудники и роли", "Редактирование карточек сотрудников (ФИО, пароль)", {_A, _M, _T}),
+    ("staff.delete", "Сотрудники и роли", "Отключение сотрудников", {_A, _M}),
+    ("stages.create", "Сотрудники и роли", "Создание производственных ролей", {_A, _M, _T}),
+    ("stages.edit", "Сотрудники и роли", "Изменение и отключение производственных ролей", {_A, _M, _T}),
+    ("stages.delete", "Сотрудники и роли", "Удаление производственных ролей", {_A, _M}),
+    ("stages.assign", "Сотрудники и роли", "Назначение и снятие ролей у сотрудников", {_A, _M, _T}),
+    ("perms.users", "Сотрудники и роли", "Личные разрешения сотрудников", {_A}),
+    ("perms.roles", "Сотрудники и роли", "Разрешения ролей", {_A}),
     # цех
     ("cex.view", "Цех", "Вход в раздел «Цех»", set(_STAFF)),
     ("cex.create", "Цех", "Оформление заказов на пошив", {_A, _M, "storekeeper"}),
@@ -60,7 +65,7 @@ CATALOG: list[tuple[str, str, str, set[str]]] = [
     ("cex.tech", "Цех", "Приёмка заказов, распределение работы, этикетки, исправление кроя", {_A, _M, _T}),
     ("cex.routes", "Цех", "Редактирование маршрутов партий", {_A, _M, _T}),
     ("cex.cut", "Цех", "Ввод кроя", {_A, _M, "cutter"}),
-    ("cex.work", "Цех", "Работа на этапах (брать и сдавать)", {_A, _M, _T, "user"}),
+    ("cex.work", "Цех", "Работа на своих производственных ролях (брать и сдавать)", {_A, _M, _T}),
     ("cex.work.all", "Цех", "Видеть работу всего цеха", {_A, _M, _T}),
     ("cex.boss", "Цех", "Возвращать и сдавать чужую работу, брать несколько работ", {_A, _M}),
     ("cex.pack", "Цех", "Упаковка", {_A, _M, "packer"}),
@@ -79,7 +84,7 @@ CATALOG: list[tuple[str, str, str, set[str]]] = [
     ("announce.create", "Портал", "Объявления", {_A, _M}),
     # старый учёт партий (раздел скрыт в config.json, но API работает)
     ("batches.create", "Старый учёт партий", "Создание партий", {_A, _M, _T}),
-    ("passes.take", "Старый учёт партий", "Взять проход", {"user", _T, _A, _M}),
+    ("passes.take", "Старый учёт партий", "Взять проход", {_T, _A, _M}),
     ("checks.create", "Старый учёт партий", "Оценки технолога", {_T, _A, _M}),
     ("materials.view", "Старый учёт партий", "Материалы: просмотр", {_A, _M, "storekeeper", "accountant", _T}),
     ("materials.move", "Старый учёт партий", "Материалы: движение", {_A, _M, "storekeeper"}),
@@ -102,7 +107,7 @@ class AccessError(ValueError):
 
 # ------------------------------------------------------------------ хранение
 def _empty() -> dict:
-    return {"роли": {}, "сотрудники": {}, "доп_роли": {}}
+    return {"роли": {}, "сотрудники": {}}
 
 
 def load() -> dict:
@@ -115,8 +120,7 @@ def load() -> dict:
         return _CACHE["data"]
     try:
         raw = json.loads(FILE.read_text(encoding="utf-8"))
-        data = {"роли": dict(raw.get("роли") or {}), "сотрудники": dict(raw.get("сотрудники") or {}),
-                "доп_роли": dict(raw.get("доп_роли") or {})}
+        data = {"роли": dict(raw.get("роли") or {}), "сотрудники": dict(raw.get("сотрудники") or {})}
     except Exception:  # noqa: BLE001 — битый файл не должен ронять портал
         data = _empty()
     _CACHE.update(sig=sig, data=data)
@@ -160,6 +164,40 @@ def journal(limit: int = 200) -> list[dict]:
     return out
 
 
+# ------------------------------------------------------------------ роли
+# Источники цеха подключаются лениво: perms не зависит от Excel, тесты подставляют свои.
+SOURCES: dict = {}
+
+
+def _source(name: str):
+    if name not in SOURCES:
+        import cex_api  # noqa: WPS433 — цех сам регистрирует источники при импорте
+        cex_api.register_role_sources()
+    return SOURCES[name]
+
+
+def production_roles() -> dict[str, str]:
+    """Производственные роли (операции цеха): код → название."""
+    try:
+        return {k: v for k, v in _source("prod")().items() if k not in ROLE_LABELS}
+    except Exception:  # noqa: BLE001 — нет книги цеха: остаются служебные роли
+        return {}
+
+
+def all_roles() -> dict[str, str]:
+    return {**ROLE_LABELS, **production_roles()}
+
+
+def role_label(code: str) -> str:
+    return all_roles().get(code, code)
+
+
+def _default(role: str, code: str, prod: dict | None = None) -> bool:
+    if role in ROLE_LABELS:
+        return role in DEFAULTS.get(code, set())
+    return code in PROD_DEFAULT and role in (production_roles() if prod is None else prod)
+
+
 # ------------------------------------------------------------------ расчёт
 def role_value(role: str, code: str, data: dict | None = None) -> bool:
     if role == LOCKED_ROLE:
@@ -168,7 +206,7 @@ def role_value(role: str, code: str, data: dict | None = None) -> bool:
     over = (data["роли"].get(role) or {})
     if code in over:
         return bool(over[code])
-    return role in DEFAULTS.get(code, set())
+    return _default(role, code)
 
 
 def allowed(user: dict | None, code: str, data: dict | None = None) -> bool:
@@ -183,10 +221,13 @@ def allowed(user: dict | None, code: str, data: dict | None = None) -> bool:
 
 
 def extra_roles(login: str, data: dict | None = None) -> list[str]:
-    """Дополнительные роли сотрудника (кроме основной из листа «сотрудники»)."""
-    data = data or load()
-    return [r for r in (data.get("доп_роли") or {}).get(str(login), [])
-            if r in ROLE_LABELS and r != LOCKED_ROLE]
+    """Роли сотрудника кроме основной (лист «Сотрудники цеха», колонка «роли»)."""
+    try:
+        raw = _source("extra")(str(login))
+    except Exception:  # noqa: BLE001
+        return []
+    known = all_roles()
+    return [r for r in raw if r in known and r != LOCKED_ROLE]
 
 
 def roles_of(user: dict, data: dict | None = None) -> list[str]:
@@ -206,7 +247,7 @@ def catalog() -> list[dict]:
 
 def role_matrix(data: dict | None = None) -> dict[str, dict[str, bool]]:
     data = data or load()
-    return {r: {c: role_value(r, c, data) for c in CODES} for r in ROLE_LABELS}
+    return {r: {c: role_value(r, c, data) for c in CODES} for r in all_roles()}
 
 
 def user_view(user: dict, data: dict | None = None) -> dict:
@@ -243,7 +284,7 @@ def set_role_perm(actor: dict, users: list[dict], role: str, code: str, on: bool
     _check_code(code)
     if not allowed(actor, "perms.roles"):
         raise AccessError("Нет права управлять правами ролей")
-    if role not in ROLE_LABELS:
+    if role not in all_roles():
         raise ValueError("Неизвестная роль")
     if role == LOCKED_ROLE:
         raise AccessError("Права администратора не настраиваются: у него всегда все права")
@@ -255,7 +296,7 @@ def set_role_perm(actor: dict, users: list[dict], role: str, code: str, on: bool
     before = role_value(role, code, data)
     new = json.loads(json.dumps(data))
     roles = new["роли"].setdefault(role, {})
-    if (role in DEFAULTS[code]) == bool(on):
+    if _default(role, code) == bool(on):
         roles.pop(code, None)  # совпадает со стандартом — хранить нечего
     else:
         roles[code] = bool(on)
@@ -264,7 +305,7 @@ def set_role_perm(actor: dict, users: list[dict], role: str, code: str, on: bool
     guard_last_admin(users, new)
     if before != bool(on):
         _save(new)
-        _log(actor, "роль", ROLE_LABELS[role], code, before, bool(on))
+        _log(actor, "роль", role_label(role), code, before, bool(on))
     return {"роль": role, "право": code, "значение": bool(on)}
 
 
@@ -298,48 +339,29 @@ def set_user_perm(actor: dict, users: list[dict], target: dict, code: str, on: b
     return {"логин": login, "право": code, "значение": after}
 
 
-def set_extra_roles(actor: dict, users: list[dict], target: dict, roles: list) -> dict:
-    """Выдать сотруднику дополнительные роли (2–3 работы у одного человека)."""
-    login = str(target.get("логин", ""))
-    if login == str(actor.get("логин", "")):
+def check_role_grant(actor: dict, target: dict, role: str, add: bool) -> None:
+    """Можно ли выдать (add) или снять роль сотруднику. Сами данные пишет цех."""
+    if role not in all_roles():
+        raise ValueError(f"Неизвестная роль: {role}")
+    if str(target.get("логин", "")) == str(actor.get("логин", "")):
         raise AccessError("Нельзя менять собственные роли")
-    if str(target.get("роль")) == LOCKED_ROLE:
-        raise ValueError("У начальника и так все права — дополнительные роли не нужны")
-    want = []
-    for r in roles or []:
-        r = str(r)
-        if r not in ROLE_LABELS:
-            raise ValueError(f"Неизвестная роль: {r}")
-        if r == LOCKED_ROLE:
-            raise AccessError("Начальника назначают только основной ролью")
-        if r != str(target.get("роль")) and r not in want:
-            want.append(r)
-    data = load()
-    before = extra_roles(login, data)
-    if str(actor.get("роль")) != LOCKED_ROLE:
-        for r in set(want) - set(before):  # роль не должна дать больше, чем есть у назначающего
-            extra = [c for c in CODES if role_value(r, c, data) and not allowed(actor, c, data)]
-            if extra:
-                raise AccessError("У роли «%s» есть права, которых нет у вас: %s"
-                                  % (ROLE_LABELS[r], ", ".join(LABELS[c] for c in extra[:3])))
-    new = json.loads(json.dumps(data))
-    if want:
-        new["доп_роли"][login] = want
-    else:
-        new["доп_роли"].pop(login, None)
-    guard_last_admin(users, new)
-    if want != before:
-        _save(new)
-        log_event(actor, "доп. роли", login, ", ".join(ROLE_LABELS[r] for r in before),
-                  ", ".join(ROLE_LABELS[r] for r in want))
-    return {"логин": login, "доп_роли": want}
+    if role == LOCKED_ROLE:
+        raise AccessError("Начальника назначают только основной ролью")
+    if str(target.get("роль")) == LOCKED_ROLE and str(actor.get("роль")) != LOCKED_ROLE:
+        raise AccessError("Роли начальника может менять только начальник")
+    if add and str(actor.get("роль")) != LOCKED_ROLE:
+        data = load()  # роль не должна дать больше, чем есть у того, кто её выдаёт
+        extra = [c for c in CODES if role_value(role, c, data) and not allowed(actor, c, data)]
+        if extra:
+            raise AccessError("У роли «%s» есть права, которых нет у вас: %s"
+                              % (role_label(role), ", ".join(LABELS[c] for c in extra[:3])))
 
 
 def check_role_change(actor: dict, users: list[dict], target: dict, new_role: str | None,
                       new_active: bool | None) -> None:
     """Проверки при смене роли или отключении сотрудника (сами данные пишет вызывающий)."""
     login = str(target.get("логин", ""))
-    if new_role is not None and new_role not in ROLE_LABELS:
+    if new_role is not None and new_role not in all_roles():
         raise ValueError("Неизвестная роль")
     role_changes = new_role is not None and new_role != str(target.get("роль"))
     if (role_changes or new_active is False) and login == str(actor.get("логин", "")):
@@ -354,7 +376,7 @@ def check_role_change(actor: dict, users: list[dict], target: dict, new_role: st
         extra = [c for c in CODES if role_value(new_role, c, data) and not allowed(actor, c, data)]
         if extra:
             raise AccessError("У роли «%s» есть права, которых нет у вас: %s"
-                              % (ROLE_LABELS[new_role], ", ".join(LABELS[c] for c in extra[:3])))
+                              % (role_label(new_role), ", ".join(LABELS[c] for c in extra[:3])))
     future = []
     for u in users:
         if str(u.get("логин")) == login:

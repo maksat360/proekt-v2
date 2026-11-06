@@ -184,21 +184,21 @@ const ICONS = {
 };
 
 const NAV = [
-  { id: 'dash', label: 'Сводка', icon: 'dash', roles: ['admin', 'manager', 'technologist', 'storekeeper', 'accountant', 'user'] },
-  { id: 'tasks', label: 'Мои задачи', icon: 'tasks', roles: ['user', 'technologist'] },
-  { id: 'batches', label: 'Партии', icon: 'batches', roles: ['admin', 'manager', 'technologist', 'storekeeper', 'accountant', 'user'] },
-  { id: 'cex', label: 'Цех', icon: 'tasks', roles: ['admin', 'manager', 'technologist', 'cutter', 'packer', 'user', 'accountant', 'storekeeper', 'designer', 'supply'], href: '/cex/' },
+  { id: 'dash', label: 'Сводка', icon: 'dash', roles: ['admin', 'manager', 'technologist', 'storekeeper', 'accountant', 'prod'] },
+  { id: 'tasks', label: 'Мои задачи', icon: 'tasks', roles: ['prod', 'technologist'] },
+  { id: 'batches', label: 'Партии', icon: 'batches', roles: ['admin', 'manager', 'technologist', 'storekeeper', 'accountant', 'prod'] },
+  { id: 'cex', label: 'Цех', icon: 'tasks', roles: ['admin', 'manager', 'technologist', 'cutter', 'packer', 'prod', 'accountant', 'storekeeper', 'designer', 'supply'], href: '/cex/' },
   { id: 'orders', label: 'Мои заказы', icon: 'receipt', roles: ['client'] },
   { id: 'fbs', label: 'Заказы WB', icon: 'receipt', roles: ['admin', 'manager', 'storekeeper'] },
-  { id: 'wh', label: 'Склад', icon: 'wh', roles: ['admin', 'manager', 'storekeeper', 'accountant', 'technologist', 'user'] },
+  { id: 'wh', label: 'Склад', icon: 'wh', roles: ['admin', 'manager', 'storekeeper', 'accountant', 'technologist', 'prod'] },
   { id: 'materials', label: 'Материалы', icon: 'materials', roles: ['admin', 'manager', 'storekeeper', 'accountant', 'technologist'] },
   { id: 'finished', label: 'Готовая продукция', icon: 'finished', roles: ['admin', 'manager', 'storekeeper', 'accountant'] },
-  { id: 'shop', label: 'Магазин', icon: 'bag', roles: ['admin', 'manager', 'storekeeper', 'accountant', 'technologist', 'user', 'client'] },
+  { id: 'shop', label: 'Магазин', icon: 'bag', roles: ['admin', 'manager', 'storekeeper', 'accountant', 'technologist', 'prod', 'client'] },
   { id: 'sales', label: 'Продажи', icon: 'receipt', roles: ['admin', 'manager', 'storekeeper', 'accountant'] },
-  { id: 'payroll', label: 'Зарплата', icon: 'payroll', roles: ['admin', 'manager', 'accountant', 'user', 'technologist'] },
+  { id: 'payroll', label: 'Зарплата', icon: 'payroll', roles: ['admin', 'manager', 'accountant', 'prod', 'technologist'] },
   { id: 'analytics', label: 'Аналитика', icon: 'analytics', roles: ['admin', 'manager', 'accountant'] },
   { id: 'users', label: 'Сотрудники', icon: 'users', roles: ['admin', 'manager'] },
-  { id: 'ann', label: 'Объявления', icon: 'ann', roles: ['admin', 'manager', 'technologist', 'storekeeper', 'accountant', 'user'] },
+  { id: 'ann', label: 'Объявления', icon: 'ann', roles: ['admin', 'manager', 'technologist', 'storekeeper', 'accountant', 'prod'] },
   { id: 'report', label: 'Отчёт', icon: 'report', roles: ['admin', 'manager', 'accountant'] },
 ];
 
@@ -287,8 +287,8 @@ function bindNeedNet() {
 }
 
 function visibleNav(role) {
-  // доп. роли из «Роли и права» добавляют свои разделы к основной роли
-  const mine = (STATE.me && STATE.me.роль === role && STATE.me.роли) || [role];
+  // все роли человека добавляют свои разделы; производственные (Оверлок, Карман…) — это «prod»
+  const mine = (STATE.me && STATE.me.роль === role && STATE.me.роли_портала) || [role];
   const all = NAV.filter((n) => n.roles.some((r) => mine.includes(r)));
   const allowed = role === 'client' ? (STATE.clientVisible || []) : (STATE.visible || null);
   if (!Array.isArray(allowed) || !allowed.length) {
@@ -299,8 +299,8 @@ function visibleNav(role) {
 
 function renderShell() {
   const role = STATE.me.роль;
-  const cexOnly = ['cutter', 'packer', 'user', 'designer', 'supply'];
-  if ((STATE.me.роли || [role]).every((r) => cexOnly.includes(r))) { location.replace('/cex/'); return; }
+  const cexOnly = ['cutter', 'packer', 'prod', 'designer', 'supply'];
+  if ((STATE.me.роли_портала || [role]).every((r) => cexOnly.includes(r))) { location.replace('/cex/'); return; }
   let nav = visibleNav(role);
   const canWh = !!(STATE.caps && STATE.caps['wh.view']);
   if (MODE.sklad && canWh) nav = nav.filter((n) => n.id === 'wh');
@@ -481,7 +481,7 @@ PAGES.dash = async () => {
   const tasks = data['мои_задачи'] || [];
   const wip = data['незавершёнка'] || {};
   const wipRows = Object.entries(wip).filter(([, v]) => v > 0);
-  const worker = role === 'user' || role === 'technologist';
+  const worker = (STATE.me.роли_портала || []).includes('prod') || role === 'technologist';
 
   const kpis = worker ? `
     ${kpi('Мои задачи', tasks.length, tasks.length ? 'в работе сейчас' : 'свободно')}
@@ -1246,7 +1246,7 @@ ACTIONS['edit-user'] = async (login) => {
 
 function openUser(user) {
   const roles = [
-    ['user', 'Швея'], ['cutter', 'Закройщик'], ['packer', 'Упаковщик'],
+    ['cutter', 'Закройщик'], ['packer', 'Упаковщик'],
     ['technologist', 'Технолог'], ['storekeeper', 'Складчик'],
     ['designer', 'Конструктор'], ['supply', 'Снабженец'],
     ['manager', 'Менеджер'], ['accountant', 'Бухгалтер'], ['admin', 'Начальник'],

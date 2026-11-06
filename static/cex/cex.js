@@ -77,7 +77,7 @@ async function boot() {
     work: ST.права.работать, pack: ST.права.упаковывать,
     payroll: ST.права.зарплата || ST.права.работать, sum: ST.права.зарплата,
     route: ST.права.маршрут, route_ord: ST.права.маршрут, route_fin: ST.права.маршрут, assign: ST.права.принимать,
-    staff: ST.права.сотрудники, stages: ST.права.этапы, access: ST.права.права,
+    staff: ST.права.сотрудники || ST.права.этапы || ST.права.права,
   };
   if (want && allowed[want]) ST.view = want;
   if (!ST.права.создать && !want) {
@@ -88,7 +88,7 @@ async function boot() {
   }
   if (multiRole()) {
     const only = asTabs();
-    ST.workMode = ['user', 'sew'].includes(asRole()) ? 'mine' : 'all';
+    ST.workMode = isProd(asRole()) ? 'mine' : 'all';
     if (only && !want) ST.view = only[0];
     if (only && !only.includes(ST.view)) ST.view = only[0];
   }
@@ -102,7 +102,7 @@ async function boot() {
   if (ST.view === 'sum') await loadSummary();
   if (rtIsView(ST.view)) await loadRoutes();
   if (ST.view === 'assign') await loadAssign();
-  if (['staff', 'stages', 'access'].includes(ST.view)) await loadAccess();
+  if (ST.view === 'staff') await loadAccess();
   render();
 }
 
@@ -162,31 +162,34 @@ function cartQty() {
 
 // --------------------------------------------------------------- шапка
 // «Работаю как»: человек с несколькими ролями выбирает, чем сейчас занят —
-// видит только вкладки этой работы, чтобы не было каши.
+// видит только вкладки этой работы. Производственная роль (Оверлок, Карман…) — это
+// и есть выбор операции: на экране работы остаются только её задачи.
 const AS_ROLES = {
   all: { label: 'Все мои работы', tabs: null },
   admin: { label: 'Начальник', tabs: null },
-  manager: { label: 'Менеджер', tabs: ['new', 'list', 'tech', 'payroll', 'sum', 'staff', 'stages', 'access'] },
+  manager: { label: 'Менеджер', tabs: ['new', 'list', 'tech', 'payroll', 'sum', 'staff'] },
   designer: { label: 'Конструктор', tabs: ['design', 'list'] },
   supply: { label: 'Снабженец', tabs: ['supply', 'list'] },
   storekeeper: { label: 'Складчик', tabs: ['new', 'list'] },
-  sew: { label: 'Швейные этапы', tabs: ['work', 'payroll'] },
-  technologist: { label: 'Технолог', tabs: ['tech', 'assign', 'route_ord', 'route', 'route_fin', 'work', 'list', 'staff', 'stages', 'access'] },
+  technologist: { label: 'Технолог', tabs: ['tech', 'assign', 'route_ord', 'route', 'route_fin', 'work', 'list', 'staff'] },
   cutter: { label: 'Закройщик', tabs: ['cut'] },
-  user: { label: 'Швея', tabs: ['work', 'payroll'] },
   packer: { label: 'Упаковщик', tabs: ['pack'] },
   accountant: { label: 'Бухгалтер', tabs: ['payroll', 'sum'] },
 };
 
-function isChief() { return ['admin', 'manager'].includes((ST.user || {}).роль); }
-// назначенные швейные этапы — тоже роль: даёт пункт «Швейные этапы» в «Работаю как»
-function myRoles() {
-  const r = (ST.user || {}).роли || [(ST.user || {}).роль];
-  return ST.права.работать && !r.includes('user') ? [...r, 'sew'] : r;
+function isProd(r) { return ((ST.user || {}).производственные || []).includes(r); }
+function asDef(k) {
+  return AS_ROLES[k] || (isProd(k) ? { label: roleLabel(k), tabs: ['work', 'payroll'] } : null);
 }
+function isChief() { return ['admin', 'manager'].includes((ST.user || {}).роль); }
+function myRoles() { return (ST.user || {}).роли || [(ST.user || {}).роль]; }
 function multiRole() { return isChief() || myRoles().length > 1; }
-// варианты «Работаю как»: начальнику — все роли, остальным — «все мои работы» и свои роли
-function asOptions() { return isChief() ? Object.keys(AS_ROLES).filter((k) => k !== 'all' && k !== 'sew') : ['all', ...myRoles().filter((r) => AS_ROLES[r])]; }
+// варианты «Работаю как»: начальнику — служебные роли и свои операции, остальным — «все мои работы» и свои роли
+function asOptions() {
+  const own = myRoles().filter((r) => asDef(r) && r !== 'all');
+  if (!isChief()) return ['all', ...own];
+  return [...Object.keys(AS_ROLES).filter((k) => k !== 'all'), ...own.filter((r) => !AS_ROLES[r])];
+}
 
 function asRole() {
   if (!multiRole()) return (ST.user || {}).роль;
@@ -197,11 +200,11 @@ function asRole() {
   return isChief() ? (ST.user || {}).роль : 'all';
 }
 
-function asTabs() { const r = AS_ROLES[asRole()]; return r ? r.tabs : null; }
+function asTabs() { const r = asDef(asRole()); return r ? r.tabs : null; }
 
 async function setAsRole(role) {
   try { localStorage.setItem(`cx_as_${(ST.user || {}).логин}`, role); } catch (e) { /* нет хранилища */ }
-  ST.workMode = role === 'user' || role === 'sew' ? 'mine' : 'all';
+  ST.workMode = isProd(role) ? 'mine' : 'all';
   const tabs = asTabs();
   if (tabs && !tabs.includes(ST.view)) ST.view = tabs[0];
   await loadView(ST.view);
@@ -221,7 +224,7 @@ async function loadView(v) {
     if (v === 'sum') await loadSummary();
     if (rtIsView(v)) await loadRoutes();
     if (v === 'assign') await loadAssign();
-    if (['staff', 'stages', 'access'].includes(v)) await loadAccess();
+    if (v === 'staff') await loadAccess();
   } catch (err) { toast(err.message, 'err'); }
 }
 
@@ -233,7 +236,7 @@ function renderUser() {
     <label class="cx-asrole" title="Чем вы сейчас заняты — видны только нужные вкладки">
       <span>Работаю как</span>
       <select id="cx-asrole">${asOptions().map((k) =>
-        `<option value="${k}" ${k === cur ? 'selected' : ''}>${AS_ROLES[k].label}${isChief() && k === u.роль ? ' (все вкладки)' : ''}</option>`).join('')}</select>
+        `<option value="${esc(k)}" ${k === cur ? 'selected' : ''}>${esc(asDef(k).label)}${isChief() && k === u.роль ? ' (все вкладки)' : ''}</option>`).join('')}</select>
     </label>` : `<span class="cx-pill grey cx-asrole-fixed">${esc(roleLabel(u.роль))}</span>`;
   $('#cx-user').innerHTML = `${roleBox}
     <button class="v2acc-anchor" id="cx-acc" data-v2acc-anchor title="Аккаунты">
@@ -249,12 +252,7 @@ function cxBeforeLeave() {
 }
 
 function roleLabel(role) {
-  return ({
-    admin: 'начальник', manager: 'менеджер', technologist: 'технолог',
-    cutter: 'закройщик', packer: 'упаковщик', accountant: 'бухгалтер',
-    storekeeper: 'складчик', user: 'швея', client: 'клиент',
-    designer: 'конструктор', supply: 'снабженец',
-  })[role] || role || '';
+  return ((ST.user || {}).роли_названия || {})[role] || role || '';
 }
 
 // -------------------------------------------------------------- каркас
@@ -269,11 +267,11 @@ function render() {
   if (topTitle) {
     topTitle.textContent = ({ work: 'Работа', cut: 'Крой', tech: 'Приёмка', design: 'Конструктор', supply: 'Снабжение',
       pack: 'Упаковка', payroll: 'Зарплата', sum: 'Сводка', route: 'Швейный маршрут', route_ord: 'Маршрут заказа', route_fin: 'Маршрут ГП', assign: 'Распределение',
-      staff: 'Сотрудники', stages: 'Этапы', access: 'Роли и права' })[ST.view] || 'Заказ на пошив';
+      staff: 'Сотрудники и роли' })[ST.view] || 'Заказ на пошив';
   }
   const insideParty = ST.view === 'cut' && ST.cut.партия;
   const insideParty2 = ST.view === 'pack' && ST.pack.партия;
-  const ownHeader = insideParty || insideParty2 || ['work', 'cut', 'tech', 'design', 'supply', 'pack', 'payroll', 'sum', 'route', 'route_ord', 'route_fin', 'assign', 'staff', 'stages', 'access'].includes(ST.view);
+  const ownHeader = insideParty || insideParty2 || ['work', 'cut', 'tech', 'design', 'supply', 'pack', 'payroll', 'sum', 'route', 'route_ord', 'route_fin', 'assign', 'staff'].includes(ST.view);
   main.innerHTML = `
     ${ownHeader ? '' : `<div class="cx-hero">
       <div>
@@ -319,7 +317,7 @@ function viewHtml() {
   if (ST.view === 'sum') return summaryHtml();
   if (rtIsView(ST.view)) return routeHtml();
   if (ST.view === 'assign') return assignHtml();
-  if (['staff', 'stages', 'access'].includes(ST.view)) return accessHtml(ST.view);
+  if (ST.view === 'staff') return accessHtml();
   if (ST.view === 'list') return listHtml();
   return newHtml();
 }
@@ -665,13 +663,12 @@ function tabsHtml(totalOrders) {
   if (ST.права.маршрут) {
     tabs.push(['route_ord', 'Маршрут заказа'], ['route', 'Швейный маршрут'], ['route_fin', 'Маршрут ГП']);
   }
-  if (ST.права.сотрудники) tabs.push(['staff', 'Сотрудники']);
-  if (ST.права.этапы) tabs.push(['stages', 'Этапы']);
-  if (ST.права.права) tabs.push(['access', 'Роли и права']);
+  // одна вкладка управления — только у тех, кому выдано хоть одно разрешение на управление
+  if (ST.права.сотрудники || ST.права.этапы || ST.права.права) tabs.push(['staff', 'Сотрудники и роли']);
   if (ST.права.создать || ST.права.принимать || ST.права.карта || ST.права.снабжение) tabs.push(['list', 'Заказы ' + nf(totalOrders)]);
   const only = asTabs();
   // вкладки доступа видны по правам, а не по роли: личное право открывает их любому
-  const byRight = ['staff', 'stages', 'access'];
+  const byRight = ['staff'];
   const shown = only ? tabs.filter(([id]) => only.includes(id) || byRight.includes(id)) : tabs.slice();
   tabs.length = 0; tabs.push(...shown);
   if (tabs.length < 2) return '';
@@ -1124,7 +1121,7 @@ function ptToggle(el) {
 function workHtml() {
   const lead = !!ST.права.вся_работа;
   if (!lead) return sewHtml();
-  if (ST.workMode === 'mine') return (asRole() === 'user' ? '' : workModeSwitch()) + sewHtml();
+  if (ST.workMode === 'mine') return (isProd(asRole()) ? '' : workModeSwitch()) + sewHtml();
   const w = ST.work || {};
   const mine = w.мои || [];
   const cards = w.партии || [];
@@ -1199,8 +1196,8 @@ function workHtml() {
       <div><h1>${boss ? 'Работа цеха' : 'Моя работа'}</h1>
         <div class="cx-sub">${boss ? 'Партии по настилам: кто закреплён, сколько сдано, что ждёт' : 'Здесь только ваша работа. Настилы берутся по порядку: сначала меньший номер'}</div>
         ${boss ? '' : `<div class="cx-roles">${(w.мои_этапы || []).length
-          ? 'Ваши этапы: ' + w.мои_этапы.map((x) => `<span class="cx-pill blue">${esc(x.название)}</span>`).join(' ')
-          : '<span class="cx-hint">Этапы вам не назначены.</span>'}</div>`}</div>
+          ? 'Ваши роли: ' + w.мои_этапы.map((x) => `<span class="cx-pill blue">${esc(x.название)}</span>`).join(' ')
+          : '<span class="cx-hint">Производственные роли вам не назначены.</span>'}</div>`}</div>
       <div class="cx-hero-actions"><button class="btn" data-act="refresh">Обновить</button></div>
     </div>
     <div class="cx-kpis">
@@ -1593,7 +1590,7 @@ function openPayRow(login) {
         <div class="cx-formgrid" style="margin-bottom:14px">
           <div class="cx-field"><label>Периодичность</label><div>${esc(person.периодичность)}</div></div>
           <div class="cx-field"><label>Ставка</label><div>${person.ставка ? nf(person.ставка) + ' сом' : '—'}</div></div>
-          <div class="cx-field"><label>Этап</label><div>${esc(person.этап || '—')}</div></div>
+          <div class="cx-field"><label>Доп. роли</label><div>${esc(person.этап || '—')}</div></div>
         </div>
         <h4 style="margin:6px 0 4px; font-size:13px">По периодам</h4>
         <table class="cx-table"><thead><tr><th>Период</th><th class="num">Шт</th><th class="num">Сумма</th></tr></thead>
@@ -1632,7 +1629,7 @@ function openCard(login) {
               ${per.map((t) => `<option ${t === person.периодичность ? 'selected' : ''}>${t}</option>`).join('')}
             </select></div>
           <div class="cx-field" style="grid-column: span 2"><label>Этапы (роли)</label>
-            <div class="cx-hint" style="padding-top:8px">${esc(person.этап || 'не назначены — видит все этапы')}. Назначает технолог: Цех → Маршрут → «Кто что умеет».</div></div>
+            <div class="cx-hint" style="padding-top:8px">${esc(person.этап || 'дополнительных ролей нет')}. Роли выдают во вкладке «Сотрудники и роли».</div></div>
         </div>
         <div class="cx-hint" style="margin-top:10px">Сдельная — по выдачам, оклад — ставка в месяц, посменная — ставка за смену из листа «Смены».</div>
         <div class="cx-btn-row" style="margin-top:16px">
@@ -1842,7 +1839,7 @@ document.addEventListener('click', async (ev) => {
     if (ST.view === 'assign') {
       try { await loadAssign(); } catch (err) { toast(err.message, 'err'); }
     }
-    if (['staff', 'stages', 'access'].includes(ST.view)) {
+    if (ST.view === 'staff') {
       try { await loadAccess(); } catch (err) { toast(err.message, 'err'); }
     }
     if (ST.view === 'tech') {

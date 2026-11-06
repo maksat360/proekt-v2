@@ -173,7 +173,7 @@ function routeHtml() {
   return `
     <div class="cx-hero compact">
       <div><h1>${esc(d.название || 'Маршрут')}</h1>
-        <div class="cx-sub">Перетащите этап на другой — поменять местами, поставить после или параллельно. Стрелка = «ждёт, пока закончится».</div></div>
+        <div class="cx-sub">Маршрут — цепочка ролей. Перетащите роль на другую — поменять местами, поставить после или параллельно. Стрелка = «ждёт, пока закончится».</div></div>
       <div class="cx-hero-actions"><button class="btn" data-act="rt-reload">Обновить</button></div>
     </div>
 
@@ -192,7 +192,7 @@ function routeHtml() {
         <span class="cx-hint">${subtitle}</span>
       </div>
       <div class="rt-tools">
-        ${can ? `<button class="btn" data-act="rt-add">+ Этап</button>
+        ${can ? `<button class="btn" data-act="rt-add">+ Роль</button>
         ${RT.mode === 'tpl' ? `<button class="btn ghost" data-act="rt-copy">Копировать шаблон</button>
           ${RT.key !== 'Основной' ? '<button class="btn ghost" data-act="rt-rename">Переименовать</button><button class="btn ghost danger" data-act="rt-delete">Удалить шаблон</button>' : ''}` : `
           <button class="btn ghost" data-act="rt-reset">Взять из шаблона…</button>`}
@@ -303,11 +303,10 @@ function rtSide(party) {
   const dis = can ? '' : 'disabled';
   return `
     <div class="rt-form">
-      <div class="cx-field"><label>Процесс</label>
+      <div class="cx-field"><label>Роль (операция)</label>
         <select class="input" id="rt-code" ${dis}>
           ${ops.map((o) => `<option value="${esc(o.код)}" ${o.код === s.код ? 'selected' : ''}>${esc(o.название)} (${esc(o.код)})</option>`).join('')}
-          ${rtOp(s.код) ? '' : `<option value="${esc(s.код)}" selected>${esc(s.код)} — нет в расценках</option>`}
-          <option value="__new">+ Новый код…</option>
+          ${rtOp(s.код) ? '' : `<option value="${esc(s.код)}" selected>${esc(s.код)} — такой роли нет</option>`}
         </select>
       </div>
       <div class="cx-field"><label>После каких этапов</label>
@@ -319,10 +318,10 @@ function rtSide(party) {
       ${RT.kind === 'шв' ? `<label class="rt-check"><input type="checkbox" id="rt-gp" ${s.склад_гп ? 'checked' : ''} ${dis}> После этапа — на склад ГП</label>` : ''}
       ${rtPeopleForStage(s.код)}
       ${can ? `<div class="rt-actions">
-        <button class="btn" data-act="rt-add-after">+ Этап после</button>
+        <button class="btn" data-act="rt-add-after">+ Роль после</button>
         <button class="btn" data-act="rt-add-par">+ Параллельно</button>
         <button class="btn ghost" data-act="rt-off">Выключить</button>
-        <button class="btn ghost danger" data-act="rt-del">Удалить этап</button>
+        <button class="btn ghost danger" data-act="rt-del">Убрать из маршрута</button>
       </div>` : ''}
       <button class="btn ghost" data-act="rt-unsel">Готово</button>
     </div>${offHtml}`;
@@ -336,10 +335,10 @@ function rtPeopleForStage(code) {
   const can = rtCan();
   if (!people.length) return '';
   const who = people.filter((p) => p.этапы.includes(code));
-  return `<div class="cx-field"><label>Кто умеет этот этап</label>
+  return `<div class="cx-field"><label>У кого есть эта роль</label>
     <div class="rt-deps">${people.map((p) => `<label class="rt-check">
       <input type="checkbox" data-role-login="${esc(p.логин)}" data-role-code="${esc(code)}" ${p.этапы.includes(code) ? 'checked' : ''} ${can ? '' : 'disabled'}>
-      ${esc(p.ФИО)}${p.этапы.length ? '' : ' <span class="cx-hint">· этапов нет</span>'}</label>`).join('')}</div>
+      ${esc(p.ФИО)}${p.этапы.length ? '' : ' <span class="cx-hint">· ролей нет</span>'}</label>`).join('')}</div>
     <div class="cx-hint">${who.length ? `Умеют: ${nf(who.length)}. Сохраняется сразу.` : 'Пока никто. Сохраняется сразу.'}</div></div>`;
 }
 
@@ -359,12 +358,12 @@ function rtRolesHtml() {
   if (!people.length || !codes.length) return '';
   const head = codes.map((c) => `<th class="rt-rc" title="${esc(c)}">${esc(rtTitle(c))}</th>`).join('');
   const rows = people.map((p) => `<tr>
-    <td class="rt-rp"><b>${esc(p.ФИО)}</b><div class="cx-cell-sub">${esc(p.логин)} · ${p.этапы.length ? nf(p.этапы.length) + ' ' + rtWord(p.этапы.length) : 'этапы не назначены — работы нет'}</div></td>
+    <td class="rt-rp"><b>${esc(p.ФИО)}</b><div class="cx-cell-sub">${esc(p.логин)} · ${p.этапы.length ? nf(p.этапы.length) + ' ' + rtWord(p.этапы.length) : 'ролей нет — работы нет'}</div></td>
     ${codes.map((c) => `<td class="rt-rc"><input type="checkbox" data-role-login="${esc(p.логин)}" data-role-code="${esc(c)}"
       ${p.этапы.includes(c) ? 'checked' : ''} ${can ? '' : 'disabled'} aria-label="${esc(p.ФИО)} — ${esc(rtTitle(c))}"></td>`).join('')}
   </tr>`).join('');
   return `<div class="cx-card">
-    <div class="cx-card-h"><h3>Кто что умеет</h3><span class="cx-hint">каждый этап — отдельный доступ: человек берёт работу только на отмеченных этапах</span></div>
+    <div class="cx-card-h"><h3>Кто какие роли выполняет</h3><span class="cx-hint">производственная роль — доступ к операции: человек берёт работу только по своим ролям</span></div>
     <div class="cx-card-b" style="padding-bottom:0"><div class="cx-scroll" style="margin:0 -18px;max-height:460px">
       <table class="cx-table rt-roles"><thead><tr><th>Сотрудник</th>${head}</tr></thead><tbody>${rows}</tbody></table>
     </div></div></div>`;
@@ -372,9 +371,9 @@ function rtRolesHtml() {
 
 function rtWord(n) {
   const m10 = n % 10, m100 = n % 100;
-  if (m10 === 1 && m100 !== 11) return 'этап';
-  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return 'этапа';
-  return 'этапов';
+  if (m10 === 1 && m100 !== 11) return 'роль';
+  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return 'роли';
+  return 'ролей';
 }
 
 async function rtToggleRole(el) {
@@ -684,10 +683,6 @@ document.addEventListener('change', async (ev) => {
   if (!s) return;
   if (t.id === 'rt-code') {
     let code = t.value;
-    if (code === '__new') {
-      code = (prompt('Код нового процесса (латиницей или кириллицей, без пробелов). Ставку добавьте в лист «расценки».', '') || '').trim().toUpperCase().replace(/\s+/g, '');
-      if (!code) { render(); return; }
-    }
     if (code !== s.код && rtFind(code)) { toast(`Этап ${code} уже есть в маршруте`, 'err'); render(); return; }
     rtRename(s.код, code); rtTouch(); return;
   }

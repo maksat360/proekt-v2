@@ -306,9 +306,10 @@ def staff_users() -> list[dict]:
         if not pwd or pwd.lower() in ("изменён", "изменен", "changed"):
             pwd = str(old.get("пароль") or "")
         role = str(r.get("роль") or "").strip()
-        if role not in ROLE_LABELS:
-            reverse = {v.lower(): k for k, v in ROLE_LABELS.items()}
-            role = reverse.get(role.lower(), old.get("роль", "user"))
+        known = perms.all_roles()  # служебные + производственные роли
+        if role not in known:
+            reverse = {v.lower(): k for k, v in known.items()}
+            role = reverse.get(role.lower(), role.upper() if role.upper() in known else old.get("роль", ""))
         out.append({
             "логин": r["логин"], "пароль": pwd, "фио": r.get("фио") or old.get("фио", ""),
             "роль": role, "цех": r.get("цех") or old.get("цех", ""),
@@ -330,13 +331,21 @@ def find_user(login: str, company: str | None = None) -> dict | None:
     return None
 
 
+def portal_roles(u: dict) -> list[str]:
+    roles = perms.roles_of(u)
+    out = [r for r in roles if r in ROLE_LABELS]
+    return out + (["prod"] if len(out) < len(roles) else [])
+
+
 def public_user(u: dict) -> dict:
     return {
         "логин": u.get("логин", ""),
         "фио": u.get("фио", ""),
-        "роль": u.get("роль", "user"),
-        "роль_название": ROLE_LABELS.get(str(u.get("роль")), str(u.get("роль"))),
+        "роль": u.get("роль", ""),
+        "роль_название": perms.role_label(str(u.get("роль"))),
         "роли": perms.roles_of(u),
+        # для меню портала: производственные роли (Оверлок, Карман…) сводятся в одну «prod»
+        "роли_портала": portal_roles(u),
         "цех": u.get("цех", ""),
         "активен": str(u.get("активен", "1")) in ("1", "True", "true"),
     }
@@ -628,7 +637,7 @@ def payroll(me: dict, period: str, month: str, scope_all: bool) -> dict:
                 and (not period or date_in(r.get("дата"), start, end))]
         result.append({
             "логин": u.get("логин"), "фио": u.get("фио"),
-            "роль": ROLE_LABELS.get(str(u.get("роль")), ""),
+            "роль": perms.role_label(str(u.get("роль"))),
             "операций": len(mine),
             "штук": sum(as_num(r.get("количество")) for r in mine),
             "сумма": round(sum(as_num(r.get("сумма")) for r in mine), 2),
@@ -673,7 +682,7 @@ def dashboard(me: dict) -> dict:
         "незавершёнка": wip,
         "оценка_средняя": round(sum(ratings) / len(ratings), 1) if ratings else None,
         "проверок": len(checks),
-        "мои_задачи": [t for t in my_tasks(me) if t["тип"] == "в работе"] if role in ("user", "technologist") else [],
+        "мои_задачи": [t for t in my_tasks(me) if t["тип"] == "в работе"] if "prod" in portal_roles(me) or role == "technologist" else [],
         "моя_выработка": {
             "штук": sum(as_num(p.get("количество")) for p in my_pass),
             "сумма": round(sum(as_num(p.get("сумма")) for p in my_pass), 2),
@@ -1000,7 +1009,7 @@ class Handler(BaseHTTPRequestHandler):
             cur = self._cookie("v2sid")
             self._json({"ok": True, "data": [
                 {"логин": d["логин"], "цех": d["цех"], "фио": u.get("фио", ""),
-                 "роль": u.get("роль", ""), "роль_название": ROLE_LABELS.get(str(u.get("роль")), ""),
+                 "роль": u.get("роль", ""), "роль_название": perms.role_label(str(u.get("роль"))),
                  "текущий": tok == cur}
                 for tok, d, u in self._device_accounts()]})
             return

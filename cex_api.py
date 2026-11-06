@@ -2,6 +2,7 @@
 """Модуль «Заказ»: логика поверх листов рабочей книги."""
 from __future__ import annotations
 
+import json
 import re
 import threading
 from datetime import date, datetime, timedelta
@@ -18,8 +19,10 @@ PARTIES = ("Партии",
            ["№ партии", "№ заказа", "дата", "клиент", "категория", "модель",
             "цвет", "размер", "план шт", "статус", "технолог", "срок"],
            [9, 9, 12, 18, 14, 10, 16, 9, 10, 14, 10, 12])
+# «роли» — все роли человека кроме основной (служебные и производственные), через «;».
+# До переноса данных колонка называлась «этап» — _rows читает её как «роли».
 STAFF = ("Сотрудники цеха",
-         ["логин", "ФИО", "должность", "этап", "тип оплаты", "ставка", "периодичность",
+         ["логин", "ФИО", "должность", "роли", "тип оплаты", "ставка", "периодичность",
           "модели", "телефон", "активен"],
          [12, 24, 16, 14, 14, 10, 16, 18, 14, 9])
 SHIFTS = ("Смены", ["дата", "логин", "часов", "ставка", "сумма"], [12, 12, 8, 10, 10])
@@ -125,7 +128,7 @@ def _can_work(me: dict | None) -> bool:
     own = (perms.load()["сотрудники"].get(_s(me.get("логин"))) or {})
     if "cex.work" in own:
         return bool(own["cex.work"])
-    return _can(me, "cex.work") or bool(roles_of(_s(me.get("логин"))))
+    return _can(me, "cex.work") or bool(roles_of(me))
 
 
 def _int(v, default=0) -> int:
@@ -162,7 +165,13 @@ def ensure_sheets() -> None:
 # ------------------------------------------------------------------ данные
 def _rows(spec) -> list[dict]:
     name, headers, _ = spec
-    return [{h: r.get(h, "") for h in headers} for r in store.read_sheet(name)]
+    rows = [{h: r.get(h, "") for h in headers} for r in store.read_sheet(name)]
+    if spec is STAFF:  # старая колонка «этап» — те же роли, переименуется при первой записи
+        raw = store.read_sheet(name)
+        for row, src in zip(rows, raw):
+            if not _s(row.get("роли")) and _s(src.get("этап")):
+                row["роли"] = src.get("этап")
+    return rows
 
 
 def refs() -> dict:
@@ -304,7 +313,7 @@ def staff_stats() -> dict:
         users = read_table("users")
     except Exception:
         users = []
-    seam = [u for u in users if _s(u.get("роль")) == "user"
+    seam = [u for u in users if roles_of(u)  # у кого есть производственная роль
             and str(u.get("активен", 1)) not in ("0", "False", "нет")]
     busy = set()
     try:
@@ -1442,7 +1451,7 @@ def order_steps(num: str, me: dict | None = None, rows: list[dict] | None = None
     ops = _ops()
     start = KINDS["заказ"]["старт"]
     done = {_s(r.get("этап")) for r in rows if _yes(r.get("выполнено"))}
-    mine = set(roles_of(_s(me.get("логин")))) if me else set()
+    mine = set(roles_of(me)) if me else set()
     out = []
     for st in _stage_items(rows, ops):
         r = next((x for x in rows if _s(x.get("этап")) == st["код"]), {})
@@ -1519,7 +1528,11 @@ def save_route(me: dict, body: dict) -> dict:
            route_templates(kind).get(_s(body.get("старое_имя")) or _s(body.get("шаблон")), []))}
     off = [st["код"] for st in stages if (ops.get(st["код"]) or {}).get("отключён") and st["код"].upper() not in had]
     if off:
-        raise ValueError(f"Этап {off[0]} отключён — в новый маршрут его не добавить")
+        raise ValueError(f"Роль {off[0]} отключена — в новый маршрут её не добавить")
+    # маршрут строится только из ролей: новых кодов «на лету» больше нет
+    unknown = [st["код"] for st in stages if st["код"] not in ops and st["код"].upper() not in had]
+    if unknown:
+        raise ValueError(f"Роли {unknown[0]} нет — создайте её во вкладке «Сотрудники и роли»")
     if party:
         return _save_party_route(party, _s(body.get("шаблон")) or MAIN_ROUTE, stages, check, kind)
 
@@ -1639,11 +1652,31 @@ def snapshot_rows(num, model: str, kind: str = "шв") -> list[dict]:
 BOSSES = ("admin", "manager")
 
 
-def roles_of(login: str) -> list[str]:
+def production_roles() -> dict[str, str]:
+    """Производственные роли = операции из листа «расценки» (кроме кроя — это роль «Закройщик»)."""
+    return {c: o["название"] for c, o in _ops().items() if c != START_STAGE}
+
+
+def _norm_role(code) -> str:
+    c = _s(code)
+    return c.upper() if c.upper() in production_roles() or c.upper() == c else c
+
+
+def extra_roles_of(login: str) -> list[str]:
     for r in _rows(STAFF):
         if _s(r.get("логин")) == login:
-            return [c.upper() for c in _deps(r.get("этап"))]
+            return [_norm_role(c) for c in _deps(r.get("роли"))]
     return []
+
+
+def register_role_sources() -> None:
+    perms.SOURCES.update(prod=production_roles, extra=extra_roles_of)
+
+
+def roles_of(me: dict) -> list[str]:
+    """Производственные роли человека: на каких операциях он работает."""
+    prod = production_roles()
+    return [r for r in perms.roles_of(me) if r in prod]
 
 
 def staff_people(company: str = "") -> list[dict]:
@@ -1662,6 +1695,7 @@ def staff_people(company: str = "") -> list[dict]:
             users = []
     out: dict[str, dict] = {}
     other: set[str] = set()
+    prod = production_roles()
     for u in users:
         login = _s(u.get("логин"))
         role = _s(u.get("роль"))
@@ -1683,54 +1717,57 @@ def staff_people(company: str = "") -> list[dict]:
     for login, item in out.items():
         if not item["активен"]:
             continue
-        item["этапы"] = [x.upper() for x in _deps((cards.get(login) or {}).get("этап"))]
+        mine = [item["должность"]] + [_norm_role(x) for x in _deps((cards.get(login) or {}).get("роли"))]
+        item["этапы"] = [x for x in mine if x in prod]
         res.append(item)
     res.sort(key=lambda x: (x["должность"] in BOSSES, x["ФИО"].lower()))
     return res
 
 
 def set_roles(me: dict, body: dict) -> dict:
-    """Назначить сотруднику этапы. body: {логин, этапы: [...]} или {логин, этап, можно: bool}."""
+    """Выдать/снять роль сотруднику: {логин, роль, можно} или весь список {логин, роли: [...]}.
+    Любая роль — служебная или производственная; основная роль меняется в карточке."""
+    _need(me, "stages.assign")
     login = _s(body.get("логин"))
-    if not login:
-        raise ValueError("Не выбран сотрудник")
-    person = next((p for p in staff_people(_s(me.get("цех"))) if p["логин"] == login), None)
-    if not person:
-        raise ValueError("Сотрудник не найден")
+    target = _find_user(login, _s(me.get("цех")))
+    if not target:
+        raise ValueError("Сотрудник не найден в этом цехе")
     rows = _rows(STAFF)
     row = next((r for r in rows if _s(r.get("логин")) == login), None)
     if row is None:
-        row = {"логин": login, "ФИО": person["ФИО"], "должность": person["должность"],
-               "этап": "", "тип оплаты": "сдельная", "ставка": 0, "периодичность": "месяц",
-               "модели": "", "телефон": "", "активен": 1}
+        row = {"логин": login, "ФИО": _s(target.get("фио")) or login,
+               "должность": _s(target.get("роль")), "роли": "", "тип оплаты": "сдельная",
+               "ставка": 0, "периодичность": "месяц", "модели": "", "телефон": "", "активен": 1}
         rows.append(row)
-    current = [c.upper() for c in _deps(row.get("этап"))]
-    if "этапы" in body:
-        new = [c.upper() for c in _deps(body.get("этапы"))]
+    current = [_norm_role(c) for c in _deps(row.get("роли"))]
+    if "роли" in body:
+        new = [_norm_role(c) for c in _deps(body.get("роли"))]
     else:
-        code = _s(body.get("этап")).upper()
+        code = _norm_role(body.get("роль") or body.get("этап"))
         if not code:
-            raise ValueError("Не выбран этап")
-        new = [c for c in current if c != code]
-        if body.get("можно"):
-            new.append(code)
+            raise ValueError("Не выбрана роль")
+        new = [c for c in current if c != code] + ([code] if body.get("можно") else [])
+    main = _s(target.get("роль"))
+    new = [c for c in new if c != main]  # основная роль и так есть
     if START_STAGE in new:
-        raise ValueError("Крой назначается ролью «закройщик» в портале, а не этапом")
+        raise ValueError("Крой — это роль «Закройщик»")
     ops = _ops()
-    bad = [c for c in new if c not in ops and c not in current]
-    if bad:
-        raise ValueError(f"Нет такого этапа: {', '.join(bad)}")
-    off = [c for c in new if c not in current and ops[c].get("отключён")]
-    if off:
-        raise ValueError(f"Этап {ops[off[0]]['название']} отключён — новым людям его не назначить")
-    row["этап"] = ";".join(new)
-    store.write_sheets([(STAFF[0], STAFF[1], rows)])
     added = [c for c in new if c not in current]
     removed = [c for c in current if c not in new]
+    for c in added:
+        perms.check_role_grant(me, target, c, True)
+        if c in ops and ops[c].get("отключён"):
+            raise ValueError(f"Роль «{ops[c]['название']}» отключена — новым людям её не выдать")
+    for c in removed:
+        if c in perms.all_roles():
+            perms.check_role_grant(me, target, c, False)
+    row["роли"] = ";".join(new)
+    store.write_sheets([(STAFF[0], STAFF[1], rows)])
     if added or removed:
-        perms.log_event(me, "этапы", login, ";".join(removed) and "−" + ";".join(removed),
-                        ";".join(added) and "+" + ";".join(added))
-    return {"логин": login, "этапы": new}
+        perms.log_event(me, "роли", login, ", ".join(perms.role_label(c) for c in removed),
+                        ", ".join(perms.role_label(c) for c in added))
+    prod = production_roles()
+    return {"логин": login, "роли": new, "этапы": [c for c in [main] + new if c in prod]}
 
 
 # ------------------------------------------- сотрудники, этапы и права (раздел «Доступ»)
@@ -1762,42 +1799,43 @@ def _need(me: dict, code: str) -> None:
 
 
 def access_state(me: dict) -> dict:
-    """Карта сотрудников, карта этапов, роли и журнал — то, что текущему пользователю можно видеть."""
+    """Сотрудники, все роли (служебные и производственные), разрешения и журнал."""
     comp = _s(me.get("цех"))
     data = perms.load()
     see_perms = _can(me, "perms.roles") or _can(me, "perms.users")
-    cards = {_s(r.get("логин")): r for r in _rows(STAFF) if _s(r.get("логин"))}
     users = [u for u in _all_users() if _same_company(u, comp)]
+    labels = perms.all_roles()
     people = []
     for u in users:
         login = _s(u.get("логин"))
         item = {"логин": login, "ФИО": _s(u.get("фио")) or login, "роль": _s(u.get("роль")),
-                "роль_название": perms.ROLE_LABELS.get(_s(u.get("роль")), _s(u.get("роль"))),
-                "цех": _s(u.get("цех")), "активен": _flag(u.get("активен"), True),
-                "этапы": [c.upper() for c in _deps((cards.get(login) or {}).get("этап"))],
-                "доп_роли": perms.extra_roles(login, data)}
+                "роль_название": labels.get(_s(u.get("роль")), _s(u.get("роль"))),
+                "роли": perms.roles_of(u, data),
+                "цех": _s(u.get("цех")), "активен": _flag(u.get("активен"), True)}
         if see_perms:
             item["права"] = perms.user_view(u, data)
         people.append(item)
     people.sort(key=lambda p: (not p["активен"], p["роль"] == "client", p["ФИО"].lower()))
     ops = _ops()
     used = _stages_in_use()
-    stages = []
+    matrix = perms.role_matrix(data) if see_perms else {}
+    roles = []
+    for code, label in perms.ROLE_LABELS.items():
+        roles.append({"код": code, "название": label, "вид": "служебная"})
     for code, op in sorted(ops.items(), key=lambda kv: (kv[1]["порядок"], kv[0])):
         if code == START_STAGE:
-            continue  # крой — роль «закройщик», не этап швейного производства
-        stages.append({"код": code, "название": op["название"], "ставка": op["ставка"],
-                       "порядок": op["порядок"], "используется": used.get(code, ""),
-                       "отключён": op.get("отключён", False),
-                       "люди": [p["логин"] for p in people if code in p["этапы"]]})
+            continue  # крой — служебная роль «Закройщик»
+        roles.append({"код": code, "название": op["название"], "вид": "производственная",
+                      "ставка": op["ставка"], "порядок": op["порядок"],
+                      "используется": used.get(code, ""), "отключён": op.get("отключён", False)})
+    for r in roles:
+        r["люди"] = [p["логин"] for p in people if r["код"] in p["роли"]]
+        if see_perms:
+            r["права"] = matrix.get(r["код"], {})
     out = {"я": _s(me.get("логин")), "мои_права": perms.effective(me, data),
-           "люди": people, "этапы": stages, "каталог": perms.catalog(),
-           "роли_названия": perms.ROLE_LABELS, "закрытая_роль": perms.LOCKED_ROLE}
+           "люди": people, "роли": roles, "каталог": perms.catalog(),
+           "роли_названия": labels, "закрытая_роль": perms.LOCKED_ROLE}
     if see_perms:
-        matrix = perms.role_matrix(data)
-        out["роли"] = [{"код": r, "название": label, "права": matrix[r],
-                        "люди": [p["логин"] for p in people if p["роль"] == r]}
-                       for r, label in perms.ROLE_LABELS.items()]
         out["журнал"] = perms.journal(150)
     return out
 
@@ -1814,14 +1852,6 @@ def set_user_perm(me: dict, body: dict) -> dict:
     value = body.get("значение")
     return perms.set_user_perm(me, _all_users(), target, _s(body.get("право")),
                                None if value is None else bool(value))
-
-
-def set_extra_roles(me: dict, body: dict) -> dict:
-    _need(me, "staff.edit")
-    target = _find_user(_s(body.get("логин")), _s(me.get("цех")))
-    if not target:
-        raise ValueError("Сотрудник не найден в этом цехе")
-    return perms.set_extra_roles(me, _all_users(), target, body.get("роли") or [])
 
 
 def save_account(me: dict, body: dict) -> dict:
@@ -1844,12 +1874,14 @@ def save_account(me: dict, body: dict) -> dict:
         password = _s(body.get("пароль"))
         if len(password) < 4:
             raise ValueError("Пароль — не короче 4 символов")
-        role = _s(body.get("роль")) or "user"
+        role = _s(body.get("роль"))
+        if not role:
+            raise ValueError("Выберите роль")
         newbie = {"логин": login, "роль": "", "цех": comp, "активен": 1}
         perms.check_role_change(me, users + [newbie], newbie, role, None)
         _write_account(login, {"фио": fio, "роль": role, "активен": True,
                                "пароль": hash_password(password), "цех": comp}, create=True)
-        perms.log_event(me, "новый сотрудник", login, "", perms.ROLE_LABELS.get(role, role))
+        perms.log_event(me, "новый сотрудник", login, "", perms.role_label(role))
         return {"логин": login, "создан": True}
 
     if _s(target.get("роль")) == perms.LOCKED_ROLE and _s(me.get("роль")) != perms.LOCKED_ROLE:
@@ -1880,13 +1912,15 @@ def save_account(me: dict, body: dict) -> dict:
         return {"логин": login, "изменено": 0}
     if new_active is False:
         _need(me, "staff.delete")
-    if set(fields) - {"активен"} or new_active:
+    if set(fields) - {"активен", "роль"} or new_active:
         _need(me, "staff.edit")
+    if "роль" in fields:
+        _need(me, "stages.assign")
     perms.check_role_change(me, users, target, new_role, new_active)
     _write_account(login, fields, create=False)
     if new_role is not None:
-        perms.log_event(me, "роль", login, perms.ROLE_LABELS.get(_s(target.get("роль")), ""),
-                        perms.ROLE_LABELS.get(new_role, new_role))
+        perms.log_event(me, "роль", login, perms.role_label(_s(target.get("роль"))),
+                        perms.role_label(new_role))
     if new_active is not None:
         perms.log_event(me, "включён" if new_active else "отключён", login)
     if "пароль" in fields:
@@ -1914,7 +1948,7 @@ def _write_account(login: str, fields: dict, create: bool) -> None:
                 if key in col:
                     row[col[key]] = value
                 if key == "роль" and "должность" in col:
-                    row[col["должность"]] = perms.ROLE_LABELS.get(value, value)
+                    row[col["должность"]] = perms.role_label(value)
             store.write_sheet(ACCOUNTS, headers, sheet_rows)
             return
     from server import read_table, write_table  # noqa: WPS433
@@ -1950,10 +1984,10 @@ def save_stage(me: dict, body: dict) -> dict:
     create = code not in ops
     _need(me, "stages.create" if create else "stages.edit")
     if create and not _CODE_RE.fullmatch(code):
-        raise ValueError("Код этапа: 2–12 заглавных букв или цифр, например ПЕТЛЯ")
+        raise ValueError("Код роли: 2–12 заглавных букв или цифр, например ПЕТЛЯ")
     name = _s(body.get("название")) or (ops.get(code) or {}).get("название", "")
     if not name:
-        raise ValueError("Укажите название этапа")
+        raise ValueError("Укажите название роли")
     try:
         rate = float(_s(body.get("ставка", (ops.get(code) or {}).get("ставка", 0))).replace(",", ".") or 0)
     except ValueError:
@@ -1973,7 +2007,7 @@ def save_stage(me: dict, body: dict) -> dict:
     store.write_sheet(RATES_SHEET[0], RATES_SHEET[1], rows)
     _sync_process(code, {"название": name, "тариф": rate, "порядок": order})
     before = ops.get(code)
-    perms.log_event(me, "новый этап" if create else "этап изменён", code,
+    perms.log_event(me, "новая роль" if create else "роль изменена", code,
                     "" if create else f"{before['название']} · {before['ставка']:g}",
                     f"{name} · {rate:g}")
     return {"код": code, "создан": create}
@@ -1984,16 +2018,16 @@ def toggle_stage(me: dict, body: dict) -> dict:
     _need(me, "stages.edit")
     code = _s(body.get("код")).upper()
     if code == START_STAGE:
-        raise ValueError("Крой отключить нельзя")
+        raise ValueError("Крой — роль «Закройщик», её не отключить")
     off = bool(body.get("отключён"))
     rows = store.read_sheet(RATES_SHEET[0])
     row = next((r for r in rows if _s(r.get("код")).upper() == code), None)
     if row is None:
-        raise ValueError("Этап не найден")
+        raise ValueError("Роль не найдена")
     row["отключён"] = "да" if off else ""
     store.write_sheet(RATES_SHEET[0], RATES_SHEET[1], rows)
     _sync_process(code, {"отключён": 1 if off else 0})
-    perms.log_event(me, "этап отключён" if off else "этап включён", code)
+    perms.log_event(me, "роль отключена" if off else "роль включена", code)
     return {"код": code, "отключён": off}
 
 
@@ -2003,19 +2037,21 @@ def delete_stage(me: dict, body: dict) -> dict:
     if code == START_STAGE:
         raise ValueError("Крой удалить нельзя")
     if code not in _ops():
-        raise ValueError("Этап не найден")
+        raise ValueError("Роль не найдена")
     where = _stages_in_use().get(code)
     if where:
-        raise ValueError(f"Этап уже используется ({where}). Уберите его оттуда или выключите в маршруте")
+        raise ValueError(f"Роль уже используется ({where}) — удалить нельзя, её можно отключить")
+    if any(_s(u.get("роль")) == code for u in _all_users()):
+        raise ValueError("Это основная роль у сотрудника — сначала смените её в его карточке")
     rows = [r for r in store.read_sheet(RATES_SHEET[0]) if _s(r.get("код")).upper() != code]
     staff = _rows(STAFF)
     for r in staff:
-        codes = [c.upper() for c in _deps(r.get("этап"))]
+        codes = [_norm_role(c) for c in _deps(r.get("роли"))]
         if code in codes:
-            r["этап"] = ";".join(c for c in codes if c != code)
+            r["роли"] = ";".join(c for c in codes if c != code)
     store.write_sheets([(RATES_SHEET[0], RATES_SHEET[1], rows), (STAFF[0], STAFF[1], staff)])
     _sync_process(code, None)
-    perms.log_event(me, "этап удалён", code)
+    perms.log_event(me, "роль удалена", code)
     return {"код": code, "удалён": True}
 
 
@@ -2139,7 +2175,7 @@ def work_state(me: dict, as_worker: bool = False) -> dict:
     assign = assignments()
     login = _s(me.get("логин"))
     boss = _can(me, "cex.work.all") and not as_worker
-    my_stages = set(roles_of(login))
+    my_stages = set(roles_of(me))
     people = {p["логин"]: p["ФИО"] for p in staff_people(_s(me.get("цех")))}
 
     def item_of(r):
@@ -2205,7 +2241,7 @@ def work_state(me: dict, as_worker: bool = False) -> dict:
              for c in cards for l in c["настилы"] for t in l["задачи"] if t["можно"]]
     mine.sort(key=lambda x: -x["id"])
     everyone.sort(key=lambda x: -x["id"])
-    my_roles = roles_of(login)
+    my_roles = roles_of(me)
     ops = _ops()
     return {
         "этапы": stages_all,
@@ -2344,12 +2380,12 @@ def save_assign(me: dict, body: dict) -> dict:
     for a in body.get("назначения") or []:
         n, code, login = _s(a.get("настил")), _s(a.get("этап")), _s(a.get("логин"))
         if n not in nas or code not in stages:
-            raise ValueError(f"Настила {n} или этапа {code} нет в партии")
+            raise ValueError(f"Настила {n} или операции {code} нет в партии")
         if login and login not in people:
             raise ValueError(f"Сотрудник {login} не найден в этом цехе")
         if login and code not in people[login]["этапы"]:
-            raise ValueError(f"У сотрудника {people[login]['ФИО']} нет доступа к этапу {code}. "
-                             "Сначала назначьте ему этот этап")
+            raise ValueError(f"У сотрудника {people[login]['ФИО']} нет роли {code}. "
+                             "Сначала выдайте ему эту роль во вкладке «Сотрудники и роли»")
         key = (num, n, code)
         cur = index.get(key)
         if cur and _s(cur.get("логин")) == login:
@@ -2380,8 +2416,8 @@ def take_work(me: dict, body: dict) -> dict:
         raise ValueError("Укажите количество")
     if not code or not num or not nas:
         raise ValueError("Не выбрана работа")
-    if code not in roles_of(_s(me.get("логин"))):
-        raise ValueError("У вас нет доступа к этому этапу — его назначает технолог")
+    if code not in roles_of(me):
+        raise ValueError("У вас нет этой роли — её выдают во вкладке «Сотрудники и роли»")
     if not _can(me, "cex.boss") and any(
             _s(r.get("статус")) == "в работе" and _s(r.get("логин")) == _s(me.get("логин"))
             for r in _rows(OUT)):
@@ -2742,7 +2778,7 @@ def labels_data(party: str = "", box: str = "") -> dict:
 
 # -------------------------------------------------------- зарплата (модуль 6)
 ROLE_NAMES = {"admin": "начальник", "manager": "менеджер", "technologist": "технолог",
-              "accountant": "бухгалтер", "storekeeper": "складчик", "user": "швея",
+              "accountant": "бухгалтер", "storekeeper": "складчик",
               "cutter": "закройщик", "packer": "упаковщик"}
 PAY_TYPES = ("сдельная", "оклад", "посменная")
 PAY_PERIODS = ("месяц", "3 раза", "неделя")
@@ -2809,8 +2845,8 @@ def seed_staff() -> int:
             continue
         rows.append({
             "логин": _s(u.get("логин")), "ФИО": _s(u.get("фио")),
-            "должность": role, "этап": "",
-            "тип оплаты": "оклад" if role not in ("user", "cutter", "packer") else "сдельная",
+            "должность": role, "роли": "",
+            "тип оплаты": "сдельная" if role in ("cutter", "packer") or role in production_roles() else "оклад",
             "ставка": 0, "периодичность": "месяц", "модели": "",
             "телефон": "", "активен": 1,
         })
@@ -2860,7 +2896,7 @@ def payroll_data(month: str, me: dict) -> dict:
         if str(card.get("активен", 1)) in ("0", "False"):
             continue
         kind = _s(card.get("тип оплаты")) or ("сдельная" if _s(card.get("должность")) in
-                                             ("user", "cutter", "packer") else "оклад")
+                                             ("cutter", "packer", *production_roles()) else "оклад")
         if kind not in PAY_TYPES:
             kind = "сдельная"
         rate = float(str(card.get("ставка") or 0).replace(",", ".") or 0)
@@ -2918,8 +2954,8 @@ def payroll_data(month: str, me: dict) -> dict:
 
         people.append({
             "логин": login, "ФИО": fio, "тип": kind, "ставка": rate,
-            "периодичность": periodicity, "этап": _s(card.get("этап")),
-            "должность": ROLE_NAMES.get(_s(card.get("должность")), _s(card.get("должность"))),
+            "периодичность": periodicity, "этап": ", ".join(perms.role_label(c) for c in _deps(card.get("роли"))),
+            "должность": ROLE_NAMES.get(_s(card.get("должность"))) or perms.role_label(_s(card.get("должность"))),
             "сдельно": round(total_piece, 2), "оклад": round(total_salary, 2),
             "смены": round(total_shift, 2),
             "к выплате": round(total_piece + total_salary + total_shift, 2),
@@ -2993,10 +3029,6 @@ def update_card(me: dict, body: dict) -> dict:
         row["периодичность"] = per
     if "ставка" in body:
         row["ставка"] = _int(body.get("ставка"))
-    if "этап" in body:
-        if not _can(me, "stages.assign"):
-            raise ValueError("Назначать этапы можно только с правом «Назначение этапов сотрудникам»")
-        row["этап"] = ";".join(c.upper() for c in _deps(body.get("этап")))
     store.write_sheets([(STAFF[0], STAFF[1], rows)])
     return {"логин": login}
 
@@ -3317,7 +3349,8 @@ def _dispatch(ctx) -> None:
         seed_refs()
         data = {
             "user": {"логин": _s(me.get("логин")), "фио": _s(me.get("фио")), "роль": role,
-                     "роли": perms.roles_of(me),
+                     "роли": perms.roles_of(me), "роли_названия": perms.all_roles(),
+                     "производственные": roles_of(me),
                      "цех": _s(me.get("цех"))},
             "права": {"создать": _can(me, "cex.create"), "принимать": _can(me, "cex.tech"),
                       "кроить": _can(me, "cex.cut"), "работать": _can_work(me),
@@ -3716,7 +3749,7 @@ def _dispatch(ctx) -> None:
                    "/api/cex/access/account": save_account, "/api/cex/access/stage": save_stage,
                    "/api/cex/access/stage/delete": delete_stage,
                    "/api/cex/access/stage/toggle": toggle_stage,
-                   "/api/cex/access/roles": set_extra_roles}
+                   "/api/cex/access/roles": set_roles}
     if path in access_post and method == "POST":
         ensure_sheets()
         try:
@@ -3733,3 +3766,116 @@ def _dispatch(ctx) -> None:
         return
 
     _fail(ctx, "неизвестный запрос", 404)
+
+# ------------------------------------------------- перенос на единую систему ролей
+OLD_SEW = ("user", "швея")  # прежняя роль «Швея» (код и подпись в Excel)
+VIRTUAL_STARTS = {START_STAGE} | {k["старт"] for k in KINDS.values()}
+
+
+def _old_seamstresses() -> list[str]:
+    """Логины с прежней ролью «Швея»: лист «сотрудники» и запасной users.xlsx."""
+    out = []
+    if ACCOUNTS in store.sheet_names():
+        for r in store.read_sheet(ACCOUNTS):
+            if _s(r.get("роль")).lower() in OLD_SEW and _s(r.get("логин")):
+                out.append(_s(r.get("логин")))
+    try:
+        from server import read_table  # noqa: WPS433
+        for r in read_table("users"):
+            login = _s(r.get("логин"))
+            if _s(r.get("роль")).lower() in OLD_SEW and login and login not in out:
+                out.append(login)
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+def migrate_roles(assign: dict | None = None, dry: bool = False) -> dict:
+    """Этапы → производственные роли, «Швея» → её производственные роли, все роли человека —
+    в «Сотрудники цеха».роли. Повторный запуск ничего не меняет.
+    assign: логин → [коды ролей] для «Швей», у которых не было ни одного этапа."""
+    assign = {k: [_norm_role(c) for c in v] for k, v in (assign or {}).items()}
+    if not dry:
+        ensure_sheets()
+    report: dict = {"швеи": {}, "без_ролей": [], "новые_роли": [], "доп_роли": {}, "права_швеи": []}
+    ops = _ops()
+    # 1. коды из маршрутов и истории, которых нет в «расценках», становятся ролями (история не теряется)
+    used = set()
+    for spec in (ROUTE, ROUTE_PARTY, ROUTE_ORD, ROUTE_ORD_PARTY, ROUTE_FIN, ROUTE_FIN_PARTY, OUT, ASSIGN):
+        used |= {_s(r.get("этап")).upper() for r in _rows(spec) if _s(r.get("этап"))}
+    report["новые_роли"] = sorted(c for c in used - set(ops) - VIRTUAL_STARTS)
+    prod = set(production_roles()) | set(report["новые_роли"])
+
+    staff = _rows(STAFF)  # «этап» читается как «роли»
+    by_login = {_s(r.get("логин")): r for r in staff if _s(r.get("логин"))}
+    raw = {}
+    try:
+        raw = json.loads(perms.FILE.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        raw = {}
+    extras_json = {k: [x for x in v if x not in OLD_SEW and x != perms.LOCKED_ROLE]
+                   for k, v in (raw.get("доп_роли") or {}).items()}
+    users = {_s(u.get("логин")): u for u in _all_users()}
+
+    def roles_in_row(login):
+        return [_norm_role(c) for c in _deps((by_login.get(login) or {}).get("роли"))]
+
+    # 2. «Швея» → основная роль = первая её производственная роль
+    mains = {}
+    for login in _old_seamstresses():
+        mine = [c for c in roles_in_row(login) + assign.get(login, []) if c in prod]
+        if not mine:
+            report["без_ролей"].append(login)
+            continue
+        mains[login] = mine[0]
+        report["швеи"][login] = mine
+    if report["без_ролей"] or dry:
+        report["готово"] = False
+        return report
+
+    # 3. все роли человека — в одной колонке «роли»
+    for login in set(extras_json) | set(assign) | set(by_login):
+        row = by_login.get(login)
+        if row is None:
+            u = users.get(login) or {}
+            row = {"логин": login, "ФИО": _s(u.get("фио")) or login, "должность": _s(u.get("роль")),
+                   "роли": "", "тип оплаты": "сдельная", "ставка": 0, "периодичность": "месяц",
+                   "модели": "", "телефон": "", "активен": 1}
+            staff.append(row)
+            by_login[login] = row
+        main = mains.get(login) or _s((users.get(login) or {}).get("роль"))
+        merged = []
+        for c in roles_in_row(login) + extras_json.get(login, []) + assign.get(login, []):
+            if c and c != main and c not in OLD_SEW and c not in merged:
+                merged.append(c)
+        if merged != roles_in_row(login):
+            report["доп_роли"][login] = merged
+        row["роли"] = ";".join(merged)
+        if login in mains:
+            row["должность"] = mains[login]
+
+    rate_rows = store.read_sheet(RATES_SHEET[0]) if RATES_SHEET[0] in store.sheet_names() else []
+    for c in report["новые_роли"]:
+        rate_rows.append({"код": c, "операция": c, "расценка за шт": 0, "порядок": 900, "обязательная": "нет"})
+    store.write_sheets([(STAFF[0], STAFF[1], staff)]
+                       + ([(RATES_SHEET[0], RATES_SHEET[1], rate_rows)] if report["новые_роли"] else []))
+    for c in report["новые_роли"]:
+        _sync_process(c, {"название": c, "тариф": 0, "порядок": 900})
+    for login, main in mains.items():
+        _write_account(login, {"роль": main}, create=False)
+
+    # 4. права прежней роли «Швея» переходят ко всем производственным ролям; доп. роли — уже в листе
+    roles_cfg = dict(raw.get("роли") or {})
+    sew = roles_cfg.pop("user", None) or {}
+    for c in prod:
+        for code, val in sew.items():
+            roles_cfg.setdefault(c, {}).setdefault(code, val)
+    report["права_швеи"] = sorted(sew)
+    if sew or "доп_роли" in raw:
+        perms._save({"роли": roles_cfg, "сотрудники": dict(raw.get("сотрудники") or {})})
+    report["готово"] = True
+    return report
+
+
+
+register_role_sources()
