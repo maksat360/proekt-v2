@@ -26,12 +26,13 @@ function asConfirmLeave() {
 
 function asPeopleOptions(code, value) {
   const people = (AS.data && AS.data.люди) || [];
+  // закрепить можно только за тем, у кого есть доступ к этапу (сервер проверяет так же)
   const can = people.filter((x) => x.этапы.includes(code));
-  const rest = people.filter((x) => !x.этапы.includes(code));
   const opt = (x) => `<option value="${esc(x.логин)}" ${x.логин === value ? 'selected' : ''}>${esc(x.ФИО)}</option>`;
-  return `<option value="">— никто —</option>
-    ${can.length ? `<optgroup label="Умеют этот этап">${can.map(opt).join('')}</optgroup>` : ''}
-    ${rest.length ? `<optgroup label="Остальные">${rest.map(opt).join('')}</optgroup>` : ''}`;
+  const stale = value && !can.find((x) => x.логин === value)
+    ? `<option value="${esc(value)}" selected disabled>${esc((people.find((x) => x.логин === value) || {}).ФИО || value)} — нет доступа к этапу</option>` : '';
+  return `<option value="">— никто —</option>${stale}
+    ${can.length ? can.map(opt).join('') : '<option value="" disabled>Этап никому не назначен</option>'}`;
 }
 
 function assignHtml() {

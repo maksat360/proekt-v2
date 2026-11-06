@@ -75,7 +75,8 @@ async function boot() {
     new: ST.права.создать, tech: ST.права.принимать, cut: ST.права.кроить,
     work: ST.права.работать, pack: ST.права.упаковывать,
     payroll: ST.права.зарплата || ST.права.работать, sum: ST.права.зарплата,
-    route: ST.права.принимать, assign: ST.права.принимать,
+    route: ST.права.маршрут, assign: ST.права.принимать,
+    staff: ST.права.сотрудники, stages: ST.права.этапы, access: ST.права.права,
   };
   if (want && allowed[want]) ST.view = want;
   if (!ST.права.создать && !want) {
@@ -98,6 +99,7 @@ async function boot() {
   if (ST.view === 'sum') await loadSummary();
   if (ST.view === 'route') await loadRoutes();
   if (ST.view === 'assign') await loadAssign();
+  if (['staff', 'stages', 'access'].includes(ST.view)) await loadAccess();
   render();
 }
 
@@ -116,7 +118,7 @@ async function loadPack() {
 }
 
 async function loadWork() {
-  const mine = ST.workMode === 'mine' && (isBoss() || (ST.user || {}).роль === 'technologist');
+  const mine = ST.workMode === 'mine' && !!ST.права.вся_работа;
   ST.work = await api(`${API}/work${mine ? '?режим=моя' : ''}`);
 }
 
@@ -160,8 +162,8 @@ function cartQty() {
 // видит только вкладки этой работы, чтобы не было каши.
 const AS_ROLES = {
   admin: { label: 'Начальник', tabs: null },
-  manager: { label: 'Менеджер', tabs: ['new', 'list', 'tech', 'payroll', 'sum'] },
-  technologist: { label: 'Технолог', tabs: ['tech', 'assign', 'route', 'work', 'list'] },
+  manager: { label: 'Менеджер', tabs: ['new', 'list', 'tech', 'payroll', 'sum', 'staff', 'stages', 'access'] },
+  technologist: { label: 'Технолог', tabs: ['tech', 'assign', 'route', 'work', 'list', 'staff', 'stages', 'access'] },
   cutter: { label: 'Закройщик', tabs: ['cut'] },
   user: { label: 'Швея', tabs: ['work', 'payroll'] },
   packer: { label: 'Упаковщик', tabs: ['pack'] },
@@ -201,6 +203,7 @@ async function loadView(v) {
     if (v === 'sum') await loadSummary();
     if (v === 'route') await loadRoutes();
     if (v === 'assign') await loadAssign();
+    if (['staff', 'stages', 'access'].includes(v)) await loadAccess();
   } catch (err) { toast(err.message, 'err'); }
 }
 
@@ -246,11 +249,12 @@ function render() {
   const topTitle = $('#cx-top-title') || document.querySelector('.cx-top-title');
   if (topTitle) {
     topTitle.textContent = ({ work: 'Работа', cut: 'Крой', tech: 'Приёмка',
-      pack: 'Упаковка', payroll: 'Зарплата', sum: 'Сводка', route: 'Маршрут', assign: 'Распределение' })[ST.view] || 'Заказ на пошив';
+      pack: 'Упаковка', payroll: 'Зарплата', sum: 'Сводка', route: 'Маршрут', assign: 'Распределение',
+      staff: 'Сотрудники', stages: 'Этапы', access: 'Роли и права' })[ST.view] || 'Заказ на пошив';
   }
   const insideParty = ST.view === 'cut' && ST.cut.партия;
   const insideParty2 = ST.view === 'pack' && ST.pack.партия;
-  const ownHeader = insideParty || insideParty2 || ['work', 'cut', 'tech', 'pack', 'payroll', 'sum', 'route', 'assign'].includes(ST.view);
+  const ownHeader = insideParty || insideParty2 || ['work', 'cut', 'tech', 'pack', 'payroll', 'sum', 'route', 'assign', 'staff', 'stages', 'access'].includes(ST.view);
   main.innerHTML = `
     ${ownHeader ? '' : `<div class="cx-hero">
       <div>
@@ -294,6 +298,7 @@ function viewHtml() {
   if (ST.view === 'sum') return summaryHtml();
   if (ST.view === 'route') return routeHtml();
   if (ST.view === 'assign') return assignHtml();
+  if (['staff', 'stages', 'access'].includes(ST.view)) return accessHtml(ST.view);
   if (ST.view === 'list') return listHtml();
   return newHtml();
 }
@@ -633,10 +638,15 @@ function tabsHtml(totalOrders) {
   if (ST.права.зарплата || ST.права.работать) tabs.push(['payroll', 'Зарплата']);
   if (ST.права.зарплата) tabs.push(['sum', 'Сводка']);
   if (ST.права.принимать) tabs.push(['assign', 'Распределение']);
-  if (ST.права.принимать) tabs.push(['route', 'Маршрут']);
+  if (ST.права.маршрут) tabs.push(['route', 'Маршрут']);
+  if (ST.права.сотрудники) tabs.push(['staff', 'Сотрудники']);
+  if (ST.права.этапы) tabs.push(['stages', 'Этапы']);
+  if (ST.права.права) tabs.push(['access', 'Роли и права']);
   if (ST.права.создать || ST.права.принимать) tabs.push(['list', 'Заказы ' + nf(totalOrders)]);
   const only = asTabs();
-  const shown = only ? tabs.filter(([id]) => only.includes(id)) : tabs.slice();
+  // вкладки доступа видны по правам, а не по роли: личное право открывает их любому
+  const byRight = ['staff', 'stages', 'access'];
+  const shown = only ? tabs.filter(([id]) => only.includes(id) || byRight.includes(id)) : tabs.slice();
   tabs.length = 0; tabs.push(...shown);
   if (tabs.length < 2) return '';
   const active = ST.view === 'success' ? 'new' : ST.view;
@@ -1016,8 +1026,8 @@ async function saveCut() {
 }
 
 // ------------------------------------------------------------ швеи (модуль 4)
-function isBoss() {
-  return ['admin', 'manager'].includes((ST.user || {}).роль);
+function isBoss() {  // возвращать и сдавать чужую работу — право «cex.boss»
+  return !!ST.права.чужая_работа;
 }
 
 function workTaskPill(t) {
@@ -1034,8 +1044,45 @@ function workModeSwitch() {
     </div>`;
 }
 
+// Партия (родитель) → её настилы (дочерние). По умолчанию свёрнута; если настилов нет —
+// ни стрелки, ни пустого списка. Раскрытые партии помним до перезагрузки страницы.
+ST.ptOpen = ST.ptOpen || new Set();
+
+function nastilWord(n) {
+  const m10 = n % 10, m100 = n % 100;
+  if (m10 === 1 && m100 !== 11) return 'настил';
+  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return 'настила';
+  return 'настилов';
+}
+
+function partyAccordion({ num, title, sub, total, count, badge, body }) {
+  const has = count > 0;
+  const open = has && ST.ptOpen.has(String(num));
+  const head = `<span class="${has ? 'ac-arrow' : 'pt-no-arrow'}" aria-hidden="true"></span>
+      <span class="pt-title"><b>${title}</b><span class="cx-hint">${sub}</span>${badge ? `<span>${badge}</span>` : ''}</span>
+      <span class="pt-total"><b>${nf(total)}</b><span>шт${has ? ` · ${nf(count)} ${nastilWord(count)}` : ''}</span></span>`;
+  return `<div class="cx-card cx-party pt-party ${open ? 'open' : ''}">
+    ${has ? `<button class="pt-head" data-act="pt-toggle" data-num="${esc(num)}" aria-expanded="${open}">${head}</button>`
+      : `<div class="pt-head static">${head}</div>`}
+    ${has ? `<div class="ac-collapse"><div class="ac-collapse-in"><div class="pt-kids">${body}</div></div></div>` : ''}
+  </div>`;
+}
+
+function ptToggle(el) {
+  const num = String(el.dataset.num);
+  const box = el.closest('.pt-party');
+  const open = !ST.ptOpen.has(num);
+  if (open) ST.ptOpen.add(num); else ST.ptOpen.delete(num);
+  if (box && box.classList.contains('pt-party')) {   // без перерисовки — чтобы анимация была плавной
+    box.classList.toggle('open', open);
+    el.setAttribute('aria-expanded', String(open));
+    return;
+  }
+  render();
+}
+
 function workHtml() {
-  const lead = isBoss() || (ST.user || {}).роль === 'technologist';
+  const lead = !!ST.права.вся_работа;
   if (!lead) return sewHtml();
   if (ST.workMode === 'mine') return (asRole() === 'user' ? '' : workModeSwitch()) + sewHtml();
   const w = ST.work || {};
@@ -1043,7 +1090,7 @@ function workHtml() {
   const cards = w.партии || [];
   const all = w.все || [];
   const t = w.итог || {};
-  const boss = isBoss() || (ST.user || {}).роль === 'technologist';
+  const boss = !!ST.права.вся_работа;
 
   const mineRows = mine.map((m) => `
     <div class="cx-qitem cx-qwork">
@@ -1058,9 +1105,10 @@ function workHtml() {
     </div>`).join('');
 
   const partyCards = cards.map((c) => {
-    const lines = (c.настилы || []).filter((l) => l.задачи.length).map((l) => `
+    const kids = (c.настилы || []).filter((l) => l.задачи.length);
+    const lines = kids.map((l) => `
       <div class="cx-nrow ${l.готов ? 'done' : ''}">
-        <div class="cx-nhead"><b>Настил ${esc(l.номер)}</b><span>${nf(l.шт)} шт</span>${l.готов ? '<span class="cx-pill grey">прошёл маршрут</span>' : ''}</div>
+        <div class="cx-nhead"><span class="pt-kid-tag">${esc(l.номер)}</span><b>Настил ${esc(l.номер)}</b><span>${nf(l.шт)} шт</span>${l.готов ? '<span class="cx-pill grey">прошёл маршрут</span>' : ''}</div>
         <div class="cx-ntasks">
           ${l.задачи.map((tk) => `
             <div class="cx-ntask ${tk.можно ? 'go' : ''}">
@@ -1074,12 +1122,16 @@ function workHtml() {
             </div>`).join('')}
         </div>
       </div>`).join('');
-    return `
-      <div class="cx-card cx-party">
-        <div class="cx-card-h"><h3>Партия №${esc(c.номер)}</h3>
-          <span class="cx-hint">${esc(c.категория)} ${esc(c.модель)} · ${esc(c.клиент)} · срок ${esc(c.срок || '—')} · ${nf(c.раскроено)} шт${c.остаток_крой ? ` · докроить ${nf(c.остаток_крой)}` : ''}</span></div>
-        <div class="cx-card-b">${lines || '<div class="cx-hint">Настилов пока нет</div>'}</div>
-      </div>`;
+    const ready = kids.reduce((n, l) => n + l.задачи.filter((t) => t.можно).length, 0);
+    return partyAccordion({
+      num: c.номер,
+      title: `Партия №${esc(c.номер)}`,
+      sub: `${esc(c.категория)} ${esc(c.модель)} · ${esc(c.клиент)} · срок ${esc(c.срок || '—')}${c.остаток_крой ? ` · докроить ${nf(c.остаток_крой)}` : ''}`,
+      total: c.раскроено,
+      count: kids.length,
+      badge: ready ? `<span class="cx-pill green">можно взять: ${nf(ready)}</span>` : '',
+      body: lines,
+    });
   }).join('');
 
   const allRows = boss ? `
@@ -1738,6 +1790,8 @@ document.addEventListener('click', async (ev) => {
   if (!el) return;
   const act = el.dataset.act;
 
+  if (act === 'pt-toggle') { ptToggle(el); return; }
+
   if (act === 'tab') {
     if (ST.view === 'route' && el.dataset.tab !== 'route' && !rtConfirmLeave()) return;
     if (ST.view === 'assign' && el.dataset.tab !== 'assign' && !asConfirmLeave()) return;
@@ -1747,6 +1801,9 @@ document.addEventListener('click', async (ev) => {
     }
     if (ST.view === 'assign') {
       try { await loadAssign(); } catch (err) { toast(err.message, 'err'); }
+    }
+    if (['staff', 'stages', 'access'].includes(ST.view)) {
+      try { await loadAccess(); } catch (err) { toast(err.message, 'err'); }
     }
     if (ST.view === 'tech') {
       try { await loadTech(); } catch (err) { toast(err.message, 'err'); }

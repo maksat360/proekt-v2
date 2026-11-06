@@ -89,17 +89,9 @@ _load_sessions()
 VERBOSE = False
 DEV = False
 
-ROLE_LABELS = {
-    "admin": "Начальник",
-    "accountant": "Бухгалтер",
-    "manager": "Менеджер",
-    "technologist": "Технолог",
-    "storekeeper": "Складчик",
-    "user": "Швея",
-    "cutter": "Закройщик",
-    "packer": "Упаковщик",
-    "client": "Клиент",
-}
+import perms  # noqa: E402
+
+ROLE_LABELS = perms.ROLE_LABELS
 
 SCHEMAS = {
     "companies": ["код", "название", "город", "активен"],
@@ -129,32 +121,12 @@ SCHEMAS = {
               "проверка", "кто"],
 }
 
-CAN = {
-    "batches.create": {"admin", "manager", "technologist"},
-    "passes.take": {"user", "technologist", "admin", "manager"},
-    "checks.create": {"technologist", "admin", "manager"},
-    "materials.view": {"admin", "manager", "storekeeper", "accountant", "technologist"},
-    "materials.move": {"admin", "manager", "storekeeper"},
-    "finished.view": {"admin", "manager", "storekeeper", "accountant"},
-    "shipments.create": {"admin", "manager", "storekeeper"},
-    "users.manage": {"admin", "manager"},
-    "analytics.view": {"admin", "manager", "accountant"},
-    "payroll.all": {"admin", "manager", "accountant"},
-    "report.build": {"admin", "manager", "accountant"},
-    "wb.manage": {"admin", "manager", "storekeeper"},
-    "announce.create": {"admin", "manager"},
-    "shop.sell": {"admin", "manager", "storekeeper"},
-    "shop.price": {"admin", "manager"},
-    "shop.stock": {"admin", "manager", "storekeeper"},
-    "wh.view": {"admin", "manager", "storekeeper", "accountant", "technologist"},
-    "wh.write": {"admin", "manager", "storekeeper"},
-    "orders.view": {"admin", "manager", "storekeeper"},
-    "orders.create": {"client", "admin", "manager"},
-}
-
-
-def can(role: str, cap: str) -> bool:
-    return role in CAN.get(cap, set())
+def can(who, cap: str) -> bool:
+    """Право сотрудника (who — пользователь) или роли (who — строка) из perms.py."""
+    if cap == "users.manage":  # старое имя в интерфейсе портала
+        cap = "staff.edit"
+    user = who if isinstance(who, dict) else {"роль": str(who)}
+    return perms.allowed(user, cap)
 
 
 # ---------------------------------------------------------------- Excel layer
@@ -248,8 +220,9 @@ def backup_data() -> None:
         return
     try:
         target.mkdir(parents=True, exist_ok=True)
-        for src in DATA.glob("*.xlsx"):
-            shutil.copyfile(src, target / src.name)
+        for src in [*DATA.glob("*.xlsx"), DATA / "permissions.json", DATA / "журнал_прав.jsonl"]:
+            if src.exists():
+                shutil.copyfile(src, target / src.name)
         dirs = sorted([d for d in BACKUP_DIR.iterdir() if d.is_dir()])
         for old in dirs[:-30]:
             shutil.rmtree(old, ignore_errors=True)
@@ -706,7 +679,7 @@ def dashboard(me: dict) -> dict:
         },
         "последние": batches[:6],
     }
-    if can(role, "materials.view"):
+    if can(me, "materials.view"):
         mats = read_table("materials")
         data["материалов"] = len(mats)
         data["материалы_сумма"] = round(sum(as_num(m.get("количество")) * as_num(m.get("цена")) for m in mats), 2)
@@ -1079,7 +1052,7 @@ class Handler(BaseHTTPRequestHandler):
         role, comp = str(me.get("роль")), str(me.get("цех"))
 
         if path == "/api/brand" and method == "POST":
-            if not can(role, "users.manage"):
+            if not can(me, "brand.manage"):
                 self._err("менять оформление может только начальник", 403)
                 return
             body = self._body()
@@ -1093,7 +1066,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/brand/logo" and method == "POST":
-            if not can(role, "users.manage"):
+            if not can(me, "brand.manage"):
                 self._err("менять логотип может только начальник", 403)
                 return
             body = self._body()
@@ -1131,7 +1104,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 cfg = {}
             self._json({
-                "ok": True, "user": public_user(me), "caps": {k: can(role, k) for k in CAN},
+                "ok": True, "user": public_user(me), "caps": {**{k: can(me, k) for k in perms.CODES}, "users.manage": can(me, "staff.edit")},
                 "visible": cfg.get("visible", ["wh"]),
                 "client_visible": cfg.get("client_visible", []),
                 "roles": ROLE_LABELS, "company": active_company(comp),
@@ -1149,7 +1122,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/sync/pull" and method == "GET":
-            if not can(role, "wh.view"):
+            if not can(me, "wh.view"):
                 self._err("нет доступа к данным склада", 403)
                 return
             try:
@@ -1160,7 +1133,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/sync/push" and method == "POST":
-            if not can(role, "wh.write"):
+            if not can(me, "wh.write"):
                 self._err("нет прав на операции склада", 403)
                 return
             body = self._body()
@@ -1186,7 +1159,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/batches" and method == "POST":
-            if not can(role, "batches.create"):
+            if not can(me, "batches.create"):
                 self._err("нет прав создавать партии", 403)
                 return
             body = self._body()
@@ -1239,7 +1212,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/passes" and method == "POST":
-            if not can(role, "passes.take"):
+            if not can(me, "passes.take"):
                 self._err("нет прав", 403)
                 return
             body = self._body()
@@ -1317,7 +1290,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/checks" and method == "POST":
-            if not can(role, "checks.create"):
+            if not can(me, "checks.create"):
                 self._err("нет прав", 403)
                 return
             body = self._body()
@@ -1333,7 +1306,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/materials" and method == "GET":
-            if not can(role, "materials.view"):
+            if not can(me, "materials.view"):
                 self._err("нет прав", 403)
                 return
             items = read_table("materials")
@@ -1344,7 +1317,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/materials/move" and method == "POST":
-            if not can(role, "materials.move"):
+            if not can(me, "materials.move"):
                 self._err("нет прав", 403)
                 return
             body = self._body()
@@ -1375,7 +1348,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/materials/item" and method == "POST":
-            if not can(role, "materials.move"):
+            if not can(me, "materials.move"):
                 self._err("нет прав", 403)
                 return
             body = self._body()
@@ -1395,7 +1368,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/finished" and method == "GET":
-            if not can(role, "finished.view"):
+            if not can(me, "finished.view"):
                 self._err("нет прав", 403)
                 return
             batches = {int(b["номер"]): b for b in read_table("batches") if str(b.get("цех")) == comp}
@@ -1417,7 +1390,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/shipments" and method == "POST":
-            if not can(role, "shipments.create"):
+            if not can(me, "shipments.create"):
                 self._err("нет прав", 403)
                 return
             body = self._body()
@@ -1439,14 +1412,14 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/payroll" and method == "GET":
             period = query.get("период", [""])[0]
             month = query.get("месяц", [""])[0]
-            data = payroll(me, period, month, scope_all=can(role, "payroll.all"))
+            data = payroll(me, period, month, scope_all=can(me, "payroll.all"))
             months = sorted({month_key(p.get("дата")) for p in read_table("passes") if month_key(p.get("дата"))},
                             reverse=True)
             self._json({"ok": True, "data": data, "месяцы": months})
             return
 
         if path == "/api/analytics":
-            if not can(role, "analytics.view"):
+            if not can(me, "analytics.view"):
                 self._err("нет прав", 403)
                 return
             self._json({"ok": True, "data": analytics(me)})
@@ -1465,7 +1438,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/shop/ops" and method == "POST":
-            if not can(role, "shop.stock"):
+            if not can(me, "shop.stock"):
                 self._err("операции по складу делает склад, менеджер или начальник", 403)
                 return
             body = self._body()
@@ -1523,7 +1496,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/shop/ops/cancel" and method == "POST":
-            if not can(role, "shop.stock"):
+            if not can(me, "shop.stock"):
                 self._err("нет прав", 403)
                 return
             oid = int(as_num(self._body().get("id")))
@@ -1564,7 +1537,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/shop/boxes/check" and method == "POST":
-            if not can(role, "shop.stock"):
+            if not can(me, "shop.stock"):
                 self._err("нет прав", 403)
                 return
             body = self._body()
@@ -1601,7 +1574,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/employees":
-            if not (can(role, "users.manage") or can(role, "batches.create")):
+            if not (can(me, "staff.view") or can(me, "batches.create")):
                 self._err("нет прав", 403)
                 return
             self._json({"ok": True, "data": [public_user(u) for u in staff_users()
@@ -1609,54 +1582,32 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/users" and method == "GET":
-            if not can(role, "users.manage"):
+            if not can(me, "staff.view"):
                 self._err("нет прав", 403)
                 return
             self._json({"ok": True, "data": [public_user(u) for u in staff_users()
                                              if str(u.get("цех")) == comp]})
             return
 
-        if path == "/api/users" and method == "POST":
-            if not can(role, "users.manage"):
-                self._err("нет прав", 403)
-                return
+        if path in ("/api/users", "/api/users/delete") and method == "POST":
+            # те же проверки, что в разделе «Сотрудники» цеха: цех, роль, последний админ
+            import cex_api
+            import perms as _perms
             body = self._body()
-            login = str(body.get("логин", "")).strip()
-            if not login:
-                self._err("Укажи логин")
+            if path.endswith("/delete"):
+                body = {"логин": body.get("логин"), "активен": False}
+            elif "активен" in body:
+                body["активен"] = bool(body.get("активен"))
+            try:
+                if not str(body.get("логин", "")).strip():
+                    raise ValueError("Укажи логин")
+                cex_api.save_account(me, body)
+            except _perms.AccessError as exc:
+                self._err(str(exc), 403)
                 return
-            users = read_table("users")
-            existing = next((u for u in users if str(u.get("логин")) == login), None)
-            payload = {"логин": login, "фио": str(body.get("фио", "")).strip(),
-                       "роль": str(body.get("роль") or "user"), "цех": comp,
-                       "ставка_час": as_num(body.get("ставка_час")),
-                       "активен": 1 if body.get("активен", True) else 0}
-            if existing:
-                existing.update(payload)
-                if body.get("пароль"):
-                    existing["пароль"] = hash_password(str(body["пароль"]))
-            else:
-                if payload["роль"] not in ROLE_LABELS:
-                    self._err("Неизвестная роль")
-                    return
-                payload["пароль"] = hash_password(str(body.get("пароль") or "123456"))
-                users.append(payload)
-            write_table("users", users)
-            self._json({"ok": True})
-            return
-
-        if path == "/api/users/delete" and method == "POST":
-            if not can(role, "users.manage"):
-                self._err("нет прав", 403)
+            except ValueError as exc:
+                self._err(str(exc))
                 return
-            login = str(self._body().get("логин", ""))
-            users = read_table("users")
-            target = next((u for u in users if str(u.get("логин")) == login), None)
-            if not target:
-                self._err("сотрудник не найден", 404)
-                return
-            target["активен"] = 0
-            write_table("users", users)
             self._json({"ok": True})
             return
 
@@ -1667,7 +1618,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/announcements" and method == "POST":
-            if not can(role, "announce.create"):
+            if not can(me, "announce.create"):
                 self._err("нет прав", 403)
                 return
             text = str(self._body().get("текст", "")).strip()
@@ -1739,7 +1690,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/shop/sale" and method == "POST":
-            if not can(role, "shop.sell"):
+            if not can(me, "shop.sell"):
                 self._err("продажи оформляет склад или менеджер", 403)
                 return
             body = self._body()
@@ -1782,7 +1733,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/shop/price" and method == "POST":
-            if not can(role, "shop.price"):
+            if not can(me, "shop.price"):
                 self._err("цену меняет начальник или менеджер", 403)
                 return
             body = self._body()
@@ -1822,7 +1773,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/sales/cancel" and method == "POST":
-            if not can(role, "shop.sell"):
+            if not can(me, "shop.sell"):
                 self._err("отменять продажи может склад, менеджер или начальник", 403)
                 return
             body = self._body()
@@ -1850,7 +1801,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path.startswith("/api/wh/") and method == "GET":
-            if not can(role, "wh.view"):
+            if not can(me, "wh.view"):
                 self._err("нет доступа к складу", 403)
                 return
             try:
@@ -1920,7 +1871,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path.startswith("/api/wh/") and method == "POST":
-            if not can(role, "wh.write"):
+            if not can(me, "wh.write"):
                 self._err("операции по складу делает склад, менеджер или начальник", 403)
                 return
             try:
@@ -1970,7 +1921,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/wb/orders" and method == "GET":
-            if not can(role, "wh.view"):
+            if not can(me, "wh.view"):
                 self._err("нет доступа", 403)
                 return
             try:
@@ -1984,7 +1935,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/fbs/aggregate" and method == "GET":
-            if not can(role, "wh.view"):
+            if not can(me, "wh.view"):
                 self._err("нет доступа", 403)
                 return
             try:
@@ -1995,7 +1946,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/wb/confirm-items" and method == "POST":
-            if not can(role, "wb.manage"):
+            if not can(me, "wb.manage"):
                 self._err("нет прав", 403)
                 return
             body = self._body()
@@ -2012,7 +1963,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/fbs/pickable" and method == "GET":
-            if not can(role, "wh.view"):
+            if not can(me, "wh.view"):
                 self._err("нет доступа", 403)
                 return
             try:
@@ -2027,7 +1978,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/fbs/pick" and method == "POST":
-            if not can(role, "wb.manage"):
+            if not can(me, "wb.manage"):
                 self._err("собирать заказы может склад, менеджер или начальник", 403)
                 return
             body = self._body()
@@ -2056,7 +2007,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/wb/sync" and method == "POST":
-            if not can(role, "wb.manage"):
+            if not can(me, "wb.manage"):
                 self._err("обновлять заказы может склад, менеджер или начальник", 403)
                 return
             try:
@@ -2068,7 +2019,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/wb/confirm" and method == "POST":
-            if not can(role, "wb.manage"):
+            if not can(me, "wb.manage"):
                 self._err("подтверждать может склад, менеджер или начальник", 403)
                 return
             body = self._body()
@@ -2085,7 +2036,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/wb/cabinets" and method == "GET":
-            if not can(role, "wb.manage") and not can(role, "wh.view"):
+            if not can(me, "wb.manage") and not can(me, "wh.view"):
                 self._err("нет доступа", 403)
                 return
             import cabinets_store
@@ -2093,7 +2044,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/wb/cabinets" and method == "POST":
-            if not can(role, "wb.manage"):
+            if not can(me, "wb.manage"):
                 self._err("настраивать кабинеты может склад, менеджер или начальник", 403)
                 return
             body = self._body()
@@ -2109,7 +2060,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/wb/cabinets/delete" and method == "POST":
-            if not can(role, "wb.manage"):
+            if not can(me, "wb.manage"):
                 self._err("нет прав", 403)
                 return
             try:
@@ -2129,14 +2080,14 @@ class Handler(BaseHTTPRequestHandler):
             if role == "client":
                 self._json({"ok": True, "data": warehouse.orders(client=str(me.get("фио")))})
                 return
-            if not can(role, "orders.view"):
+            if not can(me, "orders.view"):
                 self._err("нет доступа к заказам", 403)
                 return
             self._json({"ok": True, "data": warehouse.orders()})
             return
 
         if path == "/api/orders/pick" and method == "POST":
-            if not can(role, "orders.view"):
+            if not can(me, "orders.view"):
                 self._err("нет прав", 403)
                 return
             try:
@@ -2153,7 +2104,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/orders/ship" and method == "POST":
-            if not can(role, "orders.view"):
+            if not can(me, "orders.view"):
                 self._err("нет прав", 403)
                 return
             try:
@@ -2186,7 +2137,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not own:
                     self._err("это не ваш заказ", 403)
                     return
-            elif not can(role, "orders.view"):
+            elif not can(me, "orders.view"):
                 self._err("нет прав", 403)
                 return
             try:
@@ -2197,7 +2148,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/orders/close" and method == "POST":
-            if not can(role, "orders.view"):
+            if not can(me, "orders.view"):
                 self._err("нет прав", 403)
                 return
             try:
@@ -2208,7 +2159,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/orders" and method == "POST":
-            if not can(role, "orders.create"):
+            if not can(me, "orders.create"):
                 self._err("нет прав на заказ", 403)
                 return
             try:
@@ -2225,7 +2176,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/export/workbook" and method == "GET":
-            if not can(role, "wh.view"):
+            if not can(me, "wh.view"):
                 self._err("нет доступа", 403)
                 return
             try:
@@ -2244,7 +2195,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/export/backups" and method == "GET":
-            if not can(role, "wh.view"):
+            if not can(me, "wh.view"):
                 self._err("нет доступа", 403)
                 return
             import export_workbook
@@ -2252,7 +2203,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/export/backup" and method == "GET":
-            if not can(role, "wh.view"):
+            if not can(me, "wh.view"):
                 self._err("нет доступа", 403)
                 return
             name = str(query.get("name", [""])[0])
@@ -2269,7 +2220,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/report" and method == "POST":
-            if not can(role, "report.build"):
+            if not can(me, "report.build"):
                 self._err("нет прав", 403)
                 return
             path_xlsx = build_report(comp)

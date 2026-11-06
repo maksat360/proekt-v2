@@ -315,7 +315,7 @@ function rtSide(party) {
 }
 
 // ---------------------------------------------------------- роли сотрудников
-function rtPeople() { return ((RT.data && RT.data.сотрудники) || []).filter((p) => !['admin', 'manager'].includes(p.должность) || p.этапы.length); }
+function rtPeople() { return (RT.data && RT.data.сотрудники) || []; }
 
 function rtPeopleForStage(code) {
   const people = rtPeople();
@@ -325,7 +325,7 @@ function rtPeopleForStage(code) {
   return `<div class="cx-field"><label>Кто умеет этот этап</label>
     <div class="rt-deps">${people.map((p) => `<label class="rt-check">
       <input type="checkbox" data-role-login="${esc(p.логин)}" data-role-code="${esc(code)}" ${p.этапы.includes(code) ? 'checked' : ''} ${can ? '' : 'disabled'}>
-      ${esc(p.ФИО)}${p.этапы.length ? '' : ' <span class="cx-hint">· все этапы</span>'}</label>`).join('')}</div>
+      ${esc(p.ФИО)}${p.этапы.length ? '' : ' <span class="cx-hint">· этапов нет</span>'}</label>`).join('')}</div>
     <div class="cx-hint">${who.length ? `Умеют: ${nf(who.length)}. Сохраняется сразу.` : 'Пока никто. Сохраняется сразу.'}</div></div>`;
 }
 
@@ -345,12 +345,12 @@ function rtRolesHtml() {
   if (!people.length || !codes.length) return '';
   const head = codes.map((c) => `<th class="rt-rc" title="${esc(c)}">${esc(rtTitle(c))}</th>`).join('');
   const rows = people.map((p) => `<tr>
-    <td class="rt-rp"><b>${esc(p.ФИО)}</b><div class="cx-cell-sub">${esc(p.логин)} · ${p.этапы.length ? nf(p.этапы.length) + ' ' + rtWord(p.этапы.length) : 'не назначены — видит все'}</div></td>
+    <td class="rt-rp"><b>${esc(p.ФИО)}</b><div class="cx-cell-sub">${esc(p.логин)} · ${p.этапы.length ? nf(p.этапы.length) + ' ' + rtWord(p.этапы.length) : 'этапы не назначены — работы нет'}</div></td>
     ${codes.map((c) => `<td class="rt-rc"><input type="checkbox" data-role-login="${esc(p.логин)}" data-role-code="${esc(c)}"
       ${p.этапы.includes(c) ? 'checked' : ''} ${can ? '' : 'disabled'} aria-label="${esc(p.ФИО)} — ${esc(rtTitle(c))}"></td>`).join('')}
   </tr>`).join('');
   return `<div class="cx-card">
-    <div class="cx-card-h"><h3>Кто что умеет</h3><span class="cx-hint">этап = роль: швея видит в «Работе» только свои этапы и получает по их ставке</span></div>
+    <div class="cx-card-h"><h3>Кто что умеет</h3><span class="cx-hint">каждый этап — отдельный доступ: человек берёт работу только на отмеченных этапах</span></div>
     <div class="cx-card-b" style="padding-bottom:0"><div class="cx-scroll" style="margin:0 -18px;max-height:460px">
       <table class="cx-table rt-roles"><thead><tr><th>Сотрудник</th>${head}</tr></thead><tbody>${rows}</tbody></table>
     </div></div></div>`;
