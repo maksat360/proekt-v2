@@ -75,7 +75,7 @@ async function boot() {
     new: ST.права.создать, tech: ST.права.принимать, cut: ST.права.кроить,
     work: ST.права.работать, pack: ST.права.упаковывать,
     payroll: ST.права.зарплата || ST.права.работать, sum: ST.права.зарплата,
-    route: ST.права.маршрут, assign: ST.права.принимать,
+    route: ST.права.маршрут, route_ord: ST.права.маршрут, route_fin: ST.права.маршрут, assign: ST.права.принимать,
     staff: ST.права.сотрудники, stages: ST.права.этапы, access: ST.права.права,
   };
   if (want && allowed[want]) ST.view = want;
@@ -97,7 +97,7 @@ async function boot() {
   if (ST.view === 'pack') await loadPack();
   if (ST.view === 'payroll') await loadPayroll();
   if (ST.view === 'sum') await loadSummary();
-  if (ST.view === 'route') await loadRoutes();
+  if (rtIsView(ST.view)) await loadRoutes();
   if (ST.view === 'assign') await loadAssign();
   if (['staff', 'stages', 'access'].includes(ST.view)) await loadAccess();
   render();
@@ -163,7 +163,7 @@ function cartQty() {
 const AS_ROLES = {
   admin: { label: 'Начальник', tabs: null },
   manager: { label: 'Менеджер', tabs: ['new', 'list', 'tech', 'payroll', 'sum', 'staff', 'stages', 'access'] },
-  technologist: { label: 'Технолог', tabs: ['tech', 'assign', 'route', 'work', 'list', 'staff', 'stages', 'access'] },
+  technologist: { label: 'Технолог', tabs: ['tech', 'assign', 'route_ord', 'route', 'route_fin', 'work', 'list', 'staff', 'stages', 'access'] },
   cutter: { label: 'Закройщик', tabs: ['cut'] },
   user: { label: 'Швея', tabs: ['work', 'payroll'] },
   packer: { label: 'Упаковщик', tabs: ['pack'] },
@@ -201,7 +201,7 @@ async function loadView(v) {
     if (v === 'pack') await loadPack();
     if (v === 'payroll') await loadPayroll();
     if (v === 'sum') await loadSummary();
-    if (v === 'route') await loadRoutes();
+    if (rtIsView(v)) await loadRoutes();
     if (v === 'assign') await loadAssign();
     if (['staff', 'stages', 'access'].includes(v)) await loadAccess();
   } catch (err) { toast(err.message, 'err'); }
@@ -225,7 +225,7 @@ function renderUser() {
 }
 
 function cxBeforeLeave() {
-  if (ST.view === 'route' && typeof rtConfirmLeave === 'function' && !rtConfirmLeave()) return false;
+  if (rtIsView(ST.view) && typeof rtConfirmLeave === 'function' && !rtConfirmLeave()) return false;
   if (ST.view === 'assign' && typeof asConfirmLeave === 'function' && !asConfirmLeave()) return false;
   return true;
 }
@@ -249,12 +249,12 @@ function render() {
   const topTitle = $('#cx-top-title') || document.querySelector('.cx-top-title');
   if (topTitle) {
     topTitle.textContent = ({ work: 'Работа', cut: 'Крой', tech: 'Приёмка',
-      pack: 'Упаковка', payroll: 'Зарплата', sum: 'Сводка', route: 'Маршрут', assign: 'Распределение',
+      pack: 'Упаковка', payroll: 'Зарплата', sum: 'Сводка', route: 'Швейный маршрут', route_ord: 'Маршрут заказа', route_fin: 'Маршрут ГП', assign: 'Распределение',
       staff: 'Сотрудники', stages: 'Этапы', access: 'Роли и права' })[ST.view] || 'Заказ на пошив';
   }
   const insideParty = ST.view === 'cut' && ST.cut.партия;
   const insideParty2 = ST.view === 'pack' && ST.pack.партия;
-  const ownHeader = insideParty || insideParty2 || ['work', 'cut', 'tech', 'pack', 'payroll', 'sum', 'route', 'assign', 'staff', 'stages', 'access'].includes(ST.view);
+  const ownHeader = insideParty || insideParty2 || ['work', 'cut', 'tech', 'pack', 'payroll', 'sum', 'route', 'route_ord', 'route_fin', 'assign', 'staff', 'stages', 'access'].includes(ST.view);
   main.innerHTML = `
     ${ownHeader ? '' : `<div class="cx-hero">
       <div>
@@ -296,7 +296,7 @@ function viewHtml() {
   if (ST.view === 'pack') return packHtml();
   if (ST.view === 'payroll') return payrollHtml();
   if (ST.view === 'sum') return summaryHtml();
-  if (ST.view === 'route') return routeHtml();
+  if (rtIsView(ST.view)) return routeHtml();
   if (ST.view === 'assign') return assignHtml();
   if (['staff', 'stages', 'access'].includes(ST.view)) return accessHtml(ST.view);
   if (ST.view === 'list') return listHtml();
@@ -638,7 +638,9 @@ function tabsHtml(totalOrders) {
   if (ST.права.зарплата || ST.права.работать) tabs.push(['payroll', 'Зарплата']);
   if (ST.права.зарплата) tabs.push(['sum', 'Сводка']);
   if (ST.права.принимать) tabs.push(['assign', 'Распределение']);
-  if (ST.права.маршрут) tabs.push(['route', 'Маршрут']);
+  if (ST.права.маршрут) {
+    tabs.push(['route_ord', 'Маршрут заказа'], ['route', 'Швейный маршрут'], ['route_fin', 'Маршрут ГП']);
+  }
   if (ST.права.сотрудники) tabs.push(['staff', 'Сотрудники']);
   if (ST.права.этапы) tabs.push(['stages', 'Этапы']);
   if (ST.права.права) tabs.push(['access', 'Роли и права']);
@@ -1793,10 +1795,10 @@ document.addEventListener('click', async (ev) => {
   if (act === 'pt-toggle') { ptToggle(el); return; }
 
   if (act === 'tab') {
-    if (ST.view === 'route' && el.dataset.tab !== 'route' && !rtConfirmLeave()) return;
+    if (rtIsView(ST.view) && el.dataset.tab !== ST.view && !rtConfirmLeave()) return;
     if (ST.view === 'assign' && el.dataset.tab !== 'assign' && !asConfirmLeave()) return;
     ST.view = el.dataset.tab;
-    if (ST.view === 'route') {
+    if (rtIsView(ST.view)) {
       try { await loadRoutes(); } catch (err) { toast(err.message, 'err'); }
     }
     if (ST.view === 'assign') {

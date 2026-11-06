@@ -273,11 +273,11 @@ def load_master(force: bool = False) -> dict:
                 if row and len(row) > 6 and row[5]:
                     addr_qty[_clean(row[5])] += _num(row[6])
 
-        for sheet, name_col, qty_col in (
-            ("паставка ЖСК", 5, 6), ("паставка ККМ", 5, 6), ("паставка ААТ", 5, 6),
-            ("паставка4", 5, 6), ("паставка5", 5, 6), ("паставка6", 5, 6),
-            ("магазин", 2, 3),
-        ):
+        # как формула ф.к на листе «главный»: адрес − все листы «паставка …» − «магазин».
+        # Листы берём по имени из книги: список вроде «паставка ААТ» устаревал
+        # (лист называется «паставка Алтын», и его отгрузки не вычитались).
+        ship_sheets = [(n, 5, 6) for n in wb.sheetnames if n.strip().lower().startswith("паставка")]
+        for sheet, name_col, qty_col in ship_sheets + [("магазин", 2, 3)]:
             if sheet not in wb.sheetnames:
                 continue
             for row in list(wb[sheet].iter_rows(values_only=True))[1:]:

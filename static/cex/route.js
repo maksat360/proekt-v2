@@ -3,7 +3,12 @@
 /* Модуль «Цех» · вкладка «Маршрут»: визуальный редактор цепочки процессов.
    Работает поверх cex.js (ST, api, esc, nf, toast, render). */
 
+// три вкладки — три вида маршрута на одном редакторе
+const RT_VIEWS = { route: 'шв', route_ord: 'заказ', route_fin: 'гп' };
+function rtIsView(v) { return Object.prototype.hasOwnProperty.call(RT_VIEWS, v || ST.view); }
+
 const RT = {
+  kind: 'шв',          // вид маршрута: шв | заказ | гп
   data: null,          // ответ /routes
   mode: 'tpl',         // 'tpl' — шаблон, 'party' — партия
   key: 'Основной',     // имя шаблона или № партии
@@ -17,7 +22,11 @@ const RT = {
 const RT_W = 176, RT_H = 70, RT_GX = 64, RT_GY = 22, RT_PAD = 24;
 
 async function loadRoutes() {
-  RT.data = await api(`${API}/routes`);
+  const kind = RT_VIEWS[ST.view] || RT.kind;
+  if (kind !== RT.kind) {  // другая вкладка — свой черновик
+    Object.assign(RT, { kind, data: null, mode: 'tpl', key: 'Основной', draft: null, dirty: false, sel: null });
+  }
+  RT.data = await api(`${API}/routes?вид=${encodeURIComponent(RT.kind)}`);
   if (!RT.dirty) rtOpen(RT.mode, RT.key, true);
 }
 
@@ -30,7 +39,7 @@ function rtSource(mode, key) {
 function rtOpen(mode, key, quiet) {
   let src = rtSource(mode, key);
   if (!src) { mode = 'tpl'; key = 'Основной'; src = rtSource(mode, key) || (RT.data.шаблоны || [])[0]; }
-  if (!src) { RT.draft = []; return; }
+  if (!src) { RT.draft = []; RT.mode = 'tpl'; RT.key = 'Основной'; RT.name = 'Основной'; return; }
   RT.mode = mode;
   RT.key = mode === 'tpl' ? src.имя : String(src.номер);
   RT.name = mode === 'tpl' ? src.имя : src.шаблон;
@@ -163,7 +172,7 @@ function routeHtml() {
 
   return `
     <div class="cx-hero compact">
-      <div><h1>Маршрут</h1>
+      <div><h1>${esc(d.название || 'Маршрут')}</h1>
         <div class="cx-sub">Перетащите этап на другой — поменять местами, поставить после или параллельно. Стрелка = «ждёт, пока закончится».</div></div>
       <div class="cx-hero-actions"><button class="btn" data-act="rt-reload">Обновить</button></div>
     </div>
@@ -201,6 +210,7 @@ function routeHtml() {
       </div>
     </div>
 
+    ${RT.kind === 'заказ' ? rtWaitingHtml() : ''}
     ${rtRolesHtml()}
     ${tpl ? rtModelsHtml(tpl) : ''}
     ${rtTableHtml()}`;
@@ -233,7 +243,10 @@ function rtCanvas(party) {
     if (!p) return '';
     const op = rtOp(s.код);
     let prog = '';
-    if (party) {
+    if (party && RT.kind === 'заказ') {
+      const st = (party.шаги || {})[s.код] || {};
+      prog = `<div class="rt-meta">${st.выполнено ? '✓ выполнено' + (st.кто ? ' · ' + esc(st.кто) : '') : 'ждёт отметки'}</div>`;
+    } else if (party) {
       const done = Number((party.сдано || {})[s.код] || 0);
       const busy = Number((party.в_работе || {})[s.код] || 0);
       const pct = total ? Math.min(100, Math.round(100 * done / total)) : 0;
@@ -251,8 +264,8 @@ function rtCanvas(party) {
   }).join('');
   const sp = pos[start];
   const startNode = sp ? `<div class="rt-node start" style="left:${sp.x}px;top:${sp.y}px;width:${RT_W}px;height:${RT_H}px">
-      <div class="rt-name">Крой</div><div class="rt-code">${esc(start)} · старт</div>
-      ${party ? `<div class="rt-meta">раскроено ${nf(party.раскроено)} из ${nf(party.план)}</div>` : '<div class="rt-meta">отсюда всё начинается</div>'}
+      <div class="rt-name">${esc(RT.data.старт_название || 'Крой')}</div><div class="rt-code">старт</div>
+      ${party && RT.kind === 'шв' ? `<div class="rt-meta">раскроено ${nf(party.раскроено)} из ${nf(party.план)}</div>` : '<div class="rt-meta">отсюда всё начинается</div>'}
     </div>` : '';
   return `<div class="rt-canvas" style="width:${W}px;height:${H}px">
     <svg class="rt-svg" width="${W}" height="${H}">
@@ -278,7 +291,7 @@ function rtSide(party) {
       <ol>
         <li>Нажмите на этап — справа появятся его настройки.</li>
         <li>Перетащите этап на другой: <i>поменять местами</i>, <i>поставить после</i> или <i>параллельно</i>.</li>
-        <li>«После каких этапов» — галочки. Пусто = сразу после кроя.</li>
+        <li>«После каких этапов» — галочки. Пусто = ${esc(RT.data.пусто || 'сразу после кроя')}.</li>
         <li>Этапы в одной колонке идут одновременно.</li>
       </ol>
       ${party ? '<p class="cx-hint">Правка здесь меняет только эту партию. Шаблон и другие партии не меняются.</p>' : '<p class="cx-hint">Партии, которые уже в работе, сохранили свою копию — правка шаблона их не тронет.</p>'}
@@ -300,9 +313,9 @@ function rtSide(party) {
         <div class="rt-deps">
           ${others.length ? others.map((o) => `<label class="rt-check"><input type="checkbox" data-dep="${esc(o.код)}" ${s.после.includes(o.код) ? 'checked' : ''} ${dis}> ${esc(rtTitle(o.код))}</label>`).join('') : '<span class="cx-hint">Других этапов нет</span>'}
         </div>
-        <div class="cx-hint">${s.после.filter((d) => d !== rtStart()).length ? 'Начнётся, когда закончатся все отмеченные' : 'Ничего не отмечено — начнётся сразу после кроя'}</div>
+        <div class="cx-hint">${s.после.filter((d) => d !== rtStart()).length ? 'Начнётся, когда закончатся все отмеченные' : 'Ничего не отмечено — начнётся ' + esc(RT.data.пусто || 'сразу после кроя')}</div>
       </div>
-      <label class="rt-check"><input type="checkbox" id="rt-gp" ${s.склад_гп ? 'checked' : ''} ${dis}> После этапа — на склад ГП</label>
+      ${RT.kind === 'шв' ? `<label class="rt-check"><input type="checkbox" id="rt-gp" ${s.склад_гп ? 'checked' : ''} ${dis}> После этапа — на склад ГП</label>` : ''}
       ${rtPeopleForStage(s.код)}
       ${can ? `<div class="rt-actions">
         <button class="btn" data-act="rt-add-after">+ Этап после</button>
@@ -372,6 +385,21 @@ async function rtToggleRole(el) {
     render();
     toast(`${p ? p.ФИО : login}: ${el.checked ? '+' : '−'} ${rtTitle(code)}`, 'ok');
   } catch (err) { el.checked = !el.checked; toast(err.message, 'err'); }
+}
+
+// маршрут заказа: партии, у которых не все шаги отмечены — без этого крой не начнётся
+function rtWaitingHtml() {
+  const list = (RT.data && RT.data.ожидают) || [];
+  const rows = list.map((p) => `<div class="cx-qitem">
+      <div class="cx-qmain"><div class="cx-qtitle">Партия №${esc(p.номер)} <span class="cx-hint">${esc(p.модель)} · ${esc(p.клиент)}</span></div>
+        <div class="rt-steps">${p.шаги.map((st) => `<span class="rt-step ${st.выполнено ? 'done' : ''}">
+          ${st.выполнено ? '✓' : '○'} ${esc(st.название)}${st.выполнено && st.кто ? ` <span class="cx-hint">${esc(st.кто)}, ${esc(st.когда)}</span>` : ''}
+          ${st.можно ? `<button class="btn primary ac-mini" data-act="rt-step" data-on="1" data-num="${esc(p.номер)}" data-code="${esc(st.код)}">Выполнено</button>` : ''}
+          ${st.выполнено && rtCan() && !p.раскроено ? `<button class="btn ghost ac-mini" data-act="rt-step" data-on="0" data-num="${esc(p.номер)}" data-code="${esc(st.код)}">снять</button>` : ''}
+          ${!st.выполнено && !st.готов ? '<span class="cx-hint">после предыдущих</span>' : ''}</span>`).join('')}</div>
+      </div></div>`).join('');
+  return `<div class="cx-card"><div class="cx-card-h"><h3>Ждут шагов заказа</h3><span class="cx-hint">пока шаги не отмечены, партию не кроят</span></div>
+    <div class="cx-card-b">${rows || '<div class="cx-empty" style="padding:14px"><b>Все шаги выполнены</b>Партии с невыполненными шагами появятся здесь</div>'}</div></div>`;
 }
 
 function rtModelsHtml(tpl) {
@@ -493,6 +521,7 @@ async function rtSave() {
   const body = {
     этапы: RT.draft.map((s) => ({ код: s.код, после: s.после, склад_гп: s.склад_гп, кто: s.кто, активен: s.активен })),
   };
+  body.вид = RT.kind;
   if (RT.mode === 'party') { body.партия = RT.key; body.шаблон = RT.name; }
   else { body.шаблон = RT.name; body.старое_имя = RT.key; }
   try {
@@ -543,7 +572,7 @@ document.addEventListener('click', async (ev) => {
   if (!ev.target.closest('.rt-menu')) rtCloseMenu();
   const el = ev.target.closest('[data-act^="rt-"]');
   const node = ev.target.closest('.rt-node[data-node]');
-  if (!el && node && ST.view === 'route') {
+  if (!el && node && rtIsView()) {
     RT.sel = node.dataset.node; render(); return;
   }
   if (!el) return;
@@ -552,6 +581,15 @@ document.addEventListener('click', async (ev) => {
   if (act === 'rt-open') {
     if (!rtConfirmLeave()) return;
     rtOpen(el.dataset.mode, el.dataset.key); render(); return;
+  }
+  if (act === 'rt-step') {
+    const on = el.dataset.on === '1';
+    if (!on && !confirm('Снять отметку о выполнении шага?')) return;
+    try {
+      await api(`${API}/routes/step`, { method: 'POST', body: JSON.stringify({ партия: el.dataset.num, шаг: el.dataset.code, выполнено: on }) });
+      await loadRoutes(); render(); toast(on ? 'Шаг отмечен выполненным' : 'Отметка снята', 'ok');
+    } catch (err) { toast(err.message, 'err'); }
+    return;
   }
   if (act === 'rt-reload') {
     if (!rtConfirmLeave()) return;
@@ -605,7 +643,7 @@ document.addEventListener('click', async (ev) => {
   if (act === 'rt-delete') {
     if (!confirm(`Удалить шаблон «${RT.key}»? Модели вернутся на «Основной». Партии в работе сохранят свою копию.`)) return;
     try {
-      await api(`${API}/routes/delete`, { method: 'POST', body: JSON.stringify({ шаблон: RT.key }) });
+      await api(`${API}/routes/delete`, { method: 'POST', body: JSON.stringify({ шаблон: RT.key, вид: RT.kind }) });
       RT.dirty = false; RT.mode = 'tpl'; RT.key = 'Основной';
       await loadRoutes(); render(); toast('Шаблон удалён', 'ok');
     } catch (err) { toast(err.message, 'err'); }
@@ -622,7 +660,7 @@ document.addEventListener('click', async (ev) => {
 });
 
 document.addEventListener('change', async (ev) => {
-  if (ST.view !== 'route') return;
+  if (!rtIsView()) return;
   const t = ev.target;
   if (t.id === 'rt-party-sel') {
     if (!t.value) return;
@@ -632,9 +670,9 @@ document.addEventListener('change', async (ev) => {
   if (t.dataset.roleLogin) { await rtToggleRole(t); return; }
   if (t.classList.contains('rt-bind')) {
     try {
-      await api(`${API}/routes/bind`, { method: 'POST', body: JSON.stringify({ модель: t.dataset.model, шаблон: t.value }) });
+      await api(`${API}/routes/bind`, { method: 'POST', body: JSON.stringify({ модель: t.dataset.model, шаблон: t.value, вид: RT.kind }) });
       const keep = RT.dirty ? RT.draft : null;
-      RT.data = await api(`${API}/routes`);
+      RT.data = await api(`${API}/routes?вид=${encodeURIComponent(RT.kind)}`);
       if (keep) RT.draft = keep;
       render();
       toast(`Модель ${t.dataset.model} → «${t.value}»`, 'ok');
@@ -663,7 +701,7 @@ document.addEventListener('change', async (ev) => {
 
 // перетаскивание этапов (мышь и палец)
 document.addEventListener('pointerdown', (ev) => {
-  if (ST.view !== 'route' || !rtCan() || ev.button > 0) return;
+  if (!rtIsView() || !rtCan() || ev.button > 0) return;
   const node = ev.target.closest('.rt-node[data-node]');
   if (!node) return;
   RT.drag = { code: node.dataset.node, x: ev.clientX, y: ev.clientY, moved: false, ghost: null, node };

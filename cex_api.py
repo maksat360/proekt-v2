@@ -45,6 +45,16 @@ ASSIGN = ("Распределение", ["№ партии", "настил", "э
 ROUTE_PARTY = ("Маршрут партии",
                ["№ партии", "шаблон", "этап", "после каких этапов", "на склад ГП", "кто может"],
                [9, 16, 14, 26, 13, 18])
+# Ещё два маршрута по тем же правилам: шаблоны → привязка к модели → копия в партию.
+# «заказ» — шаги между приёмкой технологом и кроем (отмечаются выполненными),
+# «гп» — шаги после швейного маршрута до упаковки (работа по настилам, как швейные этапы).
+ROUTE_ORD = ("Маршрут заказа", ROUTE[1], ROUTE[2])
+ROUTE_ORD_MODEL = ("Маршрут заказа модели", ROUTE_MODEL[1], ROUTE_MODEL[2])
+ROUTE_ORD_PARTY = ("Маршрут заказа партии", ROUTE_PARTY[1] + ["выполнено", "кто отметил", "когда"],
+                   ROUTE_PARTY[2] + [11, 18, 16])
+ROUTE_FIN = ("Маршрут ГП", ROUTE[1], ROUTE[2])
+ROUTE_FIN_MODEL = ("Маршрут ГП модели", ROUTE_MODEL[1], ROUTE_MODEL[2])
+ROUTE_FIN_PARTY = ("Маршрут ГП партии", ROUTE_PARTY[1], ROUTE_PARTY[2])
 CUT = ("крой",
        ["№ партии", "настил", "цвет", "размер", "план шт", "факт шт",
         "закройщик", "дата", "комментарий", "карта"],
@@ -105,7 +115,8 @@ def _norm_size(v) -> str:
 
 def ensure_sheets() -> None:
     specs = [MODELS, COLORS, SIZES, ORDERS, PARTIES, TECH, CUT, OUT, ROUTE, PACK,
-             STAFF, SHIFTS, RATES, SALARY, ROUTE_MODEL, ROUTE_PARTY, ASSIGN, ITEM_LABELS, CARDS, ROLLS, PATTERNS]
+             STAFF, SHIFTS, RATES, SALARY, ROUTE_MODEL, ROUTE_PARTY, ASSIGN, ITEM_LABELS, CARDS, ROLLS, PATTERNS,
+             ROUTE_ORD, ROUTE_ORD_MODEL, ROUTE_ORD_PARTY, ROUTE_FIN, ROUTE_FIN_MODEL, ROUTE_FIN_PARTY]
     store.ensure_sheets(specs)
     for name, headers, _ in specs:
         if store.first_row(name) != headers:
@@ -396,11 +407,13 @@ def apply_decision(me: dict, body: dict) -> dict:
     })
     seed_route()
     first_model = newparty[0]["модель"] if newparty else ""
-    snap = _rows(ROUTE_PARTY) + snapshot_rows(party_num, first_model)
+    # все три маршрута копируются в партию: потом правка шаблонов её не меняет
+    snaps = [(KINDS[k]["party"][0], KINDS[k]["party"][1],
+              _rows(KINDS[k]["party"]) + snapshot_rows(party_num, first_model, k))
+             for k in ("шв", "гп", "заказ")]
     store.write_sheets([(ORDERS[0], ORDERS[1], orders_rows),
                         (PARTIES[0], PARTIES[1], _rows(PARTIES) + newparty),
-                        (TECH[0], TECH[1], tech_rows),
-                        (ROUTE_PARTY[0], ROUTE_PARTY[1], snap)])
+                        (TECH[0], TECH[1], tech_rows)] + snaps)
     return {"статус": status, "партия": party_num, "штук": total}
 
 
@@ -485,8 +498,11 @@ def cut_state() -> dict:
         g["прогресс"] = int(round(100 * g["раскроено"] / g["план"])) if g["план"] else 0
         out.append(g)
     out.sort(key=lambda g: _int(g["номер"]))
+    pending = {num: [x["название"] for x in order_steps(num, rows=rows) if not x["выполнено"]]
+               for num, rows in _party_snapshots("заказ").items()}
     for g in out:
         g["карты"] = cards_of(g["номер"])
+        g["ждёт_шагов"] = pending.get(g["номер"], [])
     return {"партии": out, "ставка": rate_of("РАСКР", 15.0), "лекала": patterns()}
 
 
@@ -520,6 +536,8 @@ def save_card(me: dict, body: dict) -> dict:
         raise ValueError(f"Партии №{num} нет")
     if party["статус"] not in ("крой", "в производстве"):
         raise ValueError(f"Партия в статусе «{party['статус']}» — крой недоступен")
+    if party.get("ждёт_шагов"):
+        raise ValueError("Сначала выполните шаги маршрута заказа: " + ", ".join(party["ждёт_шагов"]))
     length = _num(body.get("длина"))
     if length <= 0:
         raise ValueError("Укажите длину настила, м")
@@ -641,6 +659,8 @@ def save_cut(me: dict, body: dict) -> dict:
         raise ValueError("Партия уже раскроена полностью")
     if party["статус"] not in ("крой", "в производстве"):
         raise ValueError(f"Партия в статусе «{party['статус']}» — крой недоступен")
+    if party.get("ждёт_шагов"):
+        raise ValueError("Сначала выполните шаги маршрута заказа: " + ", ".join(party["ждёт_шагов"]))
 
     index = {(r["цвет"], r["размер"]): r for r in party["строки"]}
     prepared = []
@@ -709,6 +729,26 @@ def save_cut(me: dict, body: dict) -> dict:
 MAIN_ROUTE = "Основной"
 START_STAGE = "РАСКР"
 DONE_PARTY = ("упакован", "на складе", "отгружен", "отгружена")
+
+# вид маршрута → листы и «старт» (условный первый узел графа)
+KINDS = {
+    "шв": {"route": ROUTE, "model": ROUTE_MODEL, "party": ROUTE_PARTY, "старт": START_STAGE,
+           "старт_название": "Крой", "пусто": "сразу после кроя", "название": "Швейный маршрут"},
+    "гп": {"route": ROUTE_FIN, "model": ROUTE_FIN_MODEL, "party": ROUTE_FIN_PARTY, "старт": "ПОШИВ",
+           "старт_название": "Пошив", "пусто": "сразу после швейного маршрута",
+           "название": "Маршрут готовой продукции"},
+    "заказ": {"route": ROUTE_ORD, "model": ROUTE_ORD_MODEL, "party": ROUTE_ORD_PARTY, "старт": "ПРИЁМКА",
+              "старт_название": "Приёмка технологом", "пусто": "сразу после приёмки технологом",
+              "название": "Маршрут заказа"},
+}
+
+
+def _kind(v) -> str:
+    v = _s(v) or "шв"
+    if v not in KINDS:
+        raise ValueError("Неизвестный вид маршрута")
+    return v
+
 
 DEFAULT_ROUTE = [
     ("ОВЕРЛ", "РАСКР"),
@@ -811,19 +851,19 @@ def _stage_items(rows: list[dict], ops: dict) -> list[dict]:
     return _topo(out)
 
 
-def route_templates() -> dict[str, list[dict]]:
-    """Сырые строки листа «Маршрут» по шаблонам (пустой шаблон = «Основной»)."""
+def route_templates(kind: str = "шв") -> dict[str, list[dict]]:
+    """Сырые строки листа маршрута по шаблонам (пустой шаблон = «Основной»)."""
     out: dict[str, list[dict]] = {}
-    for r in _rows(ROUTE):
+    for r in _rows(KINDS[kind]["route"]):
         if not _s(r.get("этап")):
             continue
         out.setdefault(_s(r.get("шаблон")) or MAIN_ROUTE, []).append(r)
     return out
 
 
-def model_routes() -> dict[str, str]:
+def model_routes(kind: str = "шв") -> dict[str, str]:
     out = {}
-    for r in _rows(ROUTE_MODEL):
+    for r in _rows(KINDS[kind]["model"]):
         m, t = _s(r.get("модель")), _s(r.get("шаблон"))
         if m and t:
             out[m] = t
@@ -847,9 +887,9 @@ def route_stages(template: str = MAIN_ROUTE) -> list[dict]:
     return _stage_items(rows, _ops())
 
 
-def _party_snapshots() -> dict[str, list[dict]]:
+def _party_snapshots(kind: str = "шв") -> dict[str, list[dict]]:
     snap: dict[str, list[dict]] = {}
-    for r in _rows(ROUTE_PARTY):
+    for r in _rows(KINDS[kind]["party"]):
         num = _s(r.get("№ партии"))
         if num.endswith(".0"):
             num = num[:-2]
@@ -858,26 +898,51 @@ def _party_snapshots() -> dict[str, list[dict]]:
     return snap
 
 
-def party_routes(parties: list[dict]) -> dict[str, dict]:
-    """№ партии → {шаблон, своя (есть копия в «Маршрут партии»), этапы}."""
+def party_routes(parties: list[dict], kind: str = "шв", with_fin: bool = True) -> dict[str, dict]:
+    """№ партии → {шаблон, своя (есть копия в листе партии), этапы}.
+
+    «шв» без своей копии берёт шаблон модели (так было всегда). «гп» и «заказ» — только
+    копия партии: партии, принятые до появления этих маршрутов, не меняются.
+    Для «шв» к швейным этапам дописываются этапы готовой продукции (with_fin) — дальше
+    они работают как обычные этапы по настилам, а упаковка ждёт их окончания.
+    """
     ops = _ops()
-    templates = route_templates()
-    bind = model_routes()
-    snap = _party_snapshots()
+    snap = _party_snapshots(kind)
+    fin = _party_snapshots("гп") if kind == "шв" and with_fin else {}
+    templates = route_templates(kind) if kind == "шв" else {}
+    bind = model_routes(kind) if kind == "шв" else {}
     cache: dict[str, list[dict]] = {}
     out: dict[str, dict] = {}
     for p in parties:
         num = _s(p.get("номер"))
         if num in snap:
             rows = snap[num]
-            out[num] = {"шаблон": _s(rows[0].get("шаблон")) or MAIN_ROUTE, "своя": True,
-                        "этапы": _stage_items(rows, ops)}
-            continue
-        t = _pick_template(_s(p.get("модель")), templates, bind)
-        if t not in cache:
-            cache[t] = _stage_items(templates.get(t, []), ops)
-        out[num] = {"шаблон": t, "своя": False, "этапы": cache[t]}
+            info = {"шаблон": _s(rows[0].get("шаблон")) or MAIN_ROUTE, "своя": True,
+                    "этапы": _stage_items(rows, ops)}
+        elif kind != "шв":
+            info = {"шаблон": "", "своя": False, "этапы": []}
+        else:
+            t = _pick_template(_s(p.get("модель")), templates, bind)
+            if t not in cache:
+                cache[t] = _stage_items(templates.get(t, []), ops)
+            info = {"шаблон": t, "своя": False, "этапы": cache[t]}
+        if fin.get(num):
+            info = dict(info, этапы=_with_fin(info["этапы"], fin[num], ops))
+        out[num] = info
     return out
+
+
+def _with_fin(sew: list[dict], fin_rows: list[dict], ops: dict) -> list[dict]:
+    """Швейные этапы + этапы готовой продукции: «пусто/ПОШИВ» = после последних швейных."""
+    finals = _finals(sew)
+    codes = {s["код"] for s in sew}
+    out = list(sew)
+    for st in _stage_items(fin_rows, ops):
+        if st["код"] in codes:
+            continue  # такой этап уже есть в швейном маршруте
+        deps = [d for d in st["зависимости"] if d != KINDS["гп"]["старт"]]
+        out.append(dict(st, зависимости=deps or list(finals), гп=True))
+    return _topo(out)
 
 
 def _union_stages(routes: dict[str, dict]) -> list[dict]:
@@ -910,8 +975,9 @@ def _finals(stages: list[dict]) -> list[str]:
     return [st["код"] for st in stages if st["код"] not in used]
 
 
-def check_route(stages: list[dict], known: dict | None = None) -> dict:
+def check_route(stages: list[dict], known: dict | None = None, kind: str = "шв") -> dict:
     """Проверка маршрута. stages: [{код, зависимости, активен?}]."""
+    start = KINDS[kind]["старт"]
     errors: list[str] = []
     warnings: list[str] = []
     active = [s for s in stages if s.get("активен", True)]
@@ -921,12 +987,12 @@ def check_route(stages: list[dict], known: dict | None = None) -> dict:
         if not c:
             errors.append("Есть этап без кода")
             continue
-        if c == START_STAGE:
-            errors.append(f"{START_STAGE} (крой) — это старт маршрута, его не нужно добавлять этапом")
+        if c in (start, START_STAGE):
+            errors.append(f"{c} — это старт маршрута, его не нужно добавлять этапом")
         if c in codes:
             errors.append(f"Этап {c} указан дважды")
         codes.append(c)
-    if not active:
+    if not active and kind == "шв":
         errors.append("В маршруте нет ни одного этапа")
     cs = set(codes)
     for s in active:
@@ -934,7 +1000,7 @@ def check_route(stages: list[dict], known: dict | None = None) -> dict:
         for d in s.get("зависимости") or []:
             if d == c:
                 errors.append(f"{c} не может идти после самого себя")
-            elif d not in cs and d != START_STAGE:
+            elif d not in cs and d != start:
                 errors.append(f"{c} ждёт этап {d}, которого нет в маршруте")
     # циклы
     need = {_s(s.get("код")): {d for d in (s.get("зависимости") or []) if d in cs and d != _s(s.get("код"))}
@@ -956,7 +1022,7 @@ def check_route(stages: list[dict], known: dict | None = None) -> dict:
         warnings.append("Несколько последних этапов: " + ", ".join(finals)
                         + ". Партия будет готова, когда закончатся все они.")
     if known is not None:
-        missing = [c for c in codes if c not in known and c != START_STAGE]
+        missing = [c for c in codes if c not in known and c != start]
         if missing:
             warnings.append("Нет ставки в листе «расценки»: " + ", ".join(missing)
                             + " — швея получит 0 сом/шт")
@@ -990,12 +1056,16 @@ def _editor_stages(rows: list[dict], ops: dict) -> list[dict]:
     return out
 
 
-def routes_state(me: dict) -> dict:
-    seed_route()
+def routes_state(me: dict, kind: str = "шв") -> dict:
+    K = KINDS[kind]
+    if kind == "шв":
+        seed_route()
     ops = _ops()
-    templates = route_templates()
-    bind = model_routes()
+    templates = route_templates(kind)
+    bind = model_routes(kind)
     models = [m for m in refs()["модели"]]
+    if kind != "шв" and MAIN_ROUTE not in templates:
+        templates[MAIN_ROUTE] = []  # пустой основной: шагов нет, пока их не добавят
     tpl_out = []
     names = list(templates)
     if MAIN_ROUTE in names:
@@ -1005,14 +1075,14 @@ def routes_state(me: dict) -> dict:
         stages = _editor_stages(templates[name], ops)
         tpl_out.append({
             "имя": name, "этапы": stages,
-            "проверка": check_route(stages_for_check(stages), ops),
+            "проверка": check_route(stages_for_check(stages), ops, kind),
             "модели": [m["модель"] for m in models
                        if _pick_template(m["модель"], templates, bind) == name],
         })
 
     parties_all = cut_state()["партии"]
-    routes = party_routes(parties_all)
-    snap = _party_snapshots()
+    routes = party_routes(parties_all, kind, with_fin=False)
+    snap = _party_snapshots(kind)
     done: dict[tuple, int] = {}
     inwork: dict[tuple, int] = {}
     for r in _rows(OUT):
@@ -1027,17 +1097,22 @@ def routes_state(me: dict) -> dict:
             continue
         num = p["номер"]
         info = routes.get(num) or {"шаблон": MAIN_ROUTE, "своя": False, "этапы": []}
-        rows = snap.get(num) or templates.get(info["шаблон"], [])
-        party_out.append({
+        rows = snap.get(num) or (templates.get(info["шаблон"], []) if kind == "шв" else [])
+        item = {
             "номер": num, "модель": p["модель"], "клиент": p["клиент"],
             "статус": p["статус"], "план": p["план"], "раскроено": p["раскроено"],
-            "шаблон": info["шаблон"], "своя": info["своя"],
+            "шаблон": info["шаблон"] or MAIN_ROUTE, "своя": info["своя"],
             "этапы": _editor_stages(rows, ops),
             "сдано": {st["код"]: done.get((num, st["код"]), 0) for st in info["этапы"]},
             "в_работе": {st["код"]: inwork.get((num, st["код"]), 0) for st in info["этапы"]},
-        })
+        }
+        if kind == "заказ":
+            item["шаги"] = {x["код"]: x for x in order_steps(num, me, rows)}
+        party_out.append(item)
 
-    return {
+    out = {
+        "вид": kind, "название": K["название"], "старт": K["старт"],
+        "старт_название": K["старт_название"], "пусто": K["пусто"],
         "шаблоны": tpl_out,
         "операции": sorted(ops.values(), key=lambda x: (x["порядок"], x["код"])),
         "модели": [{"модель": m["модель"], "название": m["название"],
@@ -1046,9 +1121,72 @@ def routes_state(me: dict) -> dict:
                     "назначен": m["модель"] in bind} for m in models],
         "партии": party_out,
         "сотрудники": staff_people(_s(me.get("цех"))),
-        "старт": START_STAGE,
         "можно": _can(me, "cex.routes"),
     }
+    if kind == "заказ":
+        out["ожидают"] = [{"номер": x["номер"], "модель": x["модель"], "клиент": x["клиент"],
+                           "раскроено": x["раскроено"], "шаги": list(x["шаги"].values())}
+                          for x in party_out if any(not st["выполнено"] for st in x["шаги"].values())]
+    return out
+
+
+# ------------------------------------------------- шаги маршрута заказа
+def order_steps(num: str, me: dict | None = None, rows: list[dict] | None = None) -> list[dict]:
+    """Шаги заказа партии (из её копии) с отметками. «можно» — текущему пользователю отметить."""
+    if rows is None:
+        rows = _party_snapshots("заказ").get(num, [])
+    ops = _ops()
+    start = KINDS["заказ"]["старт"]
+    done = {_s(r.get("этап")) for r in rows if _yes(r.get("выполнено"))}
+    mine = set(roles_of(_s(me.get("логин")))) if me else set()
+    out = []
+    for st in _stage_items(rows, ops):
+        r = next((x for x in rows if _s(x.get("этап")) == st["код"]), {})
+        deps = [d for d in st["зависимости"] if d != start]
+        ready = all(d in done for d in deps)
+        is_done = st["код"] in done
+        out.append({"код": st["код"], "название": st["название"], "после": deps,
+                    "выполнено": is_done, "кто": _s(r.get("кто отметил")), "когда": _s(r.get("когда")),
+                    "готов": ready,
+                    "можно": bool(me) and not is_done and ready
+                    and (st["код"] in mine or _can(me, "cex.tech"))})
+    return out
+
+
+def order_pending(num: str) -> list[str]:
+    """Названия невыполненных шагов заказа — пока они есть, партию не кроят."""
+    return [x["название"] for x in order_steps(num) if not x["выполнено"]]
+
+
+def mark_order_step(me: dict, body: dict) -> dict:
+    num = _norm_size(body.get("партия"))
+    code = _s(body.get("шаг")).upper()
+    want = bool(body.get("выполнено", True))
+    party = next((p for p in cut_state()["партии"] if p["номер"] == num), None)
+    if not party:
+        raise ValueError("Партия не найдена")
+    rows = _rows(ROUTE_ORD_PARTY)
+    row = next((r for r in rows if _norm_size(r.get("№ партии")) == num and _s(r.get("этап")) == code), None)
+    if row is None:
+        raise ValueError("Такого шага нет в маршруте заказа этой партии")
+    step = next(x for x in order_steps(num, me) if x["код"] == code)
+    if want:
+        if step["выполнено"]:
+            return {"шаг": code, "выполнено": True}
+        if not step["готов"]:
+            raise ValueError("Сначала выполните предыдущие шаги: " + ", ".join(step["после"]))
+        if not step["можно"]:
+            raise perms.AccessError("Отметить шаг может сотрудник с этим этапом или технолог")
+        row.update({"выполнено": 1, "кто отметил": _s(me.get("фио")) or _s(me.get("логин")),
+                    "когда": datetime.now().strftime("%d.%m.%Y %H:%M")})
+    else:
+        if not _can(me, "cex.tech"):
+            raise perms.AccessError("Снять отметку может технолог")
+        if party["раскроено"] > 0:
+            raise ValueError("Партию уже начали кроить — отметку снять нельзя")
+        row.update({"выполнено": "", "кто отметил": "", "когда": ""})
+    store.write_sheets([(ROUTE_ORD_PARTY[0], ROUTE_ORD_PARTY[1], rows)])
+    return {"шаг": code, "выполнено": want}
 
 
 def stages_for_check(stages: list[dict]) -> list[dict]:
@@ -1064,14 +1202,16 @@ def _route_rows(template: str, stages: list[dict]) -> list[dict]:
 
 
 def save_route(me: dict, body: dict) -> dict:
+    kind = _kind(body.get("вид"))
+    K = KINDS[kind]
     stages = _clean_stage_input(body.get("этапы"))
     ops = _ops()
-    check = check_route(stages, ops)
+    check = check_route(stages, ops, kind)
     if check["ошибки"]:
         raise ValueError(check["ошибки"][0])
     party = _s(body.get("партия"))
     if party:
-        return _save_party_route(party, _s(body.get("шаблон")) or MAIN_ROUTE, stages, check)
+        return _save_party_route(party, _s(body.get("шаблон")) or MAIN_ROUTE, stages, check, kind)
 
     name = _s(body.get("шаблон"))
     old = _s(body.get("старое_имя")) or name
@@ -1079,34 +1219,43 @@ def save_route(me: dict, body: dict) -> dict:
         raise ValueError("Назовите шаблон")
     if len(name) > 40:
         raise ValueError("Слишком длинное название шаблона")
-    templates = route_templates()
+    templates = route_templates(kind)
     if name != old and name in templates:
         raise ValueError(f"Шаблон «{name}» уже есть")
     if old == MAIN_ROUTE and name != MAIN_ROUTE:
         raise ValueError("Основной шаблон нельзя переименовать")
-    rows = [r for r in _rows(ROUTE) if (_s(r.get("шаблон")) or MAIN_ROUTE) not in (old, name)]
+    rows = [r for r in _rows(K["route"]) if (_s(r.get("шаблон")) or MAIN_ROUTE) not in (old, name)]
     for r in rows:
         if not _s(r.get("шаблон")):
             r["шаблон"] = MAIN_ROUTE
     rows += _route_rows(name, stages)
-    items = [(ROUTE[0], ROUTE[1], rows)]
+    items = [(K["route"][0], K["route"][1], rows)]
     if name != old:
-        bind_rows = _rows(ROUTE_MODEL)
+        bind_rows = _rows(K["model"])
         for r in bind_rows:
             if _s(r.get("шаблон")) == old:
                 r["шаблон"] = name
-        items.append((ROUTE_MODEL[0], ROUTE_MODEL[1], bind_rows))
+        items.append((K["model"][0], K["model"][1], bind_rows))
     store.write_sheets(items)
     return {"шаблон": name, "этапов": len(stages), "предупреждения": check["предупреждения"]}
 
 
-def _save_party_route(num: str, template: str, stages: list[dict], check: dict) -> dict:
+def _save_party_route(num: str, template: str, stages: list[dict], check: dict,
+                      kind: str = "шв") -> dict:
+    K = KINDS[kind]
     parties_all = cut_state()["партии"]
-    if not any(p["номер"] == num for p in parties_all):
+    party = next((p for p in parties_all if p["номер"] == num), None)
+    if not party:
         raise ValueError("Партия не найдена")
     codes = {s["код"] for s in stages if s["активен"]}
     warn = list(check["предупреждения"])
-    for r in _rows(OUT):
+    if kind == "заказ" and party["раскроено"] > 0:
+        raise ValueError("Партию уже начали кроить — шаги заказа менять поздно")
+    # этапы другого вида той же партии тоже «свои»: их работа не считается выпавшей
+    other = "гп" if kind == "шв" else "шв"
+    if kind != "заказ":
+        codes |= {st["код"] for st in (party_routes([party], other, with_fin=False).get(num) or {}).get("этапы", [])}
+    for r in (_rows(OUT) if kind != "заказ" else []):
         if _s(r.get("партия")) != num:
             continue
         code = _s(r.get("этап"))
@@ -1119,46 +1268,54 @@ def _save_party_route(num: str, template: str, stages: list[dict], check: dict) 
             msg = f"По этапу {code} уже есть сданные штуки — они останутся в зарплате, но в маршруте не участвуют"
             if msg not in warn:
                 warn.append(msg)
-    rows = [r for r in _rows(ROUTE_PARTY) if _norm_size(r.get("№ партии")) != num]
-    rows += [{"№ партии": num, "шаблон": template, "этап": s["код"],
-              "после каких этапов": ";".join(s["зависимости"]),
-              "на склад ГП": 1 if s["склад_гп"] else 0, "кто может": s["кто"]}
-             for s in stages if s["активен"]]
-    store.write_sheets([(ROUTE_PARTY[0], ROUTE_PARTY[1], rows)])
-    return {"партия": num, "этапов": len(rows), "предупреждения": warn}
+    old = {_s(r.get("этап")): r for r in _rows(K["party"]) if _norm_size(r.get("№ партии")) == num}
+    rows = [r for r in _rows(K["party"]) if _norm_size(r.get("№ партии")) != num]
+    new = [{"№ партии": num, "шаблон": template, "этап": s["код"],
+            "после каких этапов": ";".join(s["зависимости"]),
+            "на склад ГП": 1 if s["склад_гп"] else 0, "кто может": s["кто"]}
+           for s in stages if s["активен"]]
+    for r in new:  # отметки выполненных шагов заказа сохраняются
+        for col in ("выполнено", "кто отметил", "когда"):
+            if col in K["party"][1]:
+                r[col] = (old.get(r["этап"]) or {}).get(col, "")
+    store.write_sheets([(K["party"][0], K["party"][1], rows + new)])
+    return {"партия": num, "этапов": len(new), "предупреждения": warn}
 
 
 def delete_route(me: dict, body: dict) -> dict:
+    K = KINDS[_kind(body.get("вид"))]
     name = _s(body.get("шаблон"))
     if not name or name == MAIN_ROUTE:
         raise ValueError("Основной шаблон удалить нельзя")
-    rows = [r for r in _rows(ROUTE) if (_s(r.get("шаблон")) or MAIN_ROUTE) != name]
+    rows = [r for r in _rows(K["route"]) if (_s(r.get("шаблон")) or MAIN_ROUTE) != name]
     for r in rows:
         if not _s(r.get("шаблон")):
             r["шаблон"] = MAIN_ROUTE
-    bind_rows = [r for r in _rows(ROUTE_MODEL) if _s(r.get("шаблон")) != name]
-    store.write_sheets([(ROUTE[0], ROUTE[1], rows), (ROUTE_MODEL[0], ROUTE_MODEL[1], bind_rows)])
+    bind_rows = [r for r in _rows(K["model"]) if _s(r.get("шаблон")) != name]
+    store.write_sheets([(K["route"][0], K["route"][1], rows), (K["model"][0], K["model"][1], bind_rows)])
     return {"ok": True}
 
 
 def bind_route(me: dict, body: dict) -> dict:
+    kind = _kind(body.get("вид"))
+    K = KINDS[kind]
     model = _s(body.get("модель"))
     name = _s(body.get("шаблон"))
     if not model:
         raise ValueError("Не выбрана модель")
-    if name and name not in route_templates():
+    if name and name != MAIN_ROUTE and name not in route_templates(kind):
         raise ValueError(f"Шаблона «{name}» нет")
-    rows = [r for r in _rows(ROUTE_MODEL) if _s(r.get("модель")) != model]
+    rows = [r for r in _rows(K["model"]) if _s(r.get("модель")) != model]
     if name and name != MAIN_ROUTE:
         rows.append({"модель": model, "шаблон": name})
-    store.write_sheets([(ROUTE_MODEL[0], ROUTE_MODEL[1], rows)])
+    store.write_sheets([(K["model"][0], K["model"][1], rows)])
     return {"модель": model, "шаблон": name or MAIN_ROUTE}
 
 
-def snapshot_rows(num, model: str) -> list[dict]:
-    """Строки «Маршрут партии» для новой партии — копия шаблона её модели."""
-    templates = route_templates()
-    t = _pick_template(model, templates, model_routes())
+def snapshot_rows(num, model: str, kind: str = "шв") -> list[dict]:
+    """Строки листа партии для новой партии — копия шаблона её модели."""
+    templates = route_templates(kind)
+    t = _pick_template(model, templates, model_routes(kind))
     return [{"№ партии": num, "шаблон": t, "этап": _s(r.get("этап")),
              "после каких этапов": _s(r.get("после каких этапов")),
              "на склад ГП": r.get("на склад ГП", 0), "кто может": _s(r.get("кто может"))}
@@ -1452,6 +1609,9 @@ def _stages_in_use() -> dict[str, str]:
     """Где этап уже участвует — такой нельзя удалить."""
     where: dict[str, str] = {}
     for label, sheet, col in (("маршрут", ROUTE, "этап"), ("маршрут партии", ROUTE_PARTY, "этап"),
+                              ("маршрут заказа", ROUTE_ORD, "этап"), ("маршрут ГП", ROUTE_FIN, "этап"),
+                              ("маршрут заказа партии", ROUTE_ORD_PARTY, "этап"),
+                              ("маршрут ГП партии", ROUTE_FIN_PARTY, "этап"),
                               ("выдачи работы", OUT, "этап"), ("распределение", ASSIGN, "этап")):
         for r in _rows(sheet):
             code = _s(r.get(col)).upper()
@@ -3084,7 +3244,12 @@ def _dispatch(ctx) -> None:
 
     if path == "/api/cex/routes" and method == "GET":
         ensure_sheets()
-        _ok(ctx, routes_state(me))
+        try:
+            kind = _kind(((ctx.get("query") or {}).get("вид") or [""])[0])
+        except ValueError as exc:
+            _fail(ctx, str(exc))
+            return
+        _ok(ctx, routes_state(me, kind))
         return
 
     if path in ("/api/cex/routes/save", "/api/cex/routes/delete", "/api/cex/routes/bind") \
@@ -3097,6 +3262,16 @@ def _dispatch(ctx) -> None:
               "/api/cex/routes/bind": bind_route}[path]
         try:
             _ok(ctx, fn(me, ctx["body"]()))
+        except ValueError as exc:
+            _fail(ctx, str(exc))
+        return
+
+    if path == "/api/cex/routes/step" and method == "POST":
+        ensure_sheets()
+        try:
+            _ok(ctx, mark_order_step(me, ctx["body"]()))
+        except perms.AccessError as exc:
+            _fail(ctx, str(exc), 403)
         except ValueError as exc:
             _fail(ctx, str(exc))
         return

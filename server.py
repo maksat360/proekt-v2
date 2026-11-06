@@ -1816,7 +1816,7 @@ class Handler(BaseHTTPRequestHandler):
                 if path == "/api/wh/stock":
                     items = warehouse.stock_items()
                     if query.get("только", ["1"])[0] == "1":
-                        items = [i for i in items if i["остаток"] > 0]
+                        items = [i for i in items if i["остаток"] != 0]  # минус (пересорт) тоже показываем
                     self._json({"ok": True, "data": items,
                                 "итоги": {"позиций": len(items),
                                           "штук": round(sum(i["остаток"] for i in items), 2)}})

@@ -43,10 +43,15 @@ function cutCardHtml() {
         <input class="input" id="cc-num" inputmode="numeric" placeholder="Номер партии" value="${esc(CC.num)}" autocomplete="off">
         <button class="btn primary" data-act="cc-open">Открыть</button>
       </div>
-      ${waiting.length ? `<div class="cc-wait">Ждут кроя: ${waiting.map((x) => `<button class="rt-chip ${x.номер === CC.num ? 'on' : ''}" data-act="cc-pick" data-num="${esc(x.номер)}">№${esc(x.номер)} · ${esc(x.модель)} · осталось ${nf(x.остаток)}</button>`).join('')}</div>`
+      ${waiting.length ? `<div class="cc-wait">Ждут кроя: ${waiting.map((x) => `<button class="rt-chip ${x.номер === CC.num ? 'on' : ''}" data-act="cc-pick" data-num="${esc(x.номер)}">№${esc(x.номер)} · ${esc(x.модель)} · ${(x.ждёт_шагов || []).length ? '⏳ шаги заказа' : 'осталось ' + nf(x.остаток)}</button>`).join('')}</div>`
         : '<div class="cx-hint" style="margin-top:10px">Партий, ожидающих крой, нет</div>'}
     </div></div>`;
   if (!p) return head + pickBlock;
+  // маршрут заказа: пока его шаги не отмечены, кроить нельзя (сервер проверяет так же)
+  if ((p.ждёт_шагов || []).length) {
+    return head + pickBlock + `<div class="cx-notice warn">Партию №${esc(p.номер)} пока нельзя кроить: не выполнены шаги маршрута заказа —
+      <b>${p.ждёт_шагов.map(esc).join(', ')}</b>. Их отмечают во вкладке «Маршрут заказа».</div>` + ccHistoryHtml(p);
+  }
   return head + pickBlock + ccFormHtml(p) + ccHistoryHtml(p);
 }
 

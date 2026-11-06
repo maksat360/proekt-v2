@@ -380,12 +380,16 @@ async function afterLogin() {
   try { await syncNow(false); } catch (e) { /* без связи — работаем офлайн */ }
 }
 
+// Раздел портала по умолчанию: «Цех» — отдельная страница, в него уходим только по клику,
+// иначе кнопка «‹ Портал» в цехе сразу возвращает обратно и склад недоступен.
+function homeRoute(allowed) { return allowed.find((id) => id !== 'cex') || allowed[0] || 'wh'; }
+
 async function go(route, param) {
   if (route === 'cex') { location.href = '/cex/'; return; }
   if (STATE.me) {
     const allowed = visibleNav(STATE.me.роль).map((n) => n.id);
     if (route !== 'batch' && !allowed.includes(route)) {
-      route = allowed[0] || 'wh';
+      route = homeRoute(allowed);
       param = undefined;
     }
   }
@@ -1403,7 +1407,9 @@ function productCard(it) {
         <div class="pmeta">${esc(String(it['цвет']).split(',')[0])} · арт. ${esc(it['артикул'])}</div>
         <div class="prow">
           <b>${money(price)}</b>
-          <span class="stock ${avail > 0 ? '' : 'zero'}">${avail > 0 ? nf(avail) + ' шт' : 'нет в наличии'}</span>
+          ${(STATE.caps['wh.view'] && num(it['склад']) < 0)
+            ? `<span class="stock zero" style="color:#d12e2e" title="По складу минус — как в столбце ф.к">минус ${nf(-num(it['склад']))} шт</span>`
+            : `<span class="stock ${avail > 0 ? '' : 'zero'}">${avail > 0 ? nf(avail) + ' шт' : 'нет в наличии'}</span>`}
         </div>
         ${avail > 0
           ? `<button class="btn primary sm" data-shop="add" data-id="${it['id']}">В корзину${inCart ? ' · ' + inCart : ''}</button>`
@@ -2410,7 +2416,7 @@ async function whStock(meta) {
     const res = await api('/api/wh/stock' + q);
     WH.stock = res.data;
   } catch (e) {
-    WH.stock = localItems().filter((i) => (WH.ф.only ? (i['остаток'] || 0) > 0 : true));
+    WH.stock = localItems().filter((i) => (WH.ф.only ? (i['остаток'] || 0) !== 0 : true));
   }
   const models = WH.ф.cat ? Object.keys(meta['дерево'][WH.ф.cat] || {}) : [];
   const colors = WH.ф.cat && WH.ф.model ? Object.keys(meta['дерево'][WH.ф.cat][WH.ф.model] || {}) : [];
@@ -3837,7 +3843,7 @@ async function boot() {
   let [route, param] = hash.split('/');
   const allowed = visibleNav(STATE.me.роль).map((n) => n.id);
   const known = allowed.includes(route) || route === 'batch';
-  if (!known) { await go(allowed[0] || 'wh'); return; }
+  if (!known) { await go(homeRoute(allowed)); return; }
   // клиент всегда попадает в магазин и не видит склад
   if (STATE.me.роль === 'client') {
     MODE.sklad = false;

@@ -97,3 +97,8 @@
 .rt-roles td.rt-rp { position: sticky; left: 0; background: var(--card); min-width: 170px; }
 .rt-roles input[type="checkbox"] { width: 18px; height: 18px; cursor: pointer; }
 .cx-roles { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 13px; color: var(--ink-2); }
+
+/* маршрут заказа: шаги партии с отметками */
+.rt-steps { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.rt-step { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 12px; background: var(--fill); font-size: 13px; }
+.rt-step.done { background: var(--green-soft); color: var(--green); }
