@@ -34,6 +34,17 @@ class PermsTests(unittest.TestCase):
         perms._CACHE.update(sig=None, data=None)
         self.tmp.cleanup()
 
+    def test_order_flow_roles(self):
+        designer = {"логин": "d", "роль": "designer"}
+        supply = {"логин": "s", "роль": "supply"}
+        store = {"логин": "k", "роль": "storekeeper"}
+        self.assertTrue(perms.allowed(designer, "cex.design"))
+        self.assertFalse(perms.allowed(designer, "cex.supply"))
+        self.assertTrue(perms.allowed(supply, "cex.supply"))
+        self.assertFalse(perms.allowed(supply, "cex.tech"))
+        self.assertTrue(perms.allowed(store, "cex.create"))
+        self.assertFalse(perms.allowed(TECH, "cex.design"))
+
     def test_technologist_has_default_staff_rights(self):
         for code in ("staff.add", "staff.edit", "stages.create", "stages.edit", "stages.assign"):
             self.assertTrue(perms.allowed(TECH, code), code)

@@ -63,9 +63,9 @@ function ccFormHtml(p) {
   const pats = ST.cut.лекала || [];
   const rolls = CC.rolls.map((r, i) => `<tr>
       <td class="cc-i">${i + 1}</td>
-      <td><input class="input" data-cc-roll="${i}|код" value="${esc(r.код)}" placeholder="код рулона"></td>
-      <td><input class="input" data-cc-roll="${i}|граммы" value="${esc(r.граммы)}" inputmode="decimal" placeholder="г/м²"></td>
-      <td><input class="input" data-cc-roll="${i}|цвет" value="${esc(r.цвет)}" list="cc-colors" placeholder="цвет"></td>
+      <td><input class="input" data-cc-roll="${i}|код" value="${esc(r.код)}" list="cc-stock" placeholder="выберите рулон"></td>
+      <td><input class="input" data-cc-roll="${i}|граммы" value="${esc(r.граммы)}" readonly tabindex="-1" placeholder="—"></td>
+      <td><input class="input" data-cc-roll="${i}|цвет" value="${esc(r.цвет)}" readonly tabindex="-1" placeholder="—"></td>
       <td><input class="input" data-cc-roll="${i}|вес" value="${esc(r.вес)}" inputmode="decimal" placeholder="кг"></td>
     </tr>`).join('');
   const secs = CC.secs.map((g, si) => `
@@ -95,10 +95,11 @@ function ccFormHtml(p) {
           <div class="cx-field"><label>Комментарий</label>
             <input class="input" id="cc-comment" value="${esc(CC.comment)}"></div>
         </div>
-        <datalist id="cc-colors">${colors.map((c) => `<option value="${esc(c)}">`).join('')}</datalist>
+        <datalist id="cc-stock">${(ST.cut.рулоны_склад || []).map((r) => `<option value="${esc(r.код)}">${esc([r.материал, r.цвет, r.вес && r.вес + ' кг'].filter(Boolean).join(' · '))}</option>`).join('')}</datalist>
 
         <div class="cc-step">2. Рулоны
           <label class="cc-count">сколько рулонов <input class="input" id="cc-nrolls" type="number" min="1" max="200" value="${CC.rolls.length}"></label></div>
+        <div class="cx-hint" style="margin-bottom:6px">Рулоны вносит снабженец. Цвет и граммаж подставятся сами, вес можно поправить.</div>
         <div class="cc-rolls"><table>
           <thead><tr><th>№</th><th>Код рулона</th><th>Граммаж, г/м²</th><th>Цвет</th><th>Вес, кг</th></tr></thead>
           <tbody>${rolls}</tbody></table></div>
@@ -182,7 +183,17 @@ document.addEventListener('input', (ev) => {
   const t = ev.target;
   if (t.dataset.ccRoll) {
     const [i, f] = t.dataset.ccRoll.split('|');
-    CC.rolls[Number(i)][f] = t.value; ccRefreshTotals(); return;
+    const roll = CC.rolls[Number(i)];
+    roll[f] = t.value;
+    const known = f === 'код' && (ST.cut.рулоны_склад || []).find((r) => r.код === t.value.trim());
+    if (known) {  // подставляем данные снабженца в эту строку без перерисовки всей формы
+      Object.assign(roll, { граммы: known.граммы, цвет: known.цвет, вес: roll.вес || known.вес });
+      ['граммы', 'цвет', 'вес'].forEach((k) => {
+        const inp = document.querySelector(`[data-cc-roll="${i}|${k}"]`);
+        if (inp) inp.value = roll[k];
+      });
+    }
+    ccRefreshTotals(); return;
   }
   if (t.dataset.ccCell) {
     const [si, ...rest] = t.dataset.ccCell.split('|');

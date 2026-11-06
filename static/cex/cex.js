@@ -73,6 +73,7 @@ async function boot() {
   const want = new URLSearchParams(location.search).get('view');
   const allowed = {
     new: ST.права.создать, tech: ST.права.принимать, cut: ST.права.кроить,
+    design: ST.права.карта, supply: ST.права.снабжение,
     work: ST.права.работать, pack: ST.права.упаковывать,
     payroll: ST.права.зарплата || ST.права.работать, sum: ST.права.зарплата,
     route: ST.права.маршрут, route_ord: ST.права.маршрут, route_fin: ST.права.маршрут, assign: ST.права.принимать,
@@ -80,7 +81,7 @@ async function boot() {
   };
   if (want && allowed[want]) ST.view = want;
   if (!ST.права.создать && !want) {
-    ST.view = ST.права.принимать ? 'tech'
+    ST.view = ST.права.карта ? 'design' : ST.права.снабжение ? 'supply' : ST.права.принимать ? 'tech'
       : (ST.права.кроить ? 'cut'
         : (ST.права.упаковывать ? 'pack'
           : (ST.права.работать ? 'work' : (ST.права.зарплата ? 'payroll' : 'list'))));
@@ -92,6 +93,8 @@ async function boot() {
     if (only && !only.includes(ST.view)) ST.view = only[0];
   }
   if (ST.view === 'tech') await loadTech();
+  if (ST.view === 'design') await loadDesign();
+  if (ST.view === 'supply') await loadSupply();
   if (ST.view === 'cut') await loadCut();
   if (ST.view === 'work') await loadWork();
   if (ST.view === 'pack') await loadPack();
@@ -163,6 +166,8 @@ function cartQty() {
 const AS_ROLES = {
   admin: { label: 'Начальник', tabs: null },
   manager: { label: 'Менеджер', tabs: ['new', 'list', 'tech', 'payroll', 'sum', 'staff', 'stages', 'access'] },
+  designer: { label: 'Конструктор', tabs: ['design', 'list'] },
+  supply: { label: 'Снабженец', tabs: ['supply', 'list'] },
   technologist: { label: 'Технолог', tabs: ['tech', 'assign', 'route_ord', 'route', 'route_fin', 'work', 'list', 'staff', 'stages', 'access'] },
   cutter: { label: 'Закройщик', tabs: ['cut'] },
   user: { label: 'Швея', tabs: ['work', 'payroll'] },
@@ -196,6 +201,8 @@ async function setAsRole(role) {
 async function loadView(v) {
   try {
     if (v === 'tech') await loadTech();
+    if (v === 'design') await loadDesign();
+    if (v === 'supply') await loadSupply();
     if (v === 'cut') await loadCut();
     if (v === 'work') await loadWork();
     if (v === 'pack') await loadPack();
@@ -235,6 +242,7 @@ function roleLabel(role) {
     admin: 'начальник', manager: 'менеджер', technologist: 'технолог',
     cutter: 'закройщик', packer: 'упаковщик', accountant: 'бухгалтер',
     storekeeper: 'складчик', user: 'швея', client: 'клиент',
+    designer: 'конструктор', supply: 'снабженец',
   })[role] || role || '';
 }
 
@@ -248,13 +256,13 @@ function render() {
 
   const topTitle = $('#cx-top-title') || document.querySelector('.cx-top-title');
   if (topTitle) {
-    topTitle.textContent = ({ work: 'Работа', cut: 'Крой', tech: 'Приёмка',
+    topTitle.textContent = ({ work: 'Работа', cut: 'Крой', tech: 'Приёмка', design: 'Конструктор', supply: 'Снабжение',
       pack: 'Упаковка', payroll: 'Зарплата', sum: 'Сводка', route: 'Швейный маршрут', route_ord: 'Маршрут заказа', route_fin: 'Маршрут ГП', assign: 'Распределение',
       staff: 'Сотрудники', stages: 'Этапы', access: 'Роли и права' })[ST.view] || 'Заказ на пошив';
   }
   const insideParty = ST.view === 'cut' && ST.cut.партия;
   const insideParty2 = ST.view === 'pack' && ST.pack.партия;
-  const ownHeader = insideParty || insideParty2 || ['work', 'cut', 'tech', 'pack', 'payroll', 'sum', 'route', 'route_ord', 'route_fin', 'assign', 'staff', 'stages', 'access'].includes(ST.view);
+  const ownHeader = insideParty || insideParty2 || ['work', 'cut', 'tech', 'design', 'supply', 'pack', 'payroll', 'sum', 'route', 'route_ord', 'route_fin', 'assign', 'staff', 'stages', 'access'].includes(ST.view);
   main.innerHTML = `
     ${ownHeader ? '' : `<div class="cx-hero">
       <div>
@@ -269,7 +277,7 @@ function render() {
     <div class="cx-kpis">
       <div class="cx-kpi"><div class="k">Заказов</div><div class="v">${nf(totalOrders)}</div><div class="m">оформлено всего</div></div>
       <div class="cx-kpi"><div class="k">Позиций</div><div class="v">${nf(totalPositions)}</div><div class="m">строк модель + цвет + размер</div></div>
-      <div class="cx-kpi"><div class="k">Изделий</div><div class="v">${nf(totalUnits)}</div><div class="m">${nf(waiting)} ждут технолога</div></div>
+      <div class="cx-kpi"><div class="k">Изделий</div><div class="v">${nf(totalUnits)}</div><div class="m">${nf(waiting)} ждут технолога · ${nf(ST.заказы.filter((o) => o.статус === 'у конструктора').length)} у конструктора</div></div>
     </div>`}
 
     ${ST.view === 'list' && !ST.права.создать && !ST.права.принимать ? `<div class="cx-notice">Заказы оформляет начальник. Здесь вы увидите заказы, когда они поступят в цех — приёмка появится следующим модулем.</div>` : ''}
@@ -291,6 +299,8 @@ function shortPath(path) {
 function viewHtml() {
   if (ST.view === 'success' && ST.lastOrder) return successHtml();
   if (ST.view === 'tech') return techHtml();
+  if (ST.view === 'design') return designHtml();
+  if (ST.view === 'supply') return supplyHtml();
   if (ST.view === 'cut') return cutCardHtml();
   if (ST.view === 'work') return workHtml();
   if (ST.view === 'pack') return packHtml();
@@ -329,7 +339,7 @@ function newHtml() {
                      value="${esc(f.поставщик)}" data-field="поставщик" autocomplete="off" style="margin-top:8px">
               <datalist id="cx-suppliers">${(ST.поставщики || []).map((c) => `<option value="${esc(c)}">`).join('')}</datalist>
               <div class="cx-hint">Заказ пойдёт мимо технолога и кроя: ждём поставку, потом приёмка на склад.</div>`
-              : '<div class="cx-hint">Заказ уйдёт технологу → крой → швейный процесс.</div>'}
+              : '<div class="cx-hint">Заказ уйдёт конструктору → снабженцу → технологу → крой.</div>'}
             </div>
             <div class="cx-field">
               <label for="cx-due">Срок</label>
@@ -337,7 +347,7 @@ function newHtml() {
             </div>
           </div>
           <div class="cx-field" style="margin-top:12px">
-            <label for="cx-comment">Комментарий для технолога</label>
+            <label for="cx-comment">Комментарий к заказу</label>
             <input class="input" id="cx-comment" placeholder="Ткань, фурнитура, пожелания" value="${esc(f.комментарий)}" data-field="комментарий">
           </div>
         </div>
@@ -508,7 +518,7 @@ function cartHtml() {
       </div>
       <div class="cx-card-b" style="padding-top:14px">
         <button class="btn primary" style="width:100%" id="cx-submit" data-act="submit" ${ST.cart.length ? '' : 'disabled'}>
-          ${ST.form.источник === 'поставщик' ? 'Оформить заказ поставщику' : 'Оформить и передать технологу'}
+          ${ST.form.источник === 'поставщик' ? 'Оформить заказ поставщику' : 'Оформить и передать конструктору'}
         </button>
       </div>
     </div>`;
@@ -517,7 +527,7 @@ function cartHtml() {
 // -------------------------------------------------------------- список
 function statusPill(status) {
   const s = status || '—';
-  const kind = s === 'у технолога' ? 'orange'
+  const kind = ['у технолога', 'у конструктора', 'у снабженца'].includes(s) ? 'orange'
     : s === 'принят' ? 'green'
       : s === 'отклонён' ? 'red'
         : s === 'новый' ? 'blue' : 'grey';
@@ -560,7 +570,7 @@ function successHtml() {
       <div class="cx-success">
         <div class="mark">✓</div>
         <h2>Заказ №${esc(o.номер)} оформлен</h2>
-        <p>${esc(o.клиент || '')} · ${nf(o.штук)} шт · записан в лист «Заказ на цех» ${o.источник === 'поставщик' ? 'и ждёт поставки' : 'и ждёт технолога'}</p>
+        <p>${esc(o.клиент || '')} · ${nf(o.штук)} шт · записан в лист «Заказ на цех» ${o.источник === 'поставщик' ? 'и ждёт поставки' : 'и передан конструктору'}</p>
         <div class="cx-btn-row" style="justify-content:center">
           <button class="btn primary" data-act="tab" data-tab="new">Ещё заказ</button>
           <button class="btn" data-act="tab" data-tab="list">К списку</button>
@@ -619,6 +629,9 @@ function closeModal() {
 function tabsHtml(totalOrders) {
   const tabs = [];
   if (ST.права.создать) tabs.push(['new', 'Новый заказ']);
+  const inStatus = (s) => ST.заказы.filter((o) => o.статус === s).length;
+  if (ST.права.карта) { const n = inStatus('у конструктора'); tabs.push(['design', 'Конструктор' + (n ? ' ' + n : '')]); }
+  if (ST.права.снабжение) { const n = inStatus('у снабженца'); tabs.push(['supply', 'Снабжение' + (n ? ' ' + n : '')]); }
   if (ST.права.принимать) {
     const n = (ST.tech.очередь || []).length;
     tabs.push(['tech', 'Приёмка' + (n ? ' ' + n : '')]);
@@ -644,7 +657,7 @@ function tabsHtml(totalOrders) {
   if (ST.права.сотрудники) tabs.push(['staff', 'Сотрудники']);
   if (ST.права.этапы) tabs.push(['stages', 'Этапы']);
   if (ST.права.права) tabs.push(['access', 'Роли и права']);
-  if (ST.права.создать || ST.права.принимать) tabs.push(['list', 'Заказы ' + nf(totalOrders)]);
+  if (ST.права.создать || ST.права.принимать || ST.права.карта || ST.права.снабжение) tabs.push(['list', 'Заказы ' + nf(totalOrders)]);
   const only = asTabs();
   // вкладки доступа видны по правам, а не по роли: личное право открывает их любому
   const byRight = ['staff', 'stages', 'access'];
@@ -716,9 +729,10 @@ function openTech(numStr) {
   if (!o) return toast('Заказ не найден — обновите список', 'err');
   const rows = o.позиции.map((p, i) => `
     <tr>
-      <td><div class="cx-cell-main">${esc(p.модель)}</div><div class="cx-cell-sub">${esc(p.категория)}</div></td>
+      <td><div class="cx-cell-main">${esc(p.модель)}</div><div class="cx-cell-sub">${esc(p.характеристики || p.категория)}</div></td>
       <td>${esc(p.цвет)}</td>
       <td>${esc(p.размер)}</td>
+      ${o.по_карте ? `<td class="num">${nf(p.заказано)}</td>` : ''}
       <td class="num">${nf(p.количество)}</td>
       <td class="num">${nf(p.принято)}</td>
       <td class="num">${nf(p.остаток)}</td>
@@ -748,11 +762,12 @@ function openTech(numStr) {
 
         <div class="cx-scroll">
           <table class="cx-table">
-            <thead><tr><th>Модель</th><th>Цвет</th><th>Размер</th><th class="num">Заказано</th><th class="num">Принято</th><th class="num">Остаток</th><th>Принять</th></tr></thead>
+            <thead><tr><th>Модель</th><th>Цвет</th><th>Размер</th>${o.по_карте ? '<th class="num">В заказе</th><th class="num">По карте</th>' : '<th class="num">Заказано</th>'}<th class="num">Принято</th><th class="num">Остаток</th><th>Принять</th></tr></thead>
             <tbody>${rows}</tbody>
           </table>
         </div>
 
+        ${techFlowHtml(o.номер)}
         <div class="cx-decide">
           <div class="cx-field">
             <label>Сырьё</label>
@@ -783,6 +798,18 @@ function openTech(numStr) {
       </div>
     </div>`;
   modal.hidden = false;
+}
+
+// что подготовил снабженец и как конструктор менял количество
+function techFlowHtml(numStr) {
+  const mats = (ST.tech.сырьё || {})[numStr] || [];
+  const hist = (ST.tech.история || {})[numStr] || [];
+  if (!mats.length && !hist.length) return '';
+  return `${mats.length ? `<h4 style="margin:16px 0 8px">Сырьё от снабженца</h4><div class="cx-scroll"><table class="cx-table">
+      <thead><tr><th>Материал</th><th>Цвет</th><th class="num">Нужно</th><th class="num">Есть</th><th>Статус</th><th>Комментарий</th></tr></thead>
+      <tbody>${mats.map((m) => `<tr><td>${esc(m.материал)}</td><td>${esc(m.цвет)}</td><td class="num">${nf(m.нужно)} ${esc(m.ед)}</td>
+        <td class="num">${nf(m.есть)}</td><td>${esc(m.статус || '—')}</td><td>${esc(m.комментарий)}</td></tr>`).join('')}</tbody></table></div>` : ''}
+    ${hist.length ? `<details style="margin-top:12px"><summary>История карты конструктора · ${nf(hist.length)}</summary>${flHistoryHtml(hist)}</details>` : ''}`;
 }
 
 async function submitDecision(kind, numStr) {
@@ -1810,6 +1837,10 @@ document.addEventListener('click', async (ev) => {
     if (ST.view === 'tech') {
       try { await loadTech(); } catch (err) { toast(err.message, 'err'); }
     }
+    if (ST.view === 'design' || ST.view === 'supply') {
+      FL.num = '';  // у конструктора и снабженца свой открытый заказ
+      try { await (ST.view === 'design' ? loadDesign() : loadSupply()); } catch (err) { toast(err.message, 'err'); }
+    }
     if (ST.view === 'cut') {
       try { await loadCut(); } catch (err) { toast(err.message, 'err'); }
     }
@@ -1890,6 +1921,8 @@ document.addEventListener('click', async (ev) => {
       if (ST.view === 'pack') await loadPack();
       if (ST.view === 'cut') await loadCut();
       if (ST.view === 'tech') await loadTech();
+      if (ST.view === 'design') await loadDesign();
+      if (ST.view === 'supply') await loadSupply();
       render();
       toast('Обновлено из Excel', 'ok');
     } catch (err) { toast(err.message, 'err'); }

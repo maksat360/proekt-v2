@@ -29,12 +29,15 @@ ROLE_LABELS = {
     "user": "Швея",
     "cutter": "Закройщик",
     "packer": "Упаковщик",
+    "designer": "Конструктор",
+    "supply": "Снабженец",
     "client": "Клиент",
 }
 LOCKED_ROLE = "admin"
 
 _A, _M, _T = "admin", "manager", "technologist"
-_STAFF = {"admin", "manager", "technologist", "accountant", "storekeeper", "cutter", "packer", "user"}
+_STAFF = {"admin", "manager", "technologist", "accountant", "storekeeper", "cutter", "packer", "user",
+          "designer", "supply"}
 
 # код, группа, название, роли по умолчанию
 CATALOG: list[tuple[str, str, str, set[str]]] = [
@@ -51,7 +54,9 @@ CATALOG: list[tuple[str, str, str, set[str]]] = [
     ("perms.roles", "Права доступа", "Управление правами ролей", {_A}),
     # цех
     ("cex.view", "Цех", "Вход в раздел «Цех»", set(_STAFF)),
-    ("cex.create", "Цех", "Оформление заказов на пошив", {_A, _M}),
+    ("cex.create", "Цех", "Оформление заказов на пошив", {_A, _M, "storekeeper"}),
+    ("cex.design", "Цех", "Производственная карта заказа (конструктор)", {_A, _M, "designer"}),
+    ("cex.supply", "Цех", "Снабжение: спецификации, сырьё, поступление рулонов", {_A, _M, "supply"}),
     ("cex.tech", "Цех", "Приёмка заказов, распределение работы, этикетки, исправление кроя", {_A, _M, _T}),
     ("cex.routes", "Цех", "Редактирование маршрутов партий", {_A, _M, _T}),
     ("cex.cut", "Цех", "Ввод кроя", {_A, _M, "cutter"}),

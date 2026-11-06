@@ -82,7 +82,30 @@ ORDERS = ("Заказ на цех",
            "комментарий"],
           [10, 12, 18, 12, 18, 14, 10, 16, 9, 11, 12, 15, 10, 10, 30])
 
+# Поток своего заказа: конструктор (карта) → снабженец (сырьё) → технолог (приёмка) → партия.
+# Заказы, созданные до этого потока, остаются «у технолога» и идут как раньше.
+DESIGN = "у конструктора"
+SUPPLYING = "у снабженца"
 NEW = "у технолога"
+PCARD = ("Производственная карта",
+         ["№ заказа", "модель", "цвет", "размер", "заказано", "итог", "характеристики",
+          "изменил", "когда"],
+         [10, 12, 16, 9, 10, 9, 34, 14, 16])
+PCARD_LOG = ("История карты",
+             ["№ заказа", "дата", "кто", "модель", "цвет", "размер", "было", "стало", "комментарий"],
+             [10, 16, 14, 12, 16, 9, 8, 8, 34])
+BOM = ("Спецификация",
+       ["модель", "материал", "цвет", "норма на 1 шт", "ед.", "параметры"],
+       [12, 26, 18, 13, 8, 30])
+SUPPLY_SH = ("Снабжение",
+             ["№ заказа", "материал", "цвет", "ед.", "нужно", "есть", "статус", "комментарий",
+              "кто", "когда"],
+             [10, 26, 18, 8, 10, 10, 16, 30, 14, 16])
+STOCK_ROLLS = ("Поступление рулонов",
+               ["код рулона", "дата", "материал", "цвет", "граммаж г", "вес кг", "№ заказа",
+                "поставщик", "внёс"],
+               [16, 16, 24, 18, 11, 9, 10, 20, 14])
+SUPPLY_STATUSES = ("есть на складе", "заказано", "не хватает")
 OWN = "свой цех"
 SUPPLIER = "поставщик"
 AT_SUPPLIER = "заказан у поставщика"
@@ -116,7 +139,8 @@ def _norm_size(v) -> str:
 def ensure_sheets() -> None:
     specs = [MODELS, COLORS, SIZES, ORDERS, PARTIES, TECH, CUT, OUT, ROUTE, PACK,
              STAFF, SHIFTS, RATES, SALARY, ROUTE_MODEL, ROUTE_PARTY, ASSIGN, ITEM_LABELS, CARDS, ROLLS, PATTERNS,
-             ROUTE_ORD, ROUTE_ORD_MODEL, ROUTE_ORD_PARTY, ROUTE_FIN, ROUTE_FIN_MODEL, ROUTE_FIN_PARTY]
+             ROUTE_ORD, ROUTE_ORD_MODEL, ROUTE_ORD_PARTY, ROUTE_FIN, ROUTE_FIN_MODEL, ROUTE_FIN_PARTY,
+             PCARD, PCARD_LOG, BOM, SUPPLY_SH, STOCK_ROLLS]
     store.ensure_sheets(specs)
     for name, headers, _ in specs:
         if store.first_row(name) != headers:
@@ -200,6 +224,18 @@ def orders() -> list[dict]:
         grouped[num]["штук"] += item["количество"]
     out = [grouped[n] for n in order]
     out.sort(key=lambda o: _int(o["номер"]), reverse=True)
+    cards = pcards()
+    for o in out:
+        o["заказано"] = o["штук"]
+        # после конструктора дальше идёт итоговое количество из карты, а не из заказа
+        if o["статус"] != DESIGN and o["номер"] in cards:
+            cats = {p["модель"]: p["категория"] for p in o["позиции"]}
+            o["позиции"] = [{"категория": cats.get(c["модель"], ""), "модель": c["модель"],
+                             "цвет": c["цвет"], "размер": c["размер"], "количество": c["итог"],
+                             "заказано": c["заказано"], "характеристики": c["характеристики"]}
+                            for c in cards[o["номер"]]]
+            o["штук"] = sum(p["количество"] for p in o["позиции"])
+            o["по_карте"] = True
     accepted = accepted_map()
     for o in out:
         o["позиций"] = len(o["позиции"])
@@ -272,7 +308,7 @@ def staff_stats() -> dict:
 def queue() -> list[dict]:
     """Заказы, которые ждут решения технолога."""
     return [o for o in orders()
-            if o["остаток"] > 0 and o["статус"] not in ("отклонён",)
+            if o["остаток"] > 0 and o["статус"] not in ("отклонён", DESIGN, SUPPLYING)
             and o["источник"] != SUPPLIER]  # заказ у поставщика идёт мимо цеха
 
 
@@ -417,6 +453,256 @@ def apply_decision(me: dict, body: dict) -> dict:
     return {"статус": status, "партия": party_num, "штук": total}
 
 
+# ------------------------------------------- конструктор → снабженец → технолог
+def _now() -> str:
+    return datetime.now().strftime("%d.%m.%Y %H:%M")
+
+
+def _key(model, color, size) -> tuple:
+    return (_s(model), _s(color), _norm_size(size))
+
+
+def pcards() -> dict[str, list[dict]]:
+    """№ заказа → строки производственной карты (сохранённые конструктором)."""
+    out: dict[str, list[dict]] = {}
+    for r in _rows(PCARD):
+        num = _norm_size(r.get("№ заказа"))
+        if num and _s(r.get("модель")):
+            out.setdefault(num, []).append({
+                "модель": _s(r.get("модель")), "цвет": _s(r.get("цвет")),
+                "размер": _norm_size(r.get("размер")), "заказано": _int(r.get("заказано")),
+                "итог": _int(r.get("итог")), "характеристики": _s(r.get("характеристики"))})
+    return out
+
+
+def card_of(order: dict, cards: dict | None = None) -> list[dict]:
+    """Карта заказа: сохранённая или черновик из позиций заказа (итог = заказано)."""
+    saved = (cards if cards is not None else pcards()).get(order["номер"])
+    if saved:
+        return saved
+    return [{"модель": p["модель"], "цвет": p["цвет"], "размер": p["размер"],
+             "заказано": p.get("заказано", p["количество"]), "итог": p["количество"],
+             "характеристики": p.get("характеристики", "")} for p in order["позиции"]]
+
+
+def card_history(nums) -> dict[str, list[dict]]:
+    want = {str(n) for n in nums}
+    out: dict[str, list[dict]] = {}
+    for r in _rows(PCARD_LOG):
+        num = _norm_size(r.get("№ заказа"))
+        if num in want:
+            out.setdefault(num, []).append({k: _norm_size(v) if k == "размер" else _s(v)
+                                            for k, v in r.items()})
+    return out
+
+
+def _order_or_fail(num: str, status: str) -> dict:
+    order = next((o for o in orders() if o["номер"] == num), None)
+    if not order:
+        raise ValueError("Заказ не найден")
+    if order["статус"] != status:
+        raise ValueError(f"Заказ сейчас «{order['статус']}» — здесь его менять нельзя")
+    return order
+
+
+def save_design(me: dict, body: dict) -> dict:
+    """Конструктор сохраняет карту. Итог может быть любым (больше, меньше, 0) — без запретов."""
+    num = _s(body.get("номер"))
+    order = _order_or_fail(num, DESIGN)
+    ordered = {_key(p["модель"], p["цвет"], p["размер"]): p["количество"] for p in order["позиции"]}
+    new: dict[tuple, dict] = {}
+    for it in body.get("позиции") or []:
+        k = _key(it.get("модель"), it.get("цвет"), it.get("размер"))
+        if not k[0] or not k[1]:
+            raise ValueError("В строке карты не хватает модели или цвета")
+        if k in new:
+            raise ValueError(f"Строка {k[0]} / {k[1]} / {k[2]} повторяется")
+        qty = _int(it.get("итог"), -1)
+        if qty < 0:
+            raise ValueError(f"{k[0]} / {k[1]} / {k[2]}: количество не может быть отрицательным")
+        new[k] = {"итог": qty, "характеристики": _s(it.get("характеристики"))}
+    if not new:
+        raise ValueError("В карте нет ни одной строки")
+    done = bool(body.get("готово"))
+    if done and not sum(v["итог"] for v in new.values()):
+        raise ValueError("В карте 0 штук — передавать снабженцу нечего")
+
+    prev = {_key(c["модель"], c["цвет"], c["размер"]): c for c in card_of(order)}
+    who, now, note = _s(me.get("логин")), _now(), _s(body.get("комментарий"))
+    log = _rows(PCARD_LOG)
+    for k in list(prev) + [k for k in new if k not in prev]:
+        was, cur = prev.get(k), new.get(k)
+        was_q = was["итог"] if was else 0
+        cur_q = cur["итог"] if cur else 0
+        chars_changed = (was or {}).get("характеристики", "") != (cur or {}).get("характеристики", "")
+        if was_q != cur_q or chars_changed or not cur:
+            what = "строка удалена" if not cur else ("новая строка" if not was else "")
+            if chars_changed and cur:
+                what = (what + "; " if what else "") + "характеристики: " + (cur["характеристики"] or "—")
+            log.append({"№ заказа": num, "дата": now, "кто": who, "модель": k[0], "цвет": k[1],
+                        "размер": k[2], "было": was_q, "стало": cur_q,
+                        "комментарий": "; ".join(x for x in (what, note) if x)})
+    if done:
+        log.append({"№ заказа": num, "дата": now, "кто": who, "модель": "", "цвет": "", "размер": "",
+                    "было": order["штук"], "стало": sum(v["итог"] for v in new.values()),
+                    "комментарий": "карта утверждена и передана снабженцу"})
+
+    card_rows = [r for r in _rows(PCARD) if _norm_size(r.get("№ заказа")) != num]
+    card_rows += [{"№ заказа": num, "модель": k[0], "цвет": k[1], "размер": k[2],
+                   "заказано": ordered.get(k, 0), "итог": v["итог"],
+                   "характеристики": v["характеристики"], "изменил": who, "когда": now}
+                  for k, v in new.items()]
+    writes = [(PCARD[0], PCARD[1], card_rows), (PCARD_LOG[0], PCARD_LOG[1], log)]
+    if done:
+        orders_rows = _rows(ORDERS)
+        for r in orders_rows:
+            if _norm_size(r.get("№ заказа")) == num:
+                r["статус"] = SUPPLYING
+        writes.append((ORDERS[0], ORDERS[1], orders_rows))
+    store.write_sheets(writes)
+    return {"номер": num, "статус": SUPPLYING if done else DESIGN,
+            "штук": sum(v["итог"] for v in new.values())}
+
+
+def boms() -> dict[str, list[dict]]:
+    out: dict[str, list[dict]] = {}
+    for r in _rows(BOM):
+        if _s(r.get("модель")) and _s(r.get("материал")):
+            out.setdefault(_s(r.get("модель")), []).append({
+                "материал": _s(r.get("материал")), "цвет": _s(r.get("цвет")),
+                "норма": _num(r.get("норма на 1 шт")), "ед": _s(r.get("ед.")),
+                "параметры": _s(r.get("параметры"))})
+    return out
+
+
+def save_bom(me: dict, body: dict) -> dict:
+    """Спецификация одного артикула целиком (пустой список — удалить)."""
+    model = _s(body.get("модель"))
+    if not model:
+        raise ValueError("Укажите модель (артикул)")
+    lines = []
+    for i, it in enumerate(body.get("строки") or [], start=1):
+        mat = _s(it.get("материал"))
+        if not mat:
+            continue
+        norm = _num(it.get("норма"))
+        if norm <= 0:
+            raise ValueError(f"Строка {i} ({mat}): норма расхода должна быть больше нуля")
+        lines.append({"модель": model, "материал": mat, "цвет": _s(it.get("цвет")),
+                      "норма на 1 шт": norm, "ед.": _s(it.get("ед")) or "м",
+                      "параметры": _s(it.get("параметры"))})
+    rows = [r for r in _rows(BOM) if _s(r.get("модель")) != model] + lines
+    store.write_sheet(BOM[0], BOM[1], rows)
+    return {"модель": model, "строк": len(lines)}
+
+
+def supply_need(card: list[dict], bom: dict) -> tuple[list[dict], list[str]]:
+    """Сколько сырья нужно на карту: норма × итог. Пустой цвет в спецификации = в цвет изделия."""
+    need: dict[tuple, float] = {}
+    missing: list[str] = []
+    for c in card:
+        lines = bom.get(c["модель"])
+        if not lines:
+            if c["модель"] not in missing:
+                missing.append(c["модель"])
+            continue
+        for b in lines:
+            k = (b["материал"], b["цвет"] or c["цвет"], b["ед"])
+            need[k] = need.get(k, 0) + b["норма"] * c["итог"]
+    return ([{"материал": k[0], "цвет": k[1], "ед": k[2], "нужно": round(v, 3)}
+             for k, v in need.items()], missing)
+
+
+def _supply_rows(num: str) -> list[dict]:
+    return [r for r in _rows(SUPPLY_SH) if _norm_size(r.get("№ заказа")) == num]
+
+
+def supply_lines(order: dict, bom: dict, cards: dict) -> tuple[list[dict], list[str]]:
+    need, missing = supply_need(card_of(order, cards), bom)
+    saved = {(_s(r.get("материал")), _s(r.get("цвет")), _s(r.get("ед."))): r
+             for r in _supply_rows(order["номер"])}
+    for n in need:
+        r = saved.pop((n["материал"], n["цвет"], n["ед"]), {})
+        n.update(есть=_num(r.get("есть")), статус=_s(r.get("статус")),
+                 комментарий=_s(r.get("комментарий")))
+    for (mat, color, unit), r in saved.items():  # добавленное снабженцем вручную
+        need.append({"материал": mat, "цвет": color, "ед": unit, "нужно": _num(r.get("нужно")),
+                     "есть": _num(r.get("есть")), "статус": _s(r.get("статус")),
+                     "комментарий": _s(r.get("комментарий"))})
+    return need, missing
+
+
+def roll_registry() -> dict[str, dict]:
+    out = {}
+    for r in _rows(STOCK_ROLLS):
+        code = _norm_size(r.get("код рулона"))
+        if code:
+            out[code] = {"код": code, "дата": _s(r.get("дата")), "материал": _s(r.get("материал")),
+                         "цвет": _s(r.get("цвет")), "граммы": _s(r.get("граммаж г")),
+                         "вес": _s(r.get("вес кг")), "заказ": _norm_size(r.get("№ заказа")),
+                         "поставщик": _s(r.get("поставщик")), "внёс": _s(r.get("внёс"))}
+    return out
+
+
+def supply_state() -> dict:
+    bom, cards = boms(), pcards()
+    queue_ = []
+    for o in orders():
+        if o["статус"] == SUPPLYING:
+            o["карта"] = card_of(o, cards)
+            o["сырьё"], o["без_спецификации"] = supply_lines(o, bom, cards)
+            queue_.append(o)
+    return {"очередь": queue_, "спецификации": bom, "рулоны": list(roll_registry().values())[::-1][:300],
+            "статусы": list(SUPPLY_STATUSES)}
+
+
+def save_supply(me: dict, body: dict) -> dict:
+    """Снабженец отмечает по каждому сырью, что есть/заказано; «готово» — заказ уходит технологу."""
+    num = _s(body.get("номер"))
+    _order_or_fail(num, SUPPLYING)
+    who, now = _s(me.get("логин")), _now()
+    lines = []
+    for it in body.get("строки") or []:
+        mat = _s(it.get("материал"))
+        if not mat:
+            continue
+        status = _s(it.get("статус"))
+        if status and status not in SUPPLY_STATUSES:
+            raise ValueError(f"{mat}: неизвестный статус «{status}»")
+        lines.append({"№ заказа": num, "материал": mat, "цвет": _s(it.get("цвет")),
+                      "ед.": _s(it.get("ед")), "нужно": _num(it.get("нужно")),
+                      "есть": _num(it.get("есть")), "статус": status,
+                      "комментарий": _s(it.get("комментарий")), "кто": who, "когда": now})
+    done = bool(body.get("готово"))
+    rows = [r for r in _rows(SUPPLY_SH) if _norm_size(r.get("№ заказа")) != num] + lines
+    writes = [(SUPPLY_SH[0], SUPPLY_SH[1], rows)]
+    if done:
+        orders_rows = _rows(ORDERS)
+        for r in orders_rows:
+            if _norm_size(r.get("№ заказа")) == num:
+                r["статус"] = NEW
+        writes.append((ORDERS[0], ORDERS[1], orders_rows))
+    store.write_sheets(writes)
+    return {"номер": num, "статус": NEW if done else SUPPLYING}
+
+
+def add_roll(me: dict, body: dict) -> dict:
+    code = _norm_size(body.get("код"))
+    if not code:
+        raise ValueError("Укажите код рулона")
+    if code in roll_registry():
+        raise ValueError(f"Рулон {code} уже внесён")
+    weight = _num(body.get("вес"))
+    if weight <= 0:
+        raise ValueError("Укажите вес рулона, кг")
+    row = {"код рулона": code, "дата": _now(), "материал": _s(body.get("материал")),
+           "цвет": _s(body.get("цвет")), "граммаж г": _num(body.get("граммы")) or "",
+           "вес кг": weight, "№ заказа": _s(body.get("заказ")),
+           "поставщик": _s(body.get("поставщик")), "внёс": _s(me.get("логин"))}
+    store.append_rows(STOCK_ROLLS[0], STOCK_ROLLS[1], [row])
+    return {"код": code}
+
+
 # ------------------------------------------------------------- крой (модуль 3)
 def _size_key(value: str):
     s = _s(value)
@@ -503,7 +789,8 @@ def cut_state() -> dict:
     for g in out:
         g["карты"] = cards_of(g["номер"])
         g["ждёт_шагов"] = pending.get(g["номер"], [])
-    return {"партии": out, "ставка": rate_of("РАСКР", 15.0), "лекала": patterns()}
+    return {"партии": out, "ставка": rate_of("РАСКР", 15.0), "лекала": patterns(),
+            "рулоны_склад": list(roll_registry().values())}
 
 
 # --------------------------------------------------- карта кроя (закройщик)
@@ -543,6 +830,7 @@ def save_card(me: dict, body: dict) -> dict:
         raise ValueError("Укажите длину настила, м")
     pattern = _s(body.get("лекало"))
     rolls = []
+    registry = roll_registry()
     for i, r in enumerate(body.get("рулоны") or [], start=1):
         code = _s(r.get("код"))
         weight = _num(r.get("вес"))
@@ -550,8 +838,12 @@ def save_card(me: dict, body: dict) -> dict:
             continue
         if not code:
             raise ValueError(f"Рулон {i}: укажите код рулона")
-        rolls.append({"код": code, "граммы": _num(r.get("граммы")), "цвет": _s(r.get("цвет")),
-                      "вес": weight})
+        # рулоны вносит снабженец: цвет и граммаж берём из его записи, не со слов закройщика
+        known = registry.get(code)
+        if not known:
+            raise ValueError(f"Рулон {code} не внесён снабженцем — его добавляют во вкладке «Снабжение»")
+        rolls.append({"код": code, "граммы": _num(known["граммы"]), "цвет": known["цвет"],
+                      "вес": weight or _num(known["вес"])})
     if not rolls:
         raise ValueError("Добавьте хотя бы один рулон")
 
@@ -2982,14 +3274,15 @@ def _dispatch(ctx) -> None:
                       "упаковывать": _can(me, "cex.pack"), "зарплата": _can(me, "cex.pay"),
                       "маршрут": _can(me, "cex.routes"), "вся_работа": _can(me, "cex.work.all"),
                       "чужая_работа": _can(me, "cex.boss"),
+                      "карта": _can(me, "cex.design"), "снабжение": _can(me, "cex.supply"),
                       "сотрудники": _can(me, "staff.view"),
                       "этапы": any(_can(me, c) for c in ("stages.create", "stages.edit",
                                                          "stages.delete", "stages.assign")),
                       "права": _can(me, "perms.roles") or _can(me, "perms.users")},
             "все_права": perms.effective(me),
             "refs": refs(),
-            "заказы": orders() if role in {"admin", "manager", "technologist",
-                                          "accountant", "storekeeper", "cutter"} else [],
+            "заказы": orders() if role in {"admin", "manager", "technologist", "accountant",
+                                          "storekeeper", "cutter", "designer", "supply"} else [],
             "клиенты": _client_list(),
             "поставщики": supplier_list(),
             "источник": str(store.source_path()),
@@ -3052,11 +3345,11 @@ def _dispatch(ctx) -> None:
                 "источник": source, "поставщик": supplier,
                 "категория": p["категория"], "модель": p["модель"], "цвет": p["цвет"],
                 "размер": p["размер"], "количество": p["количество"],
-                "срок": due, "статус": NEW if source == OWN else AT_SUPPLIER,
+                "срок": due, "статус": DESIGN if source == OWN else AT_SUPPLIER,
                 "создал": _s(me.get("логин")), "№ партии": "", "комментарий": comment,
             } for p in prepared]
             store.append_rows(ORDERS[0], ORDERS[1], rows)
-        _ok(ctx, {"номер": num, "дата": now, "статус": NEW if source == OWN else AT_SUPPLIER})
+        _ok(ctx, {"номер": num, "дата": now, "статус": DESIGN if source == OWN else AT_SUPPLIER})
         return
 
     if path.startswith("/api/cex/orders/") and method == "GET":
@@ -3081,8 +3374,17 @@ def _dispatch(ctx) -> None:
             if o["статус"] == "отклонён":
                 o["причина"] = reasons.get(o["номер"], "")
                 rejected.append(o)
+        tq = queue()
+        sup = {}
+        for r in _rows(SUPPLY_SH):
+            sup.setdefault(_norm_size(r.get("№ заказа")), []).append(
+                {"материал": _s(r.get("материал")), "цвет": _s(r.get("цвет")), "ед": _s(r.get("ед.")),
+                 "нужно": _num(r.get("нужно")), "есть": _num(r.get("есть")),
+                 "статус": _s(r.get("статус")), "комментарий": _s(r.get("комментарий"))})
         _ok(ctx, {
-            "очередь": queue(),
+            "очередь": tq,
+            "сырьё": {o["номер"]: sup.get(o["номер"], []) for o in tq},
+            "история": card_history(o["номер"] for o in tq),
             "отклонённые": rejected,
             "статистика": staff_stats(),
             "журнал": list(reversed(decisions()[-30:])),
@@ -3100,6 +3402,39 @@ def _dispatch(ctx) -> None:
             _fail(ctx, str(exc))
             return
         _ok(ctx, result)
+        return
+
+    flow_get = {"/api/cex/design": "cex.design", "/api/cex/supply": "cex.supply"}
+    if path in flow_get and method == "GET":
+        if not _can(me, flow_get[path]):
+            _deny(ctx, flow_get[path])
+            return
+        ensure_sheets()
+        if path == "/api/cex/design":
+            cards = pcards()
+            q = [o for o in orders() if o["статус"] == DESIGN]
+            for o in q:
+                o["карта"] = card_of(o, cards)
+            _ok(ctx, {"очередь": q, "история": card_history(o["номер"] for o in q)})
+        else:
+            _ok(ctx, supply_state())
+        return
+
+    flow_post = {"/api/cex/design": ("cex.design", save_design),
+                 "/api/cex/supply": ("cex.supply", save_supply),
+                 "/api/cex/supply/bom": ("cex.supply", save_bom),
+                 "/api/cex/supply/roll": ("cex.supply", add_roll)}
+    if path in flow_post and method == "POST":
+        code, fn = flow_post[path]
+        if not _can(me, code):
+            _deny(ctx, code)
+            return
+        ensure_sheets()
+        try:
+            with ORDER_LOCK:
+                _ok(ctx, fn(me, ctx["body"]()))
+        except ValueError as exc:
+            _fail(ctx, str(exc))
         return
 
     if path == "/api/cex/summary" and method == "GET":

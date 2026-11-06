@@ -1,6 +1,6 @@
 // Кэш оболочки приложения: позволяет открыть приложение без сети.
-const CACHE = 'v2-shell-v30';
-const ASSETS = ['/', '/static/app.js?v=20261106f', '/static/style.css?v=20261106f', '/static/accounts.js?v=20261106f'];
+const CACHE = 'v2-shell-v31';
+const ASSETS = ['/', '/static/app.js?v=20261107a', '/static/style.css?v=20261106f', '/static/accounts.js?v=20261106f'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)).then(() => self.skipWaiting()));

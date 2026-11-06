@@ -187,7 +187,7 @@ const NAV = [
   { id: 'dash', label: 'Сводка', icon: 'dash', roles: ['admin', 'manager', 'technologist', 'storekeeper', 'accountant', 'user'] },
   { id: 'tasks', label: 'Мои задачи', icon: 'tasks', roles: ['user', 'technologist'] },
   { id: 'batches', label: 'Партии', icon: 'batches', roles: ['admin', 'manager', 'technologist', 'storekeeper', 'accountant', 'user'] },
-  { id: 'cex', label: 'Цех', icon: 'tasks', roles: ['admin', 'manager', 'technologist', 'cutter', 'packer', 'user', 'accountant'], href: '/cex/' },
+  { id: 'cex', label: 'Цех', icon: 'tasks', roles: ['admin', 'manager', 'technologist', 'cutter', 'packer', 'user', 'accountant', 'storekeeper', 'designer', 'supply'], href: '/cex/' },
   { id: 'orders', label: 'Мои заказы', icon: 'receipt', roles: ['client'] },
   { id: 'fbs', label: 'Заказы WB', icon: 'receipt', roles: ['admin', 'manager', 'storekeeper'] },
   { id: 'wh', label: 'Склад', icon: 'wh', roles: ['admin', 'manager', 'storekeeper', 'accountant', 'technologist', 'user'] },
@@ -297,7 +297,7 @@ function visibleNav(role) {
 
 function renderShell() {
   const role = STATE.me.роль;
-  if (role === 'cutter' || role === 'packer' || role === 'user') { location.replace('/cex/'); return; }
+  if (['cutter', 'packer', 'user', 'designer', 'supply'].includes(role)) { location.replace('/cex/'); return; }
   let nav = visibleNav(role);
   const canWh = !!(STATE.caps && STATE.caps['wh.view']);
   if (MODE.sklad && canWh) nav = nav.filter((n) => n.id === 'wh');
@@ -1245,6 +1245,7 @@ function openUser(user) {
   const roles = [
     ['user', 'Швея'], ['cutter', 'Закройщик'], ['packer', 'Упаковщик'],
     ['technologist', 'Технолог'], ['storekeeper', 'Складчик'],
+    ['designer', 'Конструктор'], ['supply', 'Снабженец'],
     ['manager', 'Менеджер'], ['accountant', 'Бухгалтер'], ['admin', 'Начальник'],
   ];
   modal({
