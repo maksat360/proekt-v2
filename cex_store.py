@@ -34,6 +34,10 @@ SHEET_CT = ("application/vnd.openxmlformats-officedocument."
             "spreadsheetml.worksheet+xml")
 
 LOCK = threading.RLock()
+# Один писатель рабочей книги на весь процесс: цех (здесь) и склад (warehouse.py) пишут
+# один и тот же файл. Без общей блокировки выгрузка склада (≈15 с: открыть → сохранить)
+# затирала записи цеха, а одновременная запись портила zip книги.
+BOOK_LOCK = threading.RLock()
 _CACHE: dict[tuple, list] = {}
 _CACHE_MAX = 8
 
@@ -282,7 +286,7 @@ def guard(path: Path) -> None:
 
 
 def _rewrite(path: Path, replace: dict[str, bytes], add: dict[str, bytes] | None = None) -> None:
-    tmp = path.with_name(path.stem + ".tmp" + path.suffix)
+    tmp = path.with_name(path.stem + ".cex.tmp" + path.suffix)  # своё имя: у склада другое
     with zipfile.ZipFile(path) as zin, zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zout:
         for item in zin.infolist():
             zout.writestr(item, replace.get(item.filename, zin.read(item.filename)))
@@ -362,7 +366,7 @@ def write_sheets(items: list[tuple]) -> None:
     path = source_path()
     if not path.is_file():
         raise CexSourceError(f"нет файла: {path}")
-    with LOCK:
+    with BOOK_LOCK, LOCK:
         guard(path)
         with zipfile.ZipFile(path) as zf:
             replace: dict[str, bytes] = {}
@@ -459,7 +463,7 @@ def ensure_sheets(specs: list[tuple]) -> list[str]:
     path = source_path()
     if not path.is_file():
         raise CexSourceError(f"нет файла: {path}")
-    with LOCK:
+    with BOOK_LOCK, LOCK:
         with zipfile.ZipFile(path) as zf:
             names = set(_sheet_map(zf))
             lower = {n.lower(): n for n in names}

@@ -28,6 +28,8 @@ from datetime import date, datetime
 from pathlib import Path
 
 from openpyxl import load_workbook
+
+from cex_store import BOOK_LOCK  # общий с цехом замок записи рабочей книги
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
@@ -524,21 +526,6 @@ def resolve_product(value: str) -> dict | None:
 
 
 # ------------------------------------------------------------------ запись
-def _append_row(sheet: str, values: list) -> None:
-    p = source_path()
-    _backup(p)
-    wb = load_workbook(p, keep_vba=True)
-    try:
-        ws = wb[sheet]
-        ws.append(values)
-        wb.save(p)
-    finally:
-        wb.close()
-    _CACHE["sig"] = None
-    _SMALL.clear()
-    _STOCK["key"] = None
-
-
 def receive(supplier: str, name: str, qty: float, defect: float, batch: str) -> dict:
     item = resolve_product(name)
     if not item:
@@ -734,7 +721,7 @@ def _save_atomic(wb, path: Path) -> None:
 
     Если процесс упадёт во время записи, рабочий файл останется целым.
     """
-    tmp = path.with_name(path.stem + ".tmp" + path.suffix)
+    tmp = path.with_name(path.stem + ".wh.tmp" + path.suffix)  # своё имя: у цеха другое
     try:
         wb.save(tmp)
         os.replace(tmp, path)
@@ -875,7 +862,7 @@ def _fill_rates_sheet(wb, counts: dict) -> None:
 
 def export_to_excel(who: str = "") -> dict:
     """Переносит операции портала в файл цеха (один раз, пачкой)."""
-    with _EXPORT_LOCK:
+    with _EXPORT_LOCK, BOOK_LOCK:  # пока книга открыта и сохраняется, цех ждёт
         _FLUSH["running"] = True
         try:
             counts = _export_to_excel(who)
@@ -981,24 +968,6 @@ def shipments(target: str, limit: int = 200) -> list[dict]:
 
 def purchases(limit: int = 200) -> list[dict]:
     return list(reversed(_ledger().get("приход", [])))[:limit]
-
-
-def sync_sheets() -> dict:
-    """Обновляет в файле листы «заказы», «сотрудники», «расценки» без операций склада."""
-    p = source_path()
-    _backup(p)
-    wb = load_workbook(p, keep_vba=True)
-    counts = {"заказы": 0, "сотрудники": 0, "расценки": 0}
-    try:
-        _write_orders_sheet(wb, _ledger(), counts)
-        _write_staff_sheets(wb, counts)
-        wb.save(p)
-    finally:
-        wb.close()
-    _CACHE["sig"] = None
-    _SMALL.clear()
-    _STOCK["key"] = None
-    return counts
 
 
 _EXPORT_LOCK = threading.Lock()  # одна запись в книгу за раз: фоновая и кнопка «сейчас» не пересекаются
@@ -1414,6 +1383,11 @@ def _read_brand() -> dict:
 
 def save_brand(data: dict) -> dict:
     """Записывает «настройки» в рабочую книгу (с резервной копией)."""
+    with BOOK_LOCK:
+        return _save_brand(data)
+
+
+def _save_brand(data: dict) -> dict:
     p = source_path()
     _backup(p)
     wb = load_workbook(p, keep_vba=True)
