@@ -3543,6 +3543,7 @@ def _dispatch(ctx) -> None:
             q = [o for o in orders() if o["статус"] == DESIGN]
             for o in q:
                 o["карта"] = card_of(o, cards)
+                o["карта_сохранена"] = o["номер"] in cards
             _ok(ctx, {"очередь": q, "история": card_history(o["номер"] for o in q)})
         else:
             _ok(ctx, supply_state())

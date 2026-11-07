@@ -3,7 +3,7 @@
 /* Модуль «Цех» · поток заказа: конструктор (производственная карта) → снабженец (сырьё) → технолог. */
 
 const FL = { design: { очередь: [], история: {} }, supply: { очередь: [], спецификации: {}, рулоны: [], статусы: [] },
-  num: '', rows: [], bomModel: '', bomRows: [], supplyTab: 'orders' };
+  num: '', rows: [], models: {}, chars: {}, allColors: {}, bomModel: '', bomRows: [], supplyTab: 'orders' };
 
 async function loadDesign() { FL.design = await api(`${API}/design`); }
 async function loadSupply() { FL.supply = await api(`${API}/supply`); }
@@ -42,7 +42,11 @@ function designHtml() {
 }
 
 const flKey = (m, c, z) => `${(m || '').trim()}|${(c || '').trim()}|${String(z || '').trim()}`;
-const flCards = () => [...new Set(FL.rows.map((r) => String(r.карта || '1')))].sort((a, b) => a - b);
+// FL.rows — строки карт {карта, модель, цвет, размер, итог}; FL.models — модели в каждой карте;
+// FL.chars — доп. характеристики модели в карте; FL.allColors — «показать все цвета/размеры».
+const flCards = () => Object.keys(FL.models).sort((a, b) => a - b);
+const flQty = (card) => FL.rows.filter((r) => card == null || r.карта === card).reduce((s, r) => s + num(r.итог), 0);
+const flOrder = () => (FL.design.очередь || []).find((x) => x.номер === FL.num);
 
 // Заказ начальника — только ориентир: показываем отклонение, ничего не запрещаем
 function flDevHtml(o) {
@@ -63,35 +67,75 @@ function flDevHtml(o) {
     <tr><td><b>Всего</b></td><td class="num"><b>${nf(want)}</b></td><td class="num"><b>${nf(have)}</b></td><td class="num">${dev(have - want)}</td></tr></tbody></table>`;
 }
 
+// цвета и размеры модели — как в «Новом заказе» (каталог «главный»), плюс всё, что уже есть в заказе и картах
+function flGrid(o, card, model) {
+  const v = (ST.refs.варианты || {})[model];
+  const all = !v || !v.цвета.length || FL.allColors[`${card}|${model}`];
+  const grid = sizesFor(model).map((x) => x.размер);
+  const colors = new Set(v && v.цвета.length ? v.цвета : []);
+  const sizes = new Set(v && v.размеры.length && !all ? v.размеры : grid);
+  if (all) (ST.refs.цвета || []).forEach((c) => colors.add(c.цвет));
+  [...(o.позиции || []), ...FL.rows].filter((r) => r.модель === model).forEach((r) => { colors.add(r.цвет); sizes.add(String(r.размер)); });
+  const order = Object.fromEntries(grid.map((x, i) => [String(x), i]));
+  return { colors: [...colors].filter(Boolean),
+    sizes: [...sizes].filter(Boolean).sort((a, b) => (order[a] ?? 999) - (order[b] ?? 999) || String(a).localeCompare(String(b), 'ru', { numeric: true })),
+    own: !!(v && v.цвета.length) };
+}
+
+// подсказка в клетке: сколько заказал начальник минус то, что уже разложено по другим картам
+function flHint(o, card, model, color, size) {
+  const k = flKey(model, color, size);
+  const want = (o.позиции || []).filter((p) => flKey(p.модель, p.цвет, p.размер) === k).reduce((s, p) => s + num(p.количество), 0);
+  const other = FL.rows.filter((r) => r.карта !== card && flKey(r.модель, r.цвет, r.размер) === k).reduce((s, r) => s + num(r.итог), 0);
+  return Math.max(0, want - other);
+}
+
+function flModelHtml(o, card, model) {
+  const { colors, sizes, own } = flGrid(o, card, model);
+  const cell = (c, z) => FL.rows.find((r) => r.карта === card && flKey(r.модель, r.цвет, r.размер) === flKey(model, c, z));
+  const sum = FL.rows.filter((r) => r.карта === card && r.модель === model).reduce((s, r) => s + num(r.итог), 0);
+  const id = `${card}|${model}`;
+  return `<div class="cc-sec" style="margin-top:10px">
+    <div class="cc-sec-h"><b>${esc(model)}</b> <span class="cx-hint">${esc((modelInfo(model) || {}).категория || 'нет в каталоге')}</span>
+      <span class="cx-hint" data-fl-msum="${esc(id)}">${nf(sum)} шт</span>
+      <button class="btn ghost" data-act="fl-fill" data-card="${esc(card)}" data-model="${esc(model)}" title="Вписать числа начальника в пустые клетки">как в заказе</button>
+      <button class="btn ghost" data-act="fl-model-del" data-card="${esc(card)}" data-model="${esc(model)}" title="Убрать модель из карты">✕</button></div>
+    <div class="cx-gtools" style="padding-left:0">
+      <input class="input" data-fl-chars="${esc(id)}" value="${esc(FL.chars[id] || '')}" placeholder="доп. характеристики: длина, посадка, детали кроя…" style="max-width:360px">
+      ${own ? `<label class="cx-gall"><input type="checkbox" data-act="fl-allcolors" data-id="${esc(id)}" ${FL.allColors[id] ? 'checked' : ''}> новый цвет / размер (показать все)</label>` : ''}
+      <span class="cx-hint">Серым — подсказка из заказа начальника. Пустые клетки в карту не попадут.</span>
+    </div>
+    <div class="cx-gwrap"><table class="cx-gtable">
+      <thead><tr><th class="cx-gcolor">Цвет / размер</th>${sizes.map((z) => `<th>${esc(z)}</th>`).join('')}</tr></thead>
+      <tbody>${colors.map((c) => `<tr><th class="cx-gcolor">${esc(c)}</th>${sizes.map((z) => {
+        const r = cell(c, z);
+        const h = flHint(o, card, model, c, z);
+        return `<td><input class="cx-gin" type="number" min="0" step="1" inputmode="numeric" data-fl-cell="${esc(card)}|${esc(model)}|${esc(c)}|${esc(z)}"
+          value="${r && num(r.итог) ? esc(r.итог) : ''}" placeholder="${h || '·'}" aria-label="${esc(c)}, размер ${esc(z)}"></td>`;
+      }).join('')}</tr>`).join('')}</tbody>
+    </table></div></div>`;
+}
+
 function designCardHtml(o) {
-  const row = (r, i) => `<tr>
-      <td><input class="input" data-fl-row="${i}|модель" value="${esc(r.модель)}" list="fl-models"></td>
-      <td><input class="input" data-fl-row="${i}|цвет" value="${esc(r.цвет)}" list="fl-colors"></td>
-      <td><input class="input cx-mini" data-fl-row="${i}|размер" value="${esc(r.размер)}"></td>
-      <td><input class="input cx-mini" type="number" min="0" data-fl-row="${i}|итог" value="${esc(r.итог)}"></td>
-      <td><input class="input" data-fl-row="${i}|характеристики" value="${esc(r.характеристики)}" placeholder="длина, посадка, детали кроя…"></td>
-      <td><button class="btn ghost" data-act="fl-row-del" data-i="${i}" title="Убрать строку">✕</button></td>
-    </tr>`;
-  const cards = flCards().map((c) => {
-    const items = FL.rows.map((r, i) => [r, i]).filter(([r]) => String(r.карта || '1') === c);
-    return `<div class="cx-card" style="margin-top:12px"><div class="cx-card-h"><h3>Карта ${esc(c)}</h3>
-        <span class="cx-hint"><b data-fl-card-total="${esc(c)}">${nf(items.reduce((s, [r]) => s + num(r.итог), 0))}</b> шт · станет отдельной партией</span></div>
-      <div class="cx-card-b"><div class="cx-scroll"><table class="cx-table">
-        <thead><tr><th>Модель</th><th>Цвет</th><th>Размер</th><th>Итог, шт</th><th>Доп. характеристики</th><th></th></tr></thead>
-        <tbody>${items.map(([r, i]) => row(r, i)).join('')}</tbody></table></div>
-        <div class="cx-btn-row" style="margin-top:10px"><button class="btn" data-act="fl-row-add" data-card="${esc(c)}">+ Строка</button></div>
-      </div></div>`;
-  }).join('');
-  const total = FL.rows.reduce((s, r) => s + num(r.итог), 0);
+  const models = (ST.refs.модели || []);
+  const cards = flCards().map((c) => `<div class="cx-card" style="margin-top:12px"><div class="cx-card-h"><h3>Карта ${esc(c)}</h3>
+      <span class="cx-hint"><b data-fl-card-total="${esc(c)}">${nf(flQty(c))}</b> шт · станет отдельной партией</span></div>
+    <div class="cx-card-b">
+      ${(FL.models[c] || []).map((m) => flModelHtml(o, c, m)).join('') || '<div class="cx-hint">Добавьте модель в карту</div>'}
+      <div class="cx-btn-row" style="margin-top:10px">
+        <input class="input" data-fl-newmodel="${esc(c)}" list="fl-models" placeholder="модель (артикул)" style="max-width:220px">
+        <button class="btn" data-act="fl-model-add" data-card="${esc(c)}">+ Модель</button>
+        ${flCards().length > 1 ? `<button class="btn ghost" data-act="fl-card-del" data-card="${esc(c)}">Удалить карту</button>` : ''}
+      </div>
+    </div></div>`).join('');
   return `<div class="cx-card" style="margin-top:14px">
     <div class="cx-card-h"><h3>Заказ №${esc(o.номер)} · производственные карты</h3>
-      <span class="cx-hint">в заказе ${nf(o.заказано)} шт · в картах <b id="fl-total">${nf(total)}</b> шт</span></div>
+      <span class="cx-hint">в заказе ${nf(o.заказано)} шт · в картах <b id="fl-total">${nf(flQty())}</b> шт</span></div>
     <div class="cx-card-b">
       ${o.комментарий ? `<div class="cx-notice">${esc(o.комментарий)}</div>` : ''}
       <h4 style="margin:0 0 8px">Заказ начальника и карты</h4>
       <div class="cx-scroll" id="fl-dev">${flDevHtml(o)}</div>
-      <datalist id="fl-models">${(ST.refs.модели || []).map((m) => `<option value="${esc(m.модель)}">${esc(m.название)}</option>`).join('')}</datalist>
-      <datalist id="fl-colors">${(ST.refs.цвета || []).map((c) => `<option value="${esc(c.цвет)}">`).join('')}</datalist>
+      <datalist id="fl-models">${models.map((m) => `<option value="${esc(m.модель)}">${esc(m.название)}</option>`).join('')}</datalist>
       ${cards}
       <div class="cx-btn-row" style="margin-top:12px"><button class="btn" data-act="fl-card-add">+ Карта</button></div>
       <div class="cx-field" style="margin-top:12px"><label>Комментарий к изменению</label>
@@ -100,7 +144,7 @@ function designCardHtml(o) {
         <button class="btn" data-act="fl-design-save">Сохранить черновик</button>
         <button class="btn primary" data-act="fl-design-done">Утвердить и передать снабженцу</button>
       </div>
-      <div class="cx-hint" style="margin-top:8px">Заказ — ориентир: итог может быть больше или меньше, артикулы, цвета и размеры — любые. Каждая карта у технолога становится отдельной партией. Все изменения записываются в историю.</div>
+      <div class="cx-hint" style="margin-top:8px">Заказ начальника — только подсказка: конструктор вписывает своё количество, больше или меньше, любые модели, цвета и размеры. Каждая карта у технолога становится отдельной партией. Все изменения записываются в историю.</div>
       <h4 style="margin:18px 0 8px">История изменений</h4>
       ${flHistoryHtml((FL.design.история || {})[o.номер])}
     </div></div>`;
@@ -110,13 +154,53 @@ function flOpenDesign(numStr) {
   const o = (FL.design.очередь || []).find((x) => x.номер === numStr);
   if (!o) return;
   FL.num = numStr;
-  FL.rows = (o.карта || []).map((r) => ({ ...r }));
+  // карту ещё не сохраняли — клетки пустые, числа начальника видны серыми подсказками
+  const draft = !o.карта_сохранена;
+  FL.rows = draft ? [] : (o.карта || []).filter((r) => num(r.итог) > 0)
+    .map((r) => ({ карта: String(r.карта || '1'), модель: r.модель, цвет: r.цвет, размер: String(r.размер), итог: num(r.итог) }));
+  FL.models = {}; FL.chars = {}; FL.allColors = {};
+  (draft ? (o.позиции || []).map((p) => ({ ...p, карта: '1' })) : (o.карта || [])).forEach((r) => {
+    const c = String(r.карта || '1');
+    FL.models[c] = FL.models[c] || [];
+    if (!FL.models[c].includes(r.модель)) FL.models[c].push(r.модель);
+    if (r.характеристики) FL.chars[`${c}|${r.модель}`] = r.характеристики;
+  });
+  if (!flCards().length) FL.models['1'] = [];
   render();
 }
 
+function flRefreshDesign() {
+  const o = flOrder();
+  if (!o) return;
+  const total = document.getElementById('fl-total');
+  if (total) total.textContent = nf(flQty());
+  document.querySelectorAll('[data-fl-card-total]').forEach((b) => { b.textContent = nf(flQty(b.dataset.flCardTotal)); });
+  document.querySelectorAll('[data-fl-msum]').forEach((b) => {
+    const [c, ...m] = b.dataset.flMsum.split('|');
+    b.textContent = `${nf(FL.rows.filter((r) => r.карта === c && r.модель === m.join('|')).reduce((s, r) => s + num(r.итог), 0))} шт`;
+  });
+  document.querySelectorAll('[data-fl-cell]').forEach((el) => {  // подсказки других карт меняются вместе с этой
+    const [c, m, col, z] = el.dataset.flCell.split('|');
+    el.placeholder = flHint(o, c, m, col, z) || '·';
+  });
+  const dev = document.getElementById('fl-dev');
+  if (dev) dev.innerHTML = flDevHtml(o);
+}
+
+function flSetCell(card, model, color, size, qty) {
+  const k = flKey(model, color, size);
+  const i = FL.rows.findIndex((r) => r.карта === card && flKey(r.модель, r.цвет, r.размер) === k);
+  if (qty > 0 && i >= 0) FL.rows[i].итог = qty;
+  else if (qty > 0) FL.rows.push({ карта: card, модель: model, цвет: color, размер: size, итог: qty });
+  else if (i >= 0) FL.rows.splice(i, 1);
+}
+
 async function flSaveDesign(done) {
-  const body = { номер: FL.num, готово: done, комментарий: ($('#fl-note') || {}).value || '', позиции: FL.rows };
-  if (done && !confirm('Утвердить карту и передать заказ снабженцу? После этого карту не поменять.')) return;
+  const rows = FL.rows.filter((r) => num(r.итог) > 0)
+    .map((r) => ({ ...r, характеристики: FL.chars[`${r.карта}|${r.модель}`] || '' }));
+  if (!rows.length) return toast('Карты пустые — впишите количество', 'err');
+  const body = { номер: FL.num, готово: done, комментарий: ($('#fl-note') || {}).value || '', позиции: rows };
+  if (done && !confirm('Утвердить карты и передать заказ снабженцу? После этого карты не поменять.')) return;
   try {
     const res = await api(`${API}/design`, { method: 'POST', body: JSON.stringify(body) });
     await loadDesign();
@@ -124,7 +208,7 @@ async function flSaveDesign(done) {
     if (done) FL.num = '';
     else flOpenDesign(FL.num);
     render();
-    toast(done ? `Заказ №${res.номер} передан снабженцу · ${nf(res.штук)} шт` : 'Черновик карты сохранён', 'ok');
+    toast(done ? `Заказ №${res.номер} передан снабженцу · ${nf(res.штук)} шт` : 'Черновик карт сохранён', 'ok');
   } catch (err) { toast(err.message, 'err'); }
 }
 
@@ -264,19 +348,44 @@ document.addEventListener('click', async (ev) => {
   const act = el.dataset.act;
   if (act === 'fl-design-open') return flOpenDesign(el.dataset.num);
   if (act === 'fl-supply-open') return flOpenSupply(el.dataset.num);
-  if (act === 'fl-row-add') {
-    const card = el.dataset.card || '1';
-    const last = FL.rows.filter((r) => String(r.карта || '1') === card).pop() || {};
-    const at = FL.rows.lastIndexOf(last) + 1 || FL.rows.length;
-    FL.rows.splice(at, 0, { карта: card, модель: last.модель || '', цвет: last.цвет || '', размер: '', итог: 0, характеристики: '' });
-    return render();
-  }
   if (act === 'fl-card-add') {
-    const next = String(Math.max(0, ...flCards().map(Number)) + 1);
-    FL.rows.push({ карта: next, модель: '', цвет: '', размер: '', итог: 0, характеристики: '' });
+    FL.models[String(Math.max(0, ...flCards().map(Number)) + 1)] = [];
     return render();
   }
-  if (act === 'fl-row-del') { FL.rows.splice(Number(el.dataset.i), 1); return render(); }
+  if (act === 'fl-card-del') {
+    const c = el.dataset.card;
+    if (FL.rows.some((r) => r.карта === c) && !confirm(`Удалить карту ${c} со всем количеством?`)) return;
+    delete FL.models[c]; FL.rows = FL.rows.filter((r) => r.карта !== c);
+    return render();
+  }
+  if (act === 'fl-model-add') {
+    const c = el.dataset.card;
+    const inp = document.querySelector(`[data-fl-newmodel="${CSS.escape(c)}"]`);
+    const m = ((inp && inp.value) || '').trim();
+    if (!m) return toast('Впишите модель', 'err');
+    if (!(FL.models[c] || []).includes(m)) FL.models[c].push(m);
+    return render();
+  }
+  if (act === 'fl-model-del') {
+    const { card: c, model: m } = el.dataset;
+    if (FL.rows.some((r) => r.карта === c && r.модель === m) && !confirm(`Убрать ${m} из карты ${c}?`)) return;
+    FL.models[c] = FL.models[c].filter((x) => x !== m);
+    FL.rows = FL.rows.filter((r) => !(r.карта === c && r.модель === m));
+    return render();
+  }
+  if (act === 'fl-fill') {
+    const { card: c, model: m } = el.dataset;
+    const o = flOrder();
+    const { colors, sizes } = flGrid(o, c, m);
+    colors.forEach((col) => sizes.forEach((z) => {
+      if (!FL.rows.some((r) => r.карта === c && flKey(r.модель, r.цвет, r.размер) === flKey(m, col, z))) {
+        const h = flHint(o, c, m, col, z);
+        if (h) flSetCell(c, m, col, z, h);
+      }
+    }));
+    return render();
+  }
+  if (act === 'fl-allcolors') { FL.allColors[el.dataset.id] = el.checked; return render(); }
   if (act === 'fl-design-save' || act === 'fl-design-done') {
     el.disabled = true; await flSaveDesign(act === 'fl-design-done'); el.disabled = false; return;
   }
@@ -309,17 +418,12 @@ document.addEventListener('input', (ev) => {
     const [i, f] = t.dataset[attr].split('|');
     list[Number(i)][f] = t.value;
   };
-  if (t.dataset.flRow) {
-    pick('flRow', FL.rows);
-    const total = document.getElementById('fl-total');
-    if (total) total.textContent = nf(FL.rows.reduce((s, r) => s + num(r.итог), 0));
-    document.querySelectorAll('[data-fl-card-total]').forEach((b) => {
-      b.textContent = nf(FL.rows.filter((r) => String(r.карта || '1') === b.dataset.flCardTotal).reduce((s, r) => s + num(r.итог), 0));
-    });
-    const o = (FL.design.очередь || []).find((x) => x.номер === FL.num);
-    const dev = document.getElementById('fl-dev');
-    if (o && dev) dev.innerHTML = flDevHtml(o);
+  if (t.dataset.flCell) {
+    const [c, m, col, z] = t.dataset.flCell.split('|');
+    flSetCell(c, m, col, z, Math.max(0, Math.floor(Number(t.value) || 0)));
+    flRefreshDesign();
   }
+  if (t.dataset.flChars) FL.chars[t.dataset.flChars] = t.value;
   if (t.dataset.flMat) pick('flMat', FL.rows);
   if (t.dataset.flBom) pick('flBom', FL.bomRows);
 });
