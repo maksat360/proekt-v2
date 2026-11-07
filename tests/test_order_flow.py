@@ -166,6 +166,37 @@ class SeveralCardsTests(OrderFlowTests):
         self.assertEqual(self.order()["остаток"], 0)
 
 
+class MaterialsTests(unittest.TestCase):
+    """Справочник материалов (категория → вид) и норма расхода по размерам."""
+
+    def setUp(self):
+        self._old = cex_api.store
+        cex_api.store = self.st = FakeStore()
+
+    def tearDown(self):
+        cex_api.store = self._old
+
+    def test_catalog_and_size_norms(self):
+        cex_api.save_material(ME, {"категория": "Рулон"})
+        self.assertEqual(cex_api.materials(), [{"категория": "Рулон", "вид": "", "ед": "м", "параметры": ""}])
+        cex_api.save_material(ME, {"категория": "Рулон", "вид": "Габардин", "ед": "кг", "параметры": "220 г/м²"})
+        self.assertEqual([m["вид"] for m in cex_api.materials()], ["Габардин"])  # заглушка категории ушла
+        with self.assertRaisesRegex(ValueError, "есть виды"):
+            cex_api.save_material(ME, {"категория": "Рулон", "удалить": True})
+
+        cex_api.save_bom(ME, {"модель": "П1", "строки": [
+            {"категория": "Рулон", "материал": "Габардин", "ед": "кг", "норма": 0.3, "по_размерам": {"46": 0.4}}]})
+        with self.assertRaisesRegex(ValueError, "есть в спецификации"):
+            cex_api.save_material(ME, {"категория": "Рулон", "вид": "Габардин", "удалить": True})
+        need, missing = cex_api.supply_need([
+            {"модель": "П1", "цвет": "Чёрный", "размер": "42", "итог": 10},
+            {"модель": "П1", "цвет": "Чёрный", "размер": "46", "итог": 5}], cex_api.boms())
+        self.assertEqual(missing, [])
+        self.assertEqual(need, [{"материал": "Габардин", "цвет": "Чёрный", "ед": "кг", "нужно": 5.0}])  # 10×0.3 + 5×0.4
+        with self.assertRaisesRegex(ValueError, "укажите норму"):
+            cex_api.save_bom(ME, {"модель": "П1", "строки": [{"материал": "Габардин"}]})
+
+
 class PackOrderStatusTests(unittest.TestCase):
     """Упаковали последнюю партию заказа — заказ из «принят» становится «упакован»."""
 

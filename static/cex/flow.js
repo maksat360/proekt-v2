@@ -215,12 +215,12 @@ async function flSaveDesign(done) {
 // ------------------------------------------------------------- снабжение
 function supplyHtml() {
   const t = FL.supplyTab;
-  const sub = [['orders', `Заказы ${nf((FL.supply.очередь || []).length)}`], ['bom', 'Спецификации'], ['rolls', 'Рулоны']];
+  const sub = [['orders', `Заказы ${nf((FL.supply.очередь || []).length)}`], ['bom', 'Спецификации'], ['mats', 'Материалы'], ['rolls', 'Рулоны']];
   return `<div class="cx-hero compact"><div><h1>Снабжение</h1>
       <div class="cx-sub">Сырьё по спецификациям артикулов, поступившие рулоны. Когда сырьё готово — заказ уходит технологу</div></div>
       <div class="cx-hero-actions"><button class="btn" data-act="refresh">Обновить</button></div></div>
     <div class="cx-tabs">${sub.map(([id, l]) => `<button class="cx-tab ${t === id ? 'on' : ''}" data-act="fl-sub" data-tab="${id}">${l}</button>`).join('')}</div>
-    ${t === 'bom' ? bomHtml() : t === 'rolls' ? rollsHtml() : supplyOrdersHtml()}`;
+    ${t === 'bom' ? bomHtml() : t === 'mats' ? materialsHtml() : t === 'rolls' ? rollsHtml() : supplyOrdersHtml()}`;
 }
 
 function supplyOrdersHtml() {
@@ -279,30 +279,80 @@ async function flSaveSupply(done) {
   } catch (err) { toast(err.message, 'err'); }
 }
 
+// размеры артикула — по каталогу «главный», иначе по размерной сетке модели
+function flModelSizes(model) {
+  const v = (ST.refs.варианты || {})[model];
+  return v && v.размеры.length ? v.размеры.map(String) : sizesFor(model).map((x) => String(x.размер));
+}
+const flMats = () => FL.supply.материалы || [];
+const flCats = () => [...new Set(flMats().map((m) => m.категория))];
+
 function bomHtml() {
   const all = FL.supply.спецификации || {};
   const models = (ST.refs.модели || []).map((m) => m.модель);
   Object.keys(all).forEach((m) => { if (!models.includes(m)) models.push(m); });
   const chips = models.map((m) => `<button class="rt-chip ${m === FL.bomModel ? 'on' : ''}" data-act="fl-bom-pick" data-model="${esc(m)}">${esc(m)}${all[m] ? ` · ${all[m].length}` : ''}</button>`).join('');
-  const rows = FL.bomRows.map((r, i) => `<tr>
-      <td><input class="input" data-fl-bom="${i}|материал" value="${esc(r.материал)}" placeholder="ткань, нитки, молния…"></td>
-      <td><input class="input" data-fl-bom="${i}|цвет" value="${esc(r.цвет)}" placeholder="пусто = в цвет изделия" list="fl-colors"></td>
-      <td><input class="input cx-mini" type="number" min="0" step="any" data-fl-bom="${i}|норма" value="${esc(r.норма)}"></td>
-      <td><input class="input cx-mini" data-fl-bom="${i}|ед" value="${esc(r.ед || 'м')}"></td>
-      <td><input class="input" data-fl-bom="${i}|параметры" value="${esc(r.параметры)}" placeholder="ширина, состав…"></td>
-      <td><button class="btn ghost" data-act="fl-bom-del" data-i="${i}">✕</button></td></tr>`).join('');
-  return `<div class="cx-card"><div class="cx-card-h"><h3>Спецификация материалов (BOM) по артикулу</h3></div>
+  const sizes = FL.bomModel ? flModelSizes(FL.bomModel) : [];
+  const opt = (v, cur, label) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label || v)}</option>`;
+  const rows = FL.bomRows.map((r, i) => {
+    const kinds = flMats().filter((m) => m.категория === r.категория && m.вид);
+    const kindOpts = kinds.map((m) => opt(m.вид, r.материал)).join('')
+      + (r.материал && !kinds.some((m) => m.вид === r.материал) ? opt(r.материал, r.материал, `${r.материал} (нет в справочнике)`) : '');
+    return `<div class="cc-sec" style="margin-top:10px">
+      <div class="cx-formgrid">
+        <div class="cx-field"><label>Категория</label><select class="input" data-fl-bom="${i}|категория">${opt('', r.категория, '— выберите —')}${flCats().map((c) => opt(c, r.категория)).join('')}</select></div>
+        <div class="cx-field"><label>Вид</label><select class="input" data-fl-bom="${i}|материал">${opt('', r.материал, '— выберите —')}${kindOpts}</select></div>
+        <div class="cx-field"><label>Цвет</label><input class="input" data-fl-bom="${i}|цвет" value="${esc(r.цвет)}" placeholder="пусто = в цвет изделия" list="fl-colors"></div>
+        <div class="cx-field"><label>Ед.</label><input class="input cx-mini" data-fl-bom="${i}|ед" value="${esc(r.ед || 'м')}"></div>
+        <div class="cx-field"><label>Норма на 1 шт (все размеры)</label><input class="input cx-mini" type="number" min="0" step="any" data-fl-bom="${i}|норма" value="${esc(r.норма || '')}"></div>
+        <div class="cx-field" style="align-self:end"><button class="btn ghost" data-act="fl-bom-del" data-i="${i}">✕ убрать</button></div>
+      </div>
+      ${sizes.length ? `<div class="cx-hint" style="margin:8px 0 4px">Своя норма по размеру — если отличается от общей (пусто = общая)</div>
+      <div class="cx-gwrap" style="max-height:none"><table class="cx-gtable"><thead><tr>${sizes.map((z) => `<th>${esc(z)}</th>`).join('')}</tr></thead>
+        <tbody><tr>${sizes.map((z) => `<td><input class="cx-gin" type="number" min="0" step="any" data-fl-bomsize="${i}|${esc(z)}"
+          value="${esc((r.по_размерам || {})[z] || '')}" placeholder="${esc(r.норма || '·')}"></td>`).join('')}</tr></tbody></table></div>` : ''}
+      ${r.параметры ? `<div class="cx-hint" style="margin-top:6px">${esc(r.параметры)}</div>` : ''}
+    </div>`;
+  }).join('');
+  return `<div class="cx-card"><div class="cx-card-h"><h3>Спецификация по артикулу</h3>
+      <span class="cx-hint">материалы — из справочника «Материалы»</span></div>
     <div class="cx-card-b">
       <div class="cc-wait">${chips || '<span class="cx-hint">Справочник моделей пуст</span>'}</div>
+      ${!flMats().length ? '<div class="cx-notice" style="margin-top:10px">Справочник материалов пуст — заведите категории и виды во вкладке «Материалы».</div>' : ''}
       ${FL.bomModel ? `
         <datalist id="fl-colors">${(ST.refs.цвета || []).map((c) => `<option value="${esc(c.цвет)}">`).join('')}</datalist>
-        <div class="cx-scroll" style="margin-top:12px"><table class="cx-table">
-          <thead><tr><th>Сырьё / материал</th><th>Цвет</th><th>Норма на 1 шт</th><th>Ед.</th><th>Доп. параметры</th><th></th></tr></thead>
-          <tbody>${rows}</tbody></table></div>
+        <div class="cx-hint" style="margin-top:12px"><b>${esc(FL.bomModel)}</b>${(modelInfo(FL.bomModel) || {}).категория ? ' · ' + esc(modelInfo(FL.bomModel).категория) : ''} · размеры: ${sizes.map(esc).join(', ') || '—'}</div>
+        ${rows || '<div class="cx-hint" style="margin-top:8px">Материалов пока нет</div>'}
         <div class="cx-btn-row" style="margin-top:10px">
           <button class="btn" data-act="fl-bom-add">+ Материал</button>
           <button class="btn primary" data-act="fl-bom-save">Сохранить спецификацию ${esc(FL.bomModel)}</button>
         </div>` : '<div class="cx-hint" style="margin-top:10px">Выберите артикул</div>'}
+    </div></div>`;
+}
+
+function materialsHtml() {
+  const blocks = flCats().map((c) => {
+    const kinds = flMats().filter((m) => m.категория === c && m.вид);
+    return `<div class="cc-sec" style="margin-top:10px">
+      <div class="cc-sec-h"><b>${esc(c)}</b><span class="cx-hint">${nf(kinds.length)} вид.</span>
+        ${kinds.length ? '' : `<button class="btn ghost" data-act="fl-mat-del" data-cat="${esc(c)}" data-kind="">✕ удалить категорию</button>`}</div>
+      ${kinds.length ? `<table class="cx-table"><thead><tr><th>Вид</th><th>Ед.</th><th>Параметры</th><th></th></tr></thead><tbody>
+        ${kinds.map((m) => `<tr><td>${esc(m.вид)}</td><td>${esc(m.ед)}</td><td>${esc(m.параметры)}</td>
+          <td><button class="btn ghost" data-act="fl-mat-del" data-cat="${esc(c)}" data-kind="${esc(m.вид)}">✕</button></td></tr>`).join('')}</tbody></table>` : ''}
+      <div class="cx-btn-row" style="margin-top:8px">
+        <input class="input" data-fl-newkind="${esc(c)}" placeholder="новый вид, напр. габардин 220" style="max-width:240px">
+        <input class="input cx-mini" data-fl-newunit="${esc(c)}" placeholder="ед." value="м">
+        <input class="input" data-fl-newparams="${esc(c)}" placeholder="параметры: ширина, граммаж, состав" style="max-width:260px">
+        <button class="btn" data-act="fl-mat-add" data-cat="${esc(c)}">+ Вид</button>
+      </div></div>`;
+  }).join('');
+  return `<div class="cx-card"><div class="cx-card-h"><h3>Справочник материалов</h3><span class="cx-hint">категории и виды внутри них</span></div>
+    <div class="cx-card-b">
+      <div class="cx-btn-row">
+        <input class="input" id="fl-newcat" placeholder="новая категория: рулон, карман, нитки…" style="max-width:280px">
+        <button class="btn primary" data-act="fl-cat-add">+ Категория</button>
+      </div>
+      ${blocks || '<div class="cx-hint" style="margin-top:10px">Категорий пока нет</div>'}
     </div></div>`;
 }
 
@@ -396,10 +446,29 @@ document.addEventListener('click', async (ev) => {
   if (act === 'fl-bom-pick') {
     FL.bomModel = el.dataset.model;
     FL.bomRows = ((FL.supply.спецификации || {})[FL.bomModel] || []).map((r) => ({ ...r }));
-    if (!FL.bomRows.length) FL.bomRows.push({ материал: '', цвет: '', норма: '', ед: 'м', параметры: '' });
+    if (!FL.bomRows.length) FL.bomRows.push({ категория: '', материал: '', цвет: '', норма: '', ед: 'м', параметры: '', по_размерам: {} });
     return render();
   }
-  if (act === 'fl-bom-add') { FL.bomRows.push({ материал: '', цвет: '', норма: '', ед: 'м', параметры: '' }); return render(); }
+  if (act === 'fl-bom-add') { FL.bomRows.push({ категория: '', материал: '', цвет: '', норма: '', ед: 'м', параметры: '', по_размерам: {} }); return render(); }
+  if (act === 'fl-cat-add') {
+    const cat = (($('#fl-newcat') || {}).value || '').trim();
+    if (!cat) return toast('Впишите категорию', 'err');
+    await flPost('/supply/material', { категория: cat }, `Категория «${cat}» добавлена`);
+    return;
+  }
+  if (act === 'fl-mat-add') {
+    const c = el.dataset.cat;
+    const val = (a) => ((document.querySelector(`[${a}="${CSS.escape(c)}"]`) || {}).value || '').trim();
+    if (!val('data-fl-newkind')) return toast('Впишите вид', 'err');
+    await flPost('/supply/material', { категория: c, вид: val('data-fl-newkind'), ед: val('data-fl-newunit'), параметры: val('data-fl-newparams') }, 'Вид добавлен');
+    return;
+  }
+  if (act === 'fl-mat-del') {
+    const { cat, kind } = el.dataset;
+    if (!confirm(kind ? `Удалить «${kind}» из «${cat}»?` : `Удалить категорию «${cat}»?`)) return;
+    await flPost('/supply/material', { категория: cat, вид: kind, удалить: true }, 'Удалено');
+    return;
+  }
   if (act === 'fl-bom-del') { FL.bomRows.splice(Number(el.dataset.i), 1); return render(); }
   if (act === 'fl-bom-save') {
     await flPost('/supply/bom', { модель: FL.bomModel, строки: FL.bomRows }, `Спецификация ${FL.bomModel} сохранена`);
@@ -426,4 +495,25 @@ document.addEventListener('input', (ev) => {
   if (t.dataset.flChars) FL.chars[t.dataset.flChars] = t.value;
   if (t.dataset.flMat) pick('flMat', FL.rows);
   if (t.dataset.flBom) pick('flBom', FL.bomRows);
+  if (t.dataset.flBomsize) {
+    const [i, z] = t.dataset.flBomsize.split('|');
+    const r = FL.bomRows[Number(i)];
+    r.по_размерам = { ...(r.по_размерам || {}) };
+    if (num(t.value) > 0) r.по_размерам[z] = num(t.value); else delete r.по_размерам[z];
+  }
+});
+
+// спецификация: категория меняет список видов, вид подставляет ед. и параметры из справочника
+document.addEventListener('change', (ev) => {
+  const t = ev.target;
+  if (ST.view !== 'supply' || !t.dataset.flBom || t.tagName !== 'SELECT') return;
+  const [i, f] = t.dataset.flBom.split('|');
+  const r = FL.bomRows[Number(i)];
+  r[f] = t.value;
+  if (f === 'категория') r.материал = '';
+  if (f === 'материал') {
+    const m = flMats().find((x) => x.категория === r.категория && x.вид === r.материал);
+    if (m) { r.ед = m.ед || r.ед; r.параметры = m.параметры; }
+  }
+  render();
 });

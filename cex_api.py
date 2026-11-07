@@ -98,8 +98,13 @@ PCARD_LOG = ("История карты",
              ["№ заказа", "карта", "дата", "кто", "модель", "цвет", "размер", "было", "стало", "комментарий"],
              [10, 8, 16, 14, 12, 16, 9, 8, 8, 34])
 BOM = ("Спецификация",
-       ["модель", "материал", "цвет", "норма на 1 шт", "ед.", "параметры"],
-       [12, 26, 18, 13, 8, 30])
+       ["модель", "материал", "цвет", "норма на 1 шт", "ед.", "параметры", "категория", "по размерам"],
+       [12, 26, 18, 13, 8, 30, 16, 30])
+# Справочник материалов: категории (рулон, карман, нитки…) и виды внутри них.
+# Строка с пустым «вид» — сама категория, пока в ней нет видов.
+MATERIALS = ("Материалы",
+             ["категория", "вид", "ед.", "параметры"],
+             [18, 30, 8, 34])
 SUPPLY_SH = ("Снабжение",
              ["№ заказа", "материал", "цвет", "ед.", "нужно", "есть", "статус", "комментарий",
               "кто", "когда"],
@@ -154,7 +159,7 @@ def ensure_sheets() -> None:
     specs = [MODELS, COLORS, SIZES, ORDERS, PARTIES, TECH, CUT, OUT, ROUTE, PACK,
              STAFF, SHIFTS, RATES, SALARY, ROUTE_MODEL, ROUTE_PARTY, ASSIGN, ITEM_LABELS, CARDS, ROLLS, PATTERNS,
              ROUTE_ORD, ROUTE_ORD_MODEL, ROUTE_ORD_PARTY, ROUTE_FIN, ROUTE_FIN_MODEL, ROUTE_FIN_PARTY,
-             PCARD, PCARD_LOG, BOM, SUPPLY_SH, STOCK_ROLLS]
+             PCARD, PCARD_LOG, BOM, SUPPLY_SH, STOCK_ROLLS, MATERIALS]
     store.ensure_sheets(specs)
     for name, headers, _ in specs:
         if store.first_row(name) != headers:
@@ -601,10 +606,52 @@ def boms() -> dict[str, list[dict]]:
     for r in _rows(BOM):
         if _s(r.get("модель")) and _s(r.get("материал")):
             out.setdefault(_s(r.get("модель")), []).append({
+                "категория": _s(r.get("категория")),
                 "материал": _s(r.get("материал")), "цвет": _s(r.get("цвет")),
                 "норма": _num(r.get("норма на 1 шт")), "ед": _s(r.get("ед.")),
-                "параметры": _s(r.get("параметры"))})
+                "параметры": _s(r.get("параметры")),
+                "по_размерам": _parse_sizes(r.get("по размерам"))})
     return out
+
+
+def _parse_sizes(text) -> dict[str, float]:
+    """«42:1,1; 44:1,2» → {"42": 1.1, "44": 1.2} — норма расхода по размерам."""
+    out = {}
+    for part in _s(text).split(";"):
+        size, _, val = part.partition(":")
+        if _norm_size(size) and _num(val) > 0:
+            out[_norm_size(size)] = _num(val)
+    return out
+
+
+def materials() -> list[dict]:
+    return [{"категория": _s(r.get("категория")), "вид": _s(r.get("вид")),
+             "ед": _s(r.get("ед.")), "параметры": _s(r.get("параметры"))}
+            for r in _rows(MATERIALS) if _s(r.get("категория"))]
+
+
+def save_material(me: dict, body: dict) -> dict:
+    """Добавить/изменить категорию или вид материала; «удалить» — убрать вид (или пустую категорию)."""
+    cat, kind = _s(body.get("категория")), _s(body.get("вид"))
+    if not cat:
+        raise ValueError("Укажите категорию")
+    rows = _rows(MATERIALS)
+    same = lambda r: _s(r.get("категория")).lower() == cat.lower() and _s(r.get("вид")).lower() == kind.lower()
+    if body.get("удалить"):
+        if not kind and any(_s(r.get("категория")).lower() == cat.lower() and _s(r.get("вид")) for r in rows):
+            raise ValueError(f"В категории «{cat}» есть виды — сначала удалите их")
+        used = [m for m, lines in boms().items() for b in lines if kind and b["материал"].lower() == kind.lower()]
+        if used:
+            raise ValueError(f"«{kind}» есть в спецификации: {', '.join(sorted(set(used)))}")
+        rows = [r for r in rows if not same(r)]
+    else:
+        row = {"категория": cat, "вид": kind, "ед.": _s(body.get("ед")) or "м", "параметры": _s(body.get("параметры"))}
+        rows = [r for r in rows if not same(r)] + [row]
+        if kind:  # заглушка категории больше не нужна, когда в ней появился вид
+            rows = [r for r in rows if not (_s(r.get("категория")).lower() == cat.lower() and not _s(r.get("вид")))]
+    rows.sort(key=lambda r: (_s(r.get("категория")).lower(), _s(r.get("вид")).lower()))
+    store.write_sheet(MATERIALS[0], MATERIALS[1], rows)
+    return {"категория": cat, "вид": kind}
 
 
 def save_bom(me: dict, body: dict) -> dict:
@@ -618,11 +665,14 @@ def save_bom(me: dict, body: dict) -> dict:
         if not mat:
             continue
         norm = _num(it.get("норма"))
-        if norm <= 0:
-            raise ValueError(f"Строка {i} ({mat}): норма расхода должна быть больше нуля")
+        sizes = it.get("по_размерам") or {}
+        sizes = _parse_sizes(sizes if isinstance(sizes, str) else "; ".join(f"{k}:{v}" for k, v in sizes.items()))
+        if norm <= 0 and not sizes:
+            raise ValueError(f"Строка {i} ({mat}): укажите норму расхода — общую или по размерам")
         lines.append({"модель": model, "материал": mat, "цвет": _s(it.get("цвет")),
-                      "норма на 1 шт": norm, "ед.": _s(it.get("ед")) or "м",
-                      "параметры": _s(it.get("параметры"))})
+                      "норма на 1 шт": norm or "", "ед.": _s(it.get("ед")) or "м",
+                      "параметры": _s(it.get("параметры")), "категория": _s(it.get("категория")),
+                      "по размерам": "; ".join(f"{k}:{v:g}" for k, v in sizes.items())})
     rows = [r for r in _rows(BOM) if _s(r.get("модель")) != model] + lines
     store.write_sheet(BOM[0], BOM[1], rows)
     return {"модель": model, "строк": len(lines)}
@@ -640,7 +690,8 @@ def supply_need(card: list[dict], bom: dict) -> tuple[list[dict], list[str]]:
             continue
         for b in lines:
             k = (b["материал"], b["цвет"] or c["цвет"], b["ед"])
-            need[k] = need.get(k, 0) + b["норма"] * c["итог"]
+            norm = b.get("по_размерам", {}).get(_norm_size(c["размер"]), b["норма"])  # своя норма размера, иначе общая
+            need[k] = need.get(k, 0) + norm * c["итог"]
     return ([{"материал": k[0], "цвет": k[1], "ед": k[2], "нужно": round(v, 3)}
              for k, v in need.items()], missing)
 
@@ -684,7 +735,8 @@ def supply_state() -> dict:
             o["карта"] = card_of(o, cards)
             o["сырьё"], o["без_спецификации"] = supply_lines(o, bom, cards)
             queue_.append(o)
-    return {"очередь": queue_, "спецификации": bom, "рулоны": list(roll_registry().values())[::-1][:300],
+    return {"очередь": queue_, "спецификации": bom, "материалы": materials(),
+            "рулоны": list(roll_registry().values())[::-1][:300],
             "статусы": list(SUPPLY_STATUSES)}
 
 
@@ -3552,7 +3604,8 @@ def _dispatch(ctx) -> None:
     flow_post = {"/api/cex/design": ("cex.design", save_design),
                  "/api/cex/supply": ("cex.supply", save_supply),
                  "/api/cex/supply/bom": ("cex.supply", save_bom),
-                 "/api/cex/supply/roll": ("cex.supply", add_roll)}
+                 "/api/cex/supply/roll": ("cex.supply", add_roll),
+                 "/api/cex/supply/material": ("cex.supply", save_material)}
     if path in flow_post and method == "POST":
         code, fn = flow_post[path]
         if not _can(me, code):
