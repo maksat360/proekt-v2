@@ -735,7 +735,7 @@ function techHtml() {
 function openTech(numStr) {
   const o = ST.заказы.find((x) => String(x.номер) === String(numStr));
   if (!o) return toast('Заказ не найден — обновите список', 'err');
-  const rows = o.позиции.map((p, i) => `
+  const row = (p, i) => `
     <tr>
       <td><div class="cx-cell-main">${esc(p.модель)}</div><div class="cx-cell-sub">${esc(p.характеристики || p.категория)}</div></td>
       <td>${esc(p.цвет)}</td>
@@ -749,7 +749,17 @@ function openTech(numStr) {
     ? `<input class="input cx-mini" type="number" min="0" max="${p.остаток}" value="${p.остаток}" data-accept="${i}">`
     : '<span class="cx-pill green">принято</span>'}
       </td>
-    </tr>`).join('');
+    </tr>`;
+  // одна карта конструктора — одна партия: принимаем каждую карту своей кнопкой
+  const cardNos = [...new Set(o.позиции.map((p) => String(p.карта || '1')))].sort((a, b) => a - b);
+  const head = `<thead><tr><th>Модель</th><th>Цвет</th><th>Размер</th>${o.по_карте ? '<th class="num">В заказе</th><th class="num">По карте</th>' : '<th class="num">Заказано</th>'}<th class="num">Принято</th><th class="num">Остаток</th><th>Принять</th></tr></thead>`;
+  const tables = cardNos.map((c) => {
+    const items = o.позиции.map((p, i) => [p, i]).filter(([p]) => String(p.карта || '1') === c);
+    const left = items.reduce((s, [p]) => s + num(p.остаток), 0);
+    return `${cardNos.length > 1 ? `<h4 style="margin:14px 0 6px">Карта ${esc(c)} · осталось ${nf(left)} шт</h4>` : ''}
+      <div class="cx-scroll"><table class="cx-table">${head}<tbody>${items.map(([p, i]) => row(p, i)).join('')}</tbody></table></div>
+      ${left > 0 ? `<div class="cx-btn-row" style="margin-top:8px"><button class="btn primary" data-act="decide-accept" data-num="${esc(o.номер)}" data-card="${esc(c)}">${cardNos.length > 1 ? `Принять карту ${esc(c)} → партия` : 'Принять и создать партию'}</button></div>` : ''}`;
+  }).join('');
 
   const st = ST.tech.статистика || {};
   const modal = $('#cx-modal');
@@ -768,12 +778,7 @@ function openTech(numStr) {
         </div>
         ${o.комментарий ? `<div class="cx-notice">${esc(o.комментарий)}</div>` : ''}
 
-        <div class="cx-scroll">
-          <table class="cx-table">
-            <thead><tr><th>Модель</th><th>Цвет</th><th>Размер</th>${o.по_карте ? '<th class="num">В заказе</th><th class="num">По карте</th>' : '<th class="num">Заказано</th>'}<th class="num">Принято</th><th class="num">Остаток</th><th>Принять</th></tr></thead>
-            <tbody>${rows}</tbody>
-          </table>
-        </div>
+        ${tables}
 
         ${techFlowHtml(o.номер)}
         <div class="cx-decide">
@@ -799,10 +804,9 @@ function openTech(numStr) {
         </div>
 
         <div class="cx-btn-row" style="margin-top:16px">
-          <button class="btn primary" data-act="decide-accept" data-num="${esc(o.номер)}">Принять и создать партию</button>
           <button class="btn" data-act="decide-reject" data-num="${esc(o.номер)}">Отклонить</button>
         </div>
-        <div class="cx-hint" style="margin-top:8px">Партия получит следующий номер и статус «крой» — её увидит закройщик.</div>
+        <div class="cx-hint" style="margin-top:8px">Каждая карта становится отдельной партией со следующим номером и статусом «крой» — её увидит закройщик. Сырьё и комментарий выше запишутся в решение.</div>
       </div>
     </div>`;
   modal.hidden = false;
@@ -820,7 +824,7 @@ function techFlowHtml(numStr) {
     ${hist.length ? `<details style="margin-top:12px"><summary>История карты конструктора · ${nf(hist.length)}</summary>${flHistoryHtml(hist)}</details>` : ''}`;
 }
 
-async function submitDecision(kind, numStr) {
+async function submitDecision(kind, numStr, card) {
   const o = ST.заказы.find((x) => String(x.номер) === String(numStr));
   if (!o) return;
   const body = {
@@ -836,8 +840,9 @@ async function submitDecision(kind, numStr) {
     document.querySelectorAll('[data-accept]').forEach((el) => {
       const i = Number(el.dataset.accept);
       const p = o.позиции[i];
+      if (card && String(p.карта || '1') !== String(card)) return;
       const qty = Math.max(0, Math.min(Number(el.value || 0), p.остаток));
-      if (qty > 0) body.позиции.push({ модель: p.модель, цвет: p.цвет, размер: p.размер, количество: qty });
+      if (qty > 0) body.позиции.push({ карта: p.карта || '1', модель: p.модель, цвет: p.цвет, размер: p.размер, количество: qty });
     });
     if (!body.позиции.length) return toast('Укажите, сколько принять', 'err');
   }
@@ -1918,7 +1923,7 @@ document.addEventListener('click', async (ev) => {
   if (act === 'cut-back') { ST.cut.партия = null; render(); return; }
   if (act === 'new-cut') { openCutModal(); return; }
   if (act === 'save-cut') { await saveCut(); return; }
-  if (act === 'decide-accept') { await submitDecision('принять', el.dataset.num); return; }
+  if (act === 'decide-accept') { await submitDecision('принять', el.dataset.num, el.dataset.card); return; }
   if (act === 'decide-reject') { await submitDecision('отклонить', el.dataset.num); return; }
   if (act === 'decide-return') { await submitDecision('вернуть', el.dataset.num); return; }
   if (act === 'close-modal') { closeModal(); return; }

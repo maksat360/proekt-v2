@@ -17,8 +17,8 @@ COLORS = ("Справочник цвета", ["цвет", "код тона", "а
 SIZES = ("Справочник размеров", ["сетка", "размер", "порядок"], [14, 10, 9])
 PARTIES = ("Партии",
            ["№ партии", "№ заказа", "дата", "клиент", "категория", "модель",
-            "цвет", "размер", "план шт", "статус", "технолог", "срок"],
-           [9, 9, 12, 18, 14, 10, 16, 9, 10, 14, 10, 12])
+            "цвет", "размер", "план шт", "статус", "технолог", "срок", "карта"],
+           [9, 9, 12, 18, 14, 10, 16, 9, 10, 14, 10, 12, 8])
 # «роли» — все роли человека кроме основной (служебные и производственные), через «;».
 # До переноса данных колонка называлась «этап» — _rows читает её как «роли».
 STAFF = ("Сотрудники цеха",
@@ -91,12 +91,12 @@ DESIGN = "у конструктора"
 SUPPLYING = "у снабженца"
 NEW = "у технолога"
 PCARD = ("Производственная карта",
-         ["№ заказа", "модель", "цвет", "размер", "заказано", "итог", "характеристики",
+         ["№ заказа", "карта", "модель", "цвет", "размер", "заказано", "итог", "характеристики",
           "изменил", "когда"],
-         [10, 12, 16, 9, 10, 9, 34, 14, 16])
+         [10, 8, 12, 16, 9, 10, 9, 34, 14, 16])
 PCARD_LOG = ("История карты",
-             ["№ заказа", "дата", "кто", "модель", "цвет", "размер", "было", "стало", "комментарий"],
-             [10, 16, 14, 12, 16, 9, 8, 8, 34])
+             ["№ заказа", "карта", "дата", "кто", "модель", "цвет", "размер", "было", "стало", "комментарий"],
+             [10, 8, 16, 14, 12, 16, 9, 8, 8, 34])
 BOM = ("Спецификация",
        ["модель", "материал", "цвет", "норма на 1 шт", "ед.", "параметры"],
        [12, 26, 18, 13, 8, 30])
@@ -252,7 +252,7 @@ def orders() -> list[dict]:
         if o["статус"] != DESIGN and o["номер"] in cards:
             # артикул, добавленный конструктором, берёт категорию из справочника моделей
             cats = {**catalog, **{p["модель"]: p["категория"] for p in o["позиции"] if p["категория"]}}
-            o["позиции"] = [{"категория": cats.get(c["модель"], ""), "модель": c["модель"],
+            o["позиции"] = [{"категория": cats.get(c["модель"], ""), "карта": c["карта"], "модель": c["модель"],
                              "цвет": c["цвет"], "размер": c["размер"], "количество": c["итог"],
                              "заказано": c["заказано"], "характеристики": c["характеристики"]}
                             for c in cards[o["номер"]]]
@@ -264,7 +264,8 @@ def orders() -> list[dict]:
         o["принято"] = 0
         o["остаток"] = 0
         for p in o["позиции"]:
-            key = (o["номер"], p["модель"], p["цвет"], p["размер"])
+            p.setdefault("карта", "1")
+            key = (o["номер"], p["карта"], p["модель"], p["цвет"], p["размер"])
             done = accepted.get(key, 0)
             p["принято"] = done
             p["остаток"] = max(0, p["количество"] - done)
@@ -273,11 +274,16 @@ def orders() -> list[dict]:
     return out
 
 
+def _card_no(value) -> str:
+    """Номер производственной карты; старые строки без номера — карта 1."""
+    return str(_int(value, 0) or 1)
+
+
 def accepted_map() -> dict[tuple, int]:
     """Сколько уже принято в партии по каждой позиции заказа."""
     out: dict[tuple, int] = {}
     for r in _rows(PARTIES):
-        key = (_s(r.get("№ заказа")), _s(r.get("модель")), _s(r.get("цвет")),
+        key = (_s(r.get("№ заказа")), _card_no(r.get("карта")), _s(r.get("модель")), _s(r.get("цвет")),
                _norm_size(r.get("размер")))
         out[key] = out.get(key, 0) + _int(r.get("план шт"))
     return out
@@ -411,7 +417,7 @@ def apply_decision(me: dict, body: dict) -> dict:
     current = {o["номер"]: o for o in orders()}.get(num)
     if not current:
         raise ValueError("Заказ не найден")
-    remaining = {(p["модель"], p["цвет"], p["размер"]): p["остаток"]
+    remaining = {(p["карта"], p["модель"], p["цвет"], p["размер"]): p["остаток"]
                  for p in current["позиции"]}
     wanted = body.get("позиции") or []
     accepted: dict[tuple, int] = {}
@@ -419,30 +425,32 @@ def apply_decision(me: dict, body: dict) -> dict:
         qty = _int(it.get("количество"), 0)
         if qty <= 0:
             continue
-        key = (_s(it.get("модель")), _s(it.get("цвет")), _norm_size(it.get("размер")))
+        key = (_card_no(it.get("карта")), _s(it.get("модель")), _s(it.get("цвет")),
+               _norm_size(it.get("размер")))
+        name = f"{key[1]} / {key[2]} / {key[3]}"
         if key not in remaining:
-            raise ValueError(f"Позиции {key[0]} / {key[1]} / {key[2]} нет в заказе")
+            raise ValueError(f"Позиции {name} нет в карте {key[0]} заказа")
         if qty > remaining[key]:
-            raise ValueError(
-                f"По позиции {key[0]} / {key[1]} / {key[2]} осталось {remaining[key]} шт — "
-                f"нельзя принять {qty}")
+            raise ValueError(f"По позиции {name} осталось {remaining[key]} шт — нельзя принять {qty}")
         accepted[key] = accepted.get(key, 0) + qty
 
     total = sum(accepted.values())
     if total <= 0:
         raise ValueError("Укажите количество хотя бы по одной позиции")
+    if len({k[0] for k in accepted}) > 1:
+        raise ValueError("Одна карта — одна партия: принимайте карты по одной")
 
     party_num = next_party_number()
-    bypos = {(p["модель"], p["цвет"], p["размер"]): p for p in current["позиции"]}
+    bypos = {(p["карта"], p["модель"], p["цвет"], p["размер"]): p for p in current["позиции"]}
     newparty = []
-    for (model, color, size), qty in accepted.items():
-        pos = bypos[(model, color, size)]
+    for (card, model, color, size), qty in accepted.items():
+        pos = bypos[(card, model, color, size)]
         newparty.append({
             "№ партии": party_num, "№ заказа": num, "дата": now,
             "клиент": current["клиент"], "категория": pos["категория"],
             "модель": model, "цвет": color, "размер": size,
             "план шт": qty, "статус": "крой", "технолог": _s(me.get("логин")),
-            "срок": current["срок"],
+            "срок": current["срок"], "карта": card,
         })
 
     left = {k: v - accepted.get(k, 0) for k, v in remaining.items()}
@@ -450,7 +458,7 @@ def apply_decision(me: dict, body: dict) -> dict:
     status = "принят частично" if partial else "принят"
     for r in target:
         r["статус"] = status
-    for (model, color, size) in accepted:
+    for (_, model, color, size) in accepted:
         for r in target:
             if (_s(r.get("модель")) == model and _s(r.get("цвет")) == color
                     and _norm_size(r.get("размер")) == size):
@@ -491,6 +499,7 @@ def pcards() -> dict[str, list[dict]]:
         num = _norm_size(r.get("№ заказа"))
         if num and _s(r.get("модель")):
             out.setdefault(num, []).append({
+                "карта": _card_no(r.get("карта")),
                 "модель": _s(r.get("модель")), "цвет": _s(r.get("цвет")),
                 "размер": _norm_size(r.get("размер")), "заказано": _int(r.get("заказано")),
                 "итог": _int(r.get("итог")), "характеристики": _s(r.get("характеристики"))})
@@ -502,7 +511,7 @@ def card_of(order: dict, cards: dict | None = None) -> list[dict]:
     saved = (cards if cards is not None else pcards()).get(order["номер"])
     if saved:
         return saved
-    return [{"модель": p["модель"], "цвет": p["цвет"], "размер": p["размер"],
+    return [{"карта": "1", "модель": p["модель"], "цвет": p["цвет"], "размер": p["размер"],
              "заказано": p.get("заказано", p["количество"]), "итог": p["количество"],
              "характеристики": p.get("характеристики", "")} for p in order["позиции"]]
 
@@ -532,16 +541,16 @@ def save_design(me: dict, body: dict) -> dict:
     num = _s(body.get("номер"))
     order = _order_or_fail(num, DESIGN)
     ordered = {_key(p["модель"], p["цвет"], p["размер"]): p["количество"] for p in order["позиции"]}
-    new: dict[tuple, dict] = {}
+    new: dict[tuple, dict] = {}  # (карта, модель, цвет, размер) → строка
     for it in body.get("позиции") or []:
-        k = _key(it.get("модель"), it.get("цвет"), it.get("размер"))
-        if not k[0] or not k[1]:
-            raise ValueError("В строке карты не хватает модели или цвета")
+        k = (_card_no(it.get("карта")),) + _key(it.get("модель"), it.get("цвет"), it.get("размер"))
+        if not k[1] or not k[2]:
+            raise ValueError(f"Карта {k[0]}: в строке не хватает модели или цвета")
         if k in new:
-            raise ValueError(f"Строка {k[0]} / {k[1]} / {k[2]} повторяется")
+            raise ValueError(f"Карта {k[0]}: строка {k[1]} / {k[2]} / {k[3]} повторяется")
         qty = _int(it.get("итог"), -1)
         if qty < 0:
-            raise ValueError(f"{k[0]} / {k[1]} / {k[2]}: количество не может быть отрицательным")
+            raise ValueError(f"{k[1]} / {k[2]} / {k[3]}: количество не может быть отрицательным")
         new[k] = {"итог": qty, "характеристики": _s(it.get("характеристики"))}
     if not new:
         raise ValueError("В карте нет ни одной строки")
@@ -549,7 +558,7 @@ def save_design(me: dict, body: dict) -> dict:
     if done and not sum(v["итог"] for v in new.values()):
         raise ValueError("В карте 0 штук — передавать снабженцу нечего")
 
-    prev = {_key(c["модель"], c["цвет"], c["размер"]): c for c in card_of(order)}
+    prev = {(c["карта"],) + _key(c["модель"], c["цвет"], c["размер"]): c for c in card_of(order)}
     who, now, note = _s(me.get("логин")), _now(), _s(body.get("комментарий"))
     log = _rows(PCARD_LOG)
     for k in list(prev) + [k for k in new if k not in prev]:
@@ -561,8 +570,8 @@ def save_design(me: dict, body: dict) -> dict:
             what = "строка удалена" if not cur else ("новая строка" if not was else "")
             if chars_changed and cur:
                 what = (what + "; " if what else "") + "характеристики: " + (cur["характеристики"] or "—")
-            log.append({"№ заказа": num, "дата": now, "кто": who, "модель": k[0], "цвет": k[1],
-                        "размер": k[2], "было": was_q, "стало": cur_q,
+            log.append({"№ заказа": num, "карта": k[0], "дата": now, "кто": who, "модель": k[1],
+                        "цвет": k[2], "размер": k[3], "было": was_q, "стало": cur_q,
                         "комментарий": "; ".join(x for x in (what, note) if x)})
     if done:
         log.append({"№ заказа": num, "дата": now, "кто": who, "модель": "", "цвет": "", "размер": "",
@@ -570,10 +579,11 @@ def save_design(me: dict, body: dict) -> dict:
                     "комментарий": "карта утверждена и передана снабженцу"})
 
     card_rows = [r for r in _rows(PCARD) if _norm_size(r.get("№ заказа")) != num]
-    card_rows += [{"№ заказа": num, "модель": k[0], "цвет": k[1], "размер": k[2],
-                   "заказано": ordered.get(k, 0), "итог": v["итог"],
-                   "характеристики": v["характеристики"], "изменил": who, "когда": now}
-                  for k, v in new.items()]
+    left = dict(ordered)  # «заказано» — в первую строку позиции, чтобы суммы по картам не двоились
+    for k, v in sorted(new.items(), key=lambda kv: _int(kv[0][0])):
+        card_rows.append({"№ заказа": num, "карта": k[0], "модель": k[1], "цвет": k[2], "размер": k[3],
+                          "заказано": left.pop(k[1:], 0), "итог": v["итог"],
+                          "характеристики": v["характеристики"], "изменил": who, "когда": now})
     writes = [(PCARD[0], PCARD[1], card_rows), (PCARD_LOG[0], PCARD_LOG[1], log)]
     if done:
         orders_rows = _rows(ORDERS)

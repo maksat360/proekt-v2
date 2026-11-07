@@ -13,7 +13,7 @@ function flHistoryHtml(list) {
   return `<div class="cx-scroll"><table class="cx-table">
     <thead><tr><th>Когда</th><th>Кто</th><th>Позиция</th><th class="num">Было</th><th class="num">Стало</th><th>Комментарий</th></tr></thead>
     <tbody>${list.slice().reverse().map((h) => `<tr><td>${esc(h.дата)}</td><td>${esc(h.кто)}</td>
-      <td>${h.модель ? `${esc(h.модель)} · ${esc(h.цвет)} · ${esc(h.размер)}` : '<b>Вся карта</b>'}</td>
+      <td>${h.модель ? `${h.карта ? `карта ${esc(h.карта)} · ` : ''}${esc(h.модель)} · ${esc(h.цвет)} · ${esc(h.размер)}` : '<b>Все карты</b>'}</td>
       <td class="num">${esc(h.было)}</td><td class="num">${esc(h.стало)}</td><td>${esc(h.комментарий)}</td></tr>`).join('')}</tbody>
   </table></div>`;
 }
@@ -35,41 +35,72 @@ function designHtml() {
   const q = FL.design.очередь || [];
   const o = q.find((x) => x.номер === FL.num);
   return `<div class="cx-hero compact"><div><h1>Конструктор</h1>
-      <div class="cx-sub">Производственная карта: модель, цвет, размеры, итоговое количество и характеристики. Готовая карта уходит снабженцу</div></div>
+      <div class="cx-sub">Производственные карты: модель, цвет, размеры, итоговое количество и характеристики. Готовые карты уходят снабженцу</div></div>
       <div class="cx-hero-actions"><button class="btn" data-act="refresh">Обновить</button></div></div>
     ${flQueue(q, 'fl-design-open', 'Новые заказы на пошив появятся здесь')}
     ${o ? designCardHtml(o) : ''}`;
 }
 
+const flKey = (m, c, z) => `${(m || '').trim()}|${(c || '').trim()}|${String(z || '').trim()}`;
+const flCards = () => [...new Set(FL.rows.map((r) => String(r.карта || '1')))].sort((a, b) => a - b);
+
+// Заказ начальника — только ориентир: показываем отклонение, ничего не запрещаем
+function flDevHtml(o) {
+  const got = {};
+  FL.rows.forEach((r) => { const k = flKey(r.модель, r.цвет, r.размер); got[k] = (got[k] || 0) + num(r.итог); });
+  const lines = (o.позиции || []).map((p) => {
+    const k = flKey(p.модель, p.цвет, p.размер);
+    const have = got[k] || 0; delete got[k];
+    return { name: `${p.модель} · ${p.цвет} · ${p.размер}`, want: num(p.количество), have };
+  });
+  Object.entries(got).forEach(([k, have]) => { if (have) lines.push({ name: k.split('|').join(' · '), want: 0, have }); });
+  const dev = (d) => (d > 0 ? `<b style="color:var(--orange,#e8a33d)">+${nf(d)}</b>` : d < 0 ? `<b style="color:var(--red,#e5534b)">${nf(d)}</b>` : '0');
+  const want = lines.reduce((s, l) => s + l.want, 0);
+  const have = lines.reduce((s, l) => s + l.have, 0);
+  return `<table class="cx-table"><thead><tr><th>Позиция</th><th class="num">Заказано</th><th class="num">В картах</th><th class="num">Отклонение</th></tr></thead>
+    <tbody>${lines.map((l) => `<tr><td>${esc(l.name)}${l.want ? '' : ' <span class="cx-hint">нет в заказе</span>'}</td>
+      <td class="num">${nf(l.want)}</td><td class="num">${nf(l.have)}</td><td class="num">${dev(l.have - l.want)}</td></tr>`).join('')}
+    <tr><td><b>Всего</b></td><td class="num"><b>${nf(want)}</b></td><td class="num"><b>${nf(have)}</b></td><td class="num">${dev(have - want)}</td></tr></tbody></table>`;
+}
+
 function designCardHtml(o) {
-  const rows = FL.rows.map((r, i) => `<tr>
+  const row = (r, i) => `<tr>
       <td><input class="input" data-fl-row="${i}|модель" value="${esc(r.модель)}" list="fl-models"></td>
       <td><input class="input" data-fl-row="${i}|цвет" value="${esc(r.цвет)}" list="fl-colors"></td>
       <td><input class="input cx-mini" data-fl-row="${i}|размер" value="${esc(r.размер)}"></td>
-      <td class="num">${nf(r.заказано)}</td>
       <td><input class="input cx-mini" type="number" min="0" data-fl-row="${i}|итог" value="${esc(r.итог)}"></td>
       <td><input class="input" data-fl-row="${i}|характеристики" value="${esc(r.характеристики)}" placeholder="длина, посадка, детали кроя…"></td>
       <td><button class="btn ghost" data-act="fl-row-del" data-i="${i}" title="Убрать строку">✕</button></td>
-    </tr>`).join('');
+    </tr>`;
+  const cards = flCards().map((c) => {
+    const items = FL.rows.map((r, i) => [r, i]).filter(([r]) => String(r.карта || '1') === c);
+    return `<div class="cx-card" style="margin-top:12px"><div class="cx-card-h"><h3>Карта ${esc(c)}</h3>
+        <span class="cx-hint"><b data-fl-card-total="${esc(c)}">${nf(items.reduce((s, [r]) => s + num(r.итог), 0))}</b> шт · станет отдельной партией</span></div>
+      <div class="cx-card-b"><div class="cx-scroll"><table class="cx-table">
+        <thead><tr><th>Модель</th><th>Цвет</th><th>Размер</th><th>Итог, шт</th><th>Доп. характеристики</th><th></th></tr></thead>
+        <tbody>${items.map(([r, i]) => row(r, i)).join('')}</tbody></table></div>
+        <div class="cx-btn-row" style="margin-top:10px"><button class="btn" data-act="fl-row-add" data-card="${esc(c)}">+ Строка</button></div>
+      </div></div>`;
+  }).join('');
   const total = FL.rows.reduce((s, r) => s + num(r.итог), 0);
   return `<div class="cx-card" style="margin-top:14px">
-    <div class="cx-card-h"><h3>Карта заказа №${esc(o.номер)}</h3>
-      <span class="cx-hint">в заказе ${nf(o.заказано)} шт · в карте <b id="fl-total">${nf(total)}</b> шт</span></div>
+    <div class="cx-card-h"><h3>Заказ №${esc(o.номер)} · производственные карты</h3>
+      <span class="cx-hint">в заказе ${nf(o.заказано)} шт · в картах <b id="fl-total">${nf(total)}</b> шт</span></div>
     <div class="cx-card-b">
       ${o.комментарий ? `<div class="cx-notice">${esc(o.комментарий)}</div>` : ''}
+      <h4 style="margin:0 0 8px">Заказ начальника и карты</h4>
+      <div class="cx-scroll" id="fl-dev">${flDevHtml(o)}</div>
       <datalist id="fl-models">${(ST.refs.модели || []).map((m) => `<option value="${esc(m.модель)}">${esc(m.название)}</option>`).join('')}</datalist>
       <datalist id="fl-colors">${(ST.refs.цвета || []).map((c) => `<option value="${esc(c.цвет)}">`).join('')}</datalist>
-      <div class="cx-scroll"><table class="cx-table">
-        <thead><tr><th>Модель</th><th>Цвет</th><th>Размер</th><th class="num">Заказано</th><th>Итог, шт</th><th>Доп. характеристики</th><th></th></tr></thead>
-        <tbody>${rows}</tbody></table></div>
-      <div class="cx-btn-row" style="margin-top:10px"><button class="btn" data-act="fl-row-add">+ Строка</button></div>
+      ${cards}
+      <div class="cx-btn-row" style="margin-top:12px"><button class="btn" data-act="fl-card-add">+ Карта</button></div>
       <div class="cx-field" style="margin-top:12px"><label>Комментарий к изменению</label>
         <input class="input" id="fl-note" placeholder="Например: по 46 размеру не хватает ткани"></div>
       <div class="cx-btn-row" style="margin-top:14px">
         <button class="btn" data-act="fl-design-save">Сохранить черновик</button>
         <button class="btn primary" data-act="fl-design-done">Утвердить и передать снабженцу</button>
       </div>
-      <div class="cx-hint" style="margin-top:8px">Итог может быть больше или меньше заказа. Каждое изменение записывается в историю.</div>
+      <div class="cx-hint" style="margin-top:8px">Заказ — ориентир: итог может быть больше или меньше, артикулы, цвета и размеры — любые. Каждая карта у технолога становится отдельной партией. Все изменения записываются в историю.</div>
       <h4 style="margin:18px 0 8px">История изменений</h4>
       ${flHistoryHtml((FL.design.история || {})[o.номер])}
     </div></div>`;
@@ -115,7 +146,7 @@ function supplyOrdersHtml() {
 }
 
 function supplyCardHtml(o) {
-  const card = (o.карта || []).map((c) => `<tr><td>${esc(c.модель)}</td><td>${esc(c.цвет)}</td><td>${esc(c.размер)}</td>
+  const card = (o.карта || []).map((c) => `<tr><td>${esc(c.карта)}</td><td>${esc(c.модель)}</td><td>${esc(c.цвет)}</td><td>${esc(c.размер)}</td>
     <td class="num">${nf(c.заказано)}</td><td class="num"><b>${nf(c.итог)}</b></td><td>${esc(c.характеристики)}</td></tr>`).join('');
   const sts = FL.supply.статусы || [];
   const mats = (o.сырьё || []).map((m, i) => `<tr>
@@ -129,7 +160,7 @@ function supplyCardHtml(o) {
     <div class="cx-card-h"><h3>Заказ №${esc(o.номер)} · карта конструктора</h3><span class="cx-hint">${nf(o.штук)} шт по карте</span></div>
     <div class="cx-card-b">
       <div class="cx-scroll"><table class="cx-table">
-        <thead><tr><th>Модель</th><th>Цвет</th><th>Размер</th><th class="num">Заказано</th><th class="num">Итог</th><th>Характеристики</th></tr></thead>
+        <thead><tr><th>Карта</th><th>Модель</th><th>Цвет</th><th>Размер</th><th class="num">Заказано</th><th class="num">Итог</th><th>Характеристики</th></tr></thead>
         <tbody>${card}</tbody></table></div>
       <h4 style="margin:18px 0 8px">Сырьё по спецификации</h4>
       ${miss.length ? `<div class="cx-notice warn">Нет спецификации для: <b>${miss.map(esc).join(', ')}</b> — заполните во вкладке «Спецификации».</div>` : ''}
@@ -234,8 +265,15 @@ document.addEventListener('click', async (ev) => {
   if (act === 'fl-design-open') return flOpenDesign(el.dataset.num);
   if (act === 'fl-supply-open') return flOpenSupply(el.dataset.num);
   if (act === 'fl-row-add') {
-    const last = FL.rows[FL.rows.length - 1] || {};
-    FL.rows.push({ модель: last.модель || '', цвет: last.цвет || '', размер: '', заказано: 0, итог: 0, характеристики: '' });
+    const card = el.dataset.card || '1';
+    const last = FL.rows.filter((r) => String(r.карта || '1') === card).pop() || {};
+    const at = FL.rows.lastIndexOf(last) + 1 || FL.rows.length;
+    FL.rows.splice(at, 0, { карта: card, модель: last.модель || '', цвет: last.цвет || '', размер: '', итог: 0, характеристики: '' });
+    return render();
+  }
+  if (act === 'fl-card-add') {
+    const next = String(Math.max(0, ...flCards().map(Number)) + 1);
+    FL.rows.push({ карта: next, модель: '', цвет: '', размер: '', итог: 0, характеристики: '' });
     return render();
   }
   if (act === 'fl-row-del') { FL.rows.splice(Number(el.dataset.i), 1); return render(); }
@@ -275,6 +313,12 @@ document.addEventListener('input', (ev) => {
     pick('flRow', FL.rows);
     const total = document.getElementById('fl-total');
     if (total) total.textContent = nf(FL.rows.reduce((s, r) => s + num(r.итог), 0));
+    document.querySelectorAll('[data-fl-card-total]').forEach((b) => {
+      b.textContent = nf(FL.rows.filter((r) => String(r.карта || '1') === b.dataset.flCardTotal).reduce((s, r) => s + num(r.итог), 0));
+    });
+    const o = (FL.design.очередь || []).find((x) => x.номер === FL.num);
+    const dev = document.getElementById('fl-dev');
+    if (o && dev) dev.innerHTML = flDevHtml(o);
   }
   if (t.dataset.flMat) pick('flMat', FL.rows);
   if (t.dataset.flBom) pick('flBom', FL.bomRows);

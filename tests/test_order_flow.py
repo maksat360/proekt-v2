@@ -126,6 +126,46 @@ class OrderFlowTests(unittest.TestCase):
         self.assertEqual([q["номер"] for q in cex_api.queue()], ["7"])
 
 
+class SeveralCardsTests(OrderFlowTests):
+    """Конструктор делит заказ на карты как хочет; технолог принимает каждую карту отдельной партией."""
+
+    def test_full_flow(self):  # общий поток уже проверен в OrderFlowTests
+        pass
+
+    def test_old_orders_stay_with_technologist(self):
+        pass
+
+    def test_cards_become_parties(self):
+        # одна и та же позиция в двух картах + артикул, которого нет в заказе; итог больше заказа
+        cex_api.save_design(ME, {"номер": "7", "готово": True, "позиции": [
+            {"карта": 1, "модель": "П1", "цвет": "Красный", "размер": "42", "итог": 8},
+            {"карта": 1, "модель": "П1", "цвет": "Красный", "размер": "44", "итог": 5},
+            {"карта": 2, "модель": "П1", "цвет": "Красный", "размер": "42", "итог": 6},
+            {"карта": 2, "модель": "Б2", "цвет": "Чёрный", "размер": "XL", "итог": 3}]})
+        card = {(r["карта"], r["модель"], r["размер"]): r for r in self.st.sheets[cex_api.PCARD[0]]}
+        self.assertEqual(card[("1", "П1", "42")]["заказано"], 10)
+        self.assertEqual(card[("2", "П1", "42")]["заказано"], 0)  # «заказано» не двоится
+        self.assertEqual(sum(r["количество"] for r in self.st.sheets[cex_api.ORDERS[0]]), 15)  # заказ не тронут
+
+        for o in self.st.sheets[cex_api.ORDERS[0]]:
+            o["статус"] = cex_api.NEW  # снабжение проверено в OrderFlowTests
+        o = self.order()
+        self.assertEqual(o["штук"], 22)
+        pos = lambda c, m, z, q: {"карта": c, "модель": m, "цвет": "Красный" if m == "П1" else "Чёрный",
+                                  "размер": z, "количество": q}
+        with self.assertRaisesRegex(ValueError, "Одна карта — одна партия"):
+            cex_api.apply_decision(ME, {"номер": "7", "позиции": [pos(1, "П1", "42", 8), pos(2, "П1", "42", 6)]})
+        res1 = cex_api.apply_decision(ME, {"номер": "7", "позиции": [pos(1, "П1", "42", 8), pos(1, "П1", "44", 5)]})
+        self.assertEqual(res1["статус"], "принят частично")
+        res2 = cex_api.apply_decision(ME, {"номер": "7", "позиции": [pos(2, "П1", "42", 6), pos(2, "Б2", "XL", 3)]})
+        self.assertEqual(res2["статус"], "принят")
+        self.assertNotEqual(res1["партия"], res2["партия"])
+        parties = self.st.sheets[cex_api.PARTIES[0]]
+        self.assertEqual({(str(r["№ партии"]), r["карта"]) for r in parties},
+                         {(str(res1["партия"]), "1"), (str(res2["партия"]), "2")})
+        self.assertEqual(self.order()["остаток"], 0)
+
+
 class PackOrderStatusTests(unittest.TestCase):
     """Упаковали последнюю партию заказа — заказ из «принят» становится «упакован»."""
 
