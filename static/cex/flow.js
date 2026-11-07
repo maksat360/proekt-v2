@@ -18,15 +18,18 @@ function flHistoryHtml(list) {
   </table></div>`;
 }
 
+// у снабженца в очереди не заказ, а карта заказа
+const flQKey = (o) => (o.карта_номер ? `${o.номер}|${o.карта_номер}` : o.номер);
+
 function flQueue(list, act, empty) {
   if (!list.length) return `<div class="cx-card"><div class="cx-empty"><b>Очередь пуста</b>${empty}</div></div>`;
   return `<div class="cx-queue">${list.map((o) => `
-    <div class="cx-qitem ${FL.num === o.номер ? 'on' : ''}" data-act="${act}" data-num="${esc(o.номер)}">
+    <div class="cx-qitem ${FL.num === flQKey(o) ? 'on' : ''}" data-act="${act}" data-num="${esc(flQKey(o))}">
       <div class="cx-qmain">
-        <div class="cx-qtitle">Заказ №${esc(o.номер)} ${statusPill(o.статус)}</div>
-        <div class="cx-hint">${esc(o.клиент)} · ${nf(o.позиций)} поз. · заказано ${nf(o.заказано)} шт · срок ${esc(o.срок || '—')}</div>
+        <div class="cx-qtitle">Заказ №${esc(o.номер)}${o.карта_номер ? ` · карта ${esc(o.карта_номер)}` : ''} ${o.карта_номер ? '' : statusPill(o.статус)}</div>
+        <div class="cx-hint">${esc(o.клиент)} · ${o.карта_номер ? `${nf(o.штук)} шт по карте` : `${nf(o.позиций)} поз. · заказано ${nf(o.заказано)} шт`} · срок ${esc(o.срок || '—')}</div>
       </div>
-      <div class="cx-qright"><button class="btn primary" data-act="${act}" data-num="${esc(o.номер)}">Открыть</button></div>
+      <div class="cx-qright"><button class="btn primary" data-act="${act}" data-num="${esc(flQKey(o))}">Открыть</button></div>
     </div>`).join('')}</div>`;
 }
 
@@ -47,12 +50,17 @@ const flKey = (m, c, z) => `${(m || '').trim()}|${(c || '').trim()}|${String(z |
 const flCards = () => Object.keys(FL.models).sort((a, b) => a - b);
 const flQty = (card) => FL.rows.filter((r) => card == null || r.карта === card).reduce((s, r) => s + num(r.итог), 0);
 const flOrder = () => (FL.design.очередь || []).find((x) => x.номер === FL.num);
+const flBoss = (o) => o.в_заказе || o.позиции || [];  // заказ начальника — только подсказка
+// карта уже передана дальше — у конструктора она только для просмотра
+const flStage = (card) => ((flOrder() || {}).карты || {})[card] || 'у конструктора';
+const flLocked = (card) => flStage(card) !== 'у конструктора';
+const flMine = () => flCards().filter((c) => !flLocked(c));
 
 // Заказ начальника — только ориентир: показываем отклонение, ничего не запрещаем
 function flDevHtml(o) {
   const got = {};
   FL.rows.forEach((r) => { const k = flKey(r.модель, r.цвет, r.размер); got[k] = (got[k] || 0) + num(r.итог); });
-  const lines = (o.позиции || []).map((p) => {
+  const lines = flBoss(o).map((p) => {
     const k = flKey(p.модель, p.цвет, p.размер);
     const have = got[k] || 0; delete got[k];
     return { name: `${p.модель} · ${p.цвет} · ${p.размер}`, want: num(p.количество), have };
@@ -75,7 +83,7 @@ function flGrid(o, card, model) {
   const colors = new Set(v && v.цвета.length ? v.цвета : []);
   const sizes = new Set(v && v.размеры.length && !all ? v.размеры : grid);
   if (all) (ST.refs.цвета || []).forEach((c) => colors.add(c.цвет));
-  [...(o.позиции || []), ...FL.rows].filter((r) => r.модель === model).forEach((r) => { colors.add(r.цвет); sizes.add(String(r.размер)); });
+  [...flBoss(o), ...FL.rows].filter((r) => r.модель === model).forEach((r) => { colors.add(r.цвет); sizes.add(String(r.размер)); });
   const order = Object.fromEntries(grid.map((x, i) => [String(x), i]));
   return { colors: [...colors].filter(Boolean),
     sizes: [...sizes].filter(Boolean).sort((a, b) => (order[a] ?? 999) - (order[b] ?? 999) || String(a).localeCompare(String(b), 'ru', { numeric: true })),
@@ -85,7 +93,7 @@ function flGrid(o, card, model) {
 // подсказка в клетке: сколько заказал начальник минус то, что уже разложено по другим картам
 function flHint(o, card, model, color, size) {
   const k = flKey(model, color, size);
-  const want = (o.позиции || []).filter((p) => flKey(p.модель, p.цвет, p.размер) === k).reduce((s, p) => s + num(p.количество), 0);
+  const want = flBoss(o).filter((p) => flKey(p.модель, p.цвет, p.размер) === k).reduce((s, p) => s + num(p.количество), 0);
   const other = FL.rows.filter((r) => r.карта !== card && flKey(r.модель, r.цвет, r.размер) === k).reduce((s, r) => s + num(r.итог), 0);
   return Math.max(0, want - other);
 }
@@ -118,14 +126,19 @@ function flModelHtml(o, card, model) {
 
 function designCardHtml(o) {
   const models = (ST.refs.модели || []);
-  const cards = flCards().map((c) => `<div class="cx-card" style="margin-top:12px"><div class="cx-card-h"><h3>Карта ${esc(c)}</h3>
+  const lockedHtml = (c) => `<div class="cx-card" style="margin-top:12px"><div class="cx-card-h"><h3>Карта ${esc(c)} ${statusPill(flStage(c))}</h3>
+      <span class="cx-hint"><b>${nf(flQty(c))}</b> шт · передана, менять нельзя</span></div>
+    <div class="cx-card-b"><div class="cx-scroll"><table class="cx-table"><thead><tr><th>Модель</th><th>Цвет</th><th>Размер</th><th class="num">Шт</th></tr></thead>
+      <tbody>${FL.rows.filter((r) => r.карта === c).map((r) => `<tr><td>${esc(r.модель)}</td><td>${esc(r.цвет)}</td><td>${esc(r.размер)}</td><td class="num">${nf(r.итог)}</td></tr>`).join('')}</tbody></table></div></div></div>`;
+  const cards = flCards().map((c) => flLocked(c) ? lockedHtml(c) : `<div class="cx-card" style="margin-top:12px"><div class="cx-card-h"><h3>Карта ${esc(c)}</h3>
       <span class="cx-hint"><b data-fl-card-total="${esc(c)}">${nf(flQty(c))}</b> шт · станет отдельной партией</span></div>
     <div class="cx-card-b">
       ${(FL.models[c] || []).map((m) => flModelHtml(o, c, m)).join('') || '<div class="cx-hint">Добавьте модель в карту</div>'}
       <div class="cx-btn-row" style="margin-top:10px">
         <input class="input" data-fl-newmodel="${esc(c)}" list="fl-models" placeholder="модель (артикул)" style="max-width:220px">
         <button class="btn" data-act="fl-model-add" data-card="${esc(c)}">+ Модель</button>
-        ${flCards().length > 1 ? `<button class="btn ghost" data-act="fl-card-del" data-card="${esc(c)}">Удалить карту</button>` : ''}
+        ${flMine().length > 1 ? `<button class="btn ghost" data-act="fl-card-del" data-card="${esc(c)}">Удалить карту</button>` : ''}
+        <button class="btn primary" data-act="fl-card-send" data-card="${esc(c)}" style="margin-left:auto">Передать карту ${esc(c)} снабженцу</button>
       </div>
     </div></div>`).join('');
   return `<div class="cx-card" style="margin-top:14px">
@@ -142,9 +155,9 @@ function designCardHtml(o) {
         <input class="input" id="fl-note" placeholder="Например: по 46 размеру не хватает ткани"></div>
       <div class="cx-btn-row" style="margin-top:14px">
         <button class="btn" data-act="fl-design-save">Сохранить черновик</button>
-        <button class="btn primary" data-act="fl-design-done">Утвердить и передать снабженцу</button>
+        <button class="btn primary" data-act="fl-design-done">${flMine().length > 1 ? 'Передать все карты снабженцу' : 'Утвердить и передать снабженцу'}</button>
       </div>
-      <div class="cx-hint" style="margin-top:8px">Заказ начальника — только подсказка: конструктор вписывает своё количество, больше или меньше, любые модели, цвета и размеры. Каждая карта у технолога становится отдельной партией. Все изменения записываются в историю.</div>
+      <div class="cx-hint" style="margin-top:8px">Заказ начальника — только подсказка: конструктор вписывает своё количество, больше или меньше, любые модели, цвета и размеры. Каждую карту можно передать снабженцу сразу, как она готова, не дожидаясь остальных; партию из карты потом создаст закройщик. Все изменения записываются в историю.</div>
       <h4 style="margin:18px 0 8px">История изменений</h4>
       ${flHistoryHtml((FL.design.история || {})[o.номер])}
     </div></div>`;
@@ -159,7 +172,7 @@ function flOpenDesign(numStr) {
   FL.rows = draft ? [] : (o.карта || []).filter((r) => num(r.итог) > 0)
     .map((r) => ({ карта: String(r.карта || '1'), модель: r.модель, цвет: r.цвет, размер: String(r.размер), итог: num(r.итог) }));
   FL.models = {}; FL.chars = {}; FL.allColors = {};
-  (draft ? (o.позиции || []).map((p) => ({ ...p, карта: '1' })) : (o.карта || [])).forEach((r) => {
+  (draft ? flBoss(o).map((p) => ({ ...p, карта: '1' })) : (o.карта || [])).forEach((r) => {
     const c = String(r.карта || '1');
     FL.models[c] = FL.models[c] || [];
     if (!FL.models[c].includes(r.модель)) FL.models[c].push(r.модель);
@@ -195,29 +208,31 @@ function flSetCell(card, model, color, size, qty) {
   else if (i >= 0) FL.rows.splice(i, 1);
 }
 
-async function flSaveDesign(done) {
-  const rows = FL.rows.filter((r) => num(r.итог) > 0)
+// done — передать все свои карты; card — передать только эту карту
+async function flSaveDesign(done, card) {
+  const rows = FL.rows.filter((r) => num(r.итог) > 0 && !flLocked(r.карта))
     .map((r) => ({ ...r, характеристики: FL.chars[`${r.карта}|${r.модель}`] || '' }));
   if (!rows.length) return toast('Карты пустые — впишите количество', 'err');
-  const body = { номер: FL.num, готово: done, комментарий: ($('#fl-note') || {}).value || '', позиции: rows };
-  if (done && !confirm('Утвердить карты и передать заказ снабженцу? После этого карты не поменять.')) return;
+  const body = { номер: FL.num, готово: done, передать: card ? [card] : [], комментарий: ($('#fl-note') || {}).value || '', позиции: rows };
+  if (done && !confirm('Передать снабженцу все карты? После этого их не поменять.')) return;
+  if (card && !confirm(`Передать карту ${card} снабженцу? После этого её не поменять.`)) return;
   try {
     const res = await api(`${API}/design`, { method: 'POST', body: JSON.stringify(body) });
     await loadDesign();
     await refreshOrders();
-    if (done) FL.num = '';
-    else flOpenDesign(FL.num);
+    if ((FL.design.очередь || []).some((x) => x.номер === FL.num)) flOpenDesign(FL.num);
+    else FL.num = '';
     render();
-    toast(done ? `Заказ №${res.номер} передан снабженцу · ${nf(res.штук)} шт` : 'Черновик карт сохранён', 'ok');
+    toast(res.передано.length ? `Снабженцу передано: карта ${res.передано.join(', ')}` : 'Черновик карт сохранён', 'ok');
   } catch (err) { toast(err.message, 'err'); }
 }
 
 // ------------------------------------------------------------- снабжение
 function supplyHtml() {
   const t = FL.supplyTab;
-  const sub = [['orders', `Заказы ${nf((FL.supply.очередь || []).length)}`], ['bom', 'Спецификации'], ['mats', 'Материалы'], ['rolls', 'Рулоны']];
+  const sub = [['orders', `Карты ${nf((FL.supply.очередь || []).length)}`], ['bom', 'Спецификации'], ['mats', 'Материалы'], ['rolls', 'Рулоны']];
   return `<div class="cx-hero compact"><div><h1>Снабжение</h1>
-      <div class="cx-sub">Сырьё по спецификациям артикулов, поступившие рулоны. Когда сырьё готово — заказ уходит технологу</div></div>
+      <div class="cx-sub">Сырьё по спецификациям артикулов, поступившие рулоны. Когда сырьё по карте готово — карта уходит технологу</div></div>
       <div class="cx-hero-actions"><button class="btn" data-act="refresh">Обновить</button></div></div>
     <div class="cx-tabs">${sub.map(([id, l]) => `<button class="cx-tab ${t === id ? 'on' : ''}" data-act="fl-sub" data-tab="${id}">${l}</button>`).join('')}</div>
     ${t === 'bom' ? bomHtml() : t === 'mats' ? materialsHtml() : t === 'rolls' ? rollsHtml() : supplyOrdersHtml()}`;
@@ -225,8 +240,8 @@ function supplyHtml() {
 
 function supplyOrdersHtml() {
   const q = FL.supply.очередь || [];
-  const o = q.find((x) => x.номер === FL.num);
-  return flQueue(q, 'fl-supply-open', 'Сюда попадают заказы с утверждённой картой конструктора') + (o ? supplyCardHtml(o) : '');
+  const o = q.find((x) => flQKey(x) === FL.num);
+  return flQueue(q, 'fl-supply-open', 'Сюда попадают карты, которые конструктор передал снабженцу') + (o ? supplyCardHtml(o) : '');
 }
 
 function supplyCardHtml(o) {
@@ -241,7 +256,7 @@ function supplyCardHtml(o) {
     </tr>`).join('');
   const miss = o.без_спецификации || [];
   return `<div class="cx-card" style="margin-top:14px">
-    <div class="cx-card-h"><h3>Заказ №${esc(o.номер)} · карта конструктора</h3><span class="cx-hint">${nf(o.штук)} шт по карте</span></div>
+    <div class="cx-card-h"><h3>Заказ №${esc(o.номер)} · карта ${esc(o.карта_номер)}</h3><span class="cx-hint">${nf(o.штук)} шт по карте</span></div>
     <div class="cx-card-b">
       <div class="cx-scroll"><table class="cx-table">
         <thead><tr><th>Карта</th><th>Модель</th><th>Цвет</th><th>Размер</th><th class="num">Заказано</th><th class="num">Итог</th><th>Характеристики</th></tr></thead>
@@ -259,7 +274,7 @@ function supplyCardHtml(o) {
 }
 
 function flOpenSupply(numStr) {
-  const o = (FL.supply.очередь || []).find((x) => x.номер === numStr);
+  const o = (FL.supply.очередь || []).find((x) => flQKey(x) === numStr);
   if (!o) return;
   FL.num = numStr;
   FL.rows = (o.сырьё || []).map((m) => ({ ...m }));
@@ -267,15 +282,16 @@ function flOpenSupply(numStr) {
 }
 
 async function flSaveSupply(done) {
-  if (done && !confirm('Передать заказ технологу?')) return;
+  const [номер, карта] = FL.num.split('|');
+  if (done && !confirm(`Передать карту ${карта} заказа №${номер} технологу?`)) return;
   try {
-    await api(`${API}/supply`, { method: 'POST', body: JSON.stringify({ номер: FL.num, готово: done, строки: FL.rows }) });
+    await api(`${API}/supply`, { method: 'POST', body: JSON.stringify({ номер, карта, готово: done, строки: FL.rows }) });
     await loadSupply();
     await refreshOrders();
     if (done) FL.num = '';
     else flOpenSupply(FL.num);
     render();
-    toast(done ? 'Заказ передан технологу' : 'Сохранено', 'ok');
+    toast(done ? `Карта ${карта} передана технологу` : 'Сохранено', 'ok');
   } catch (err) { toast(err.message, 'err'); }
 }
 
@@ -438,6 +454,9 @@ document.addEventListener('click', async (ev) => {
   if (act === 'fl-allcolors') { FL.allColors[el.dataset.id] = el.checked; return render(); }
   if (act === 'fl-design-save' || act === 'fl-design-done') {
     el.disabled = true; await flSaveDesign(act === 'fl-design-done'); el.disabled = false; return;
+  }
+  if (act === 'fl-card-send') {
+    el.disabled = true; await flSaveDesign(false, el.dataset.card); el.disabled = false; return;
   }
   if (act === 'fl-supply-save' || act === 'fl-supply-done') {
     el.disabled = true; await flSaveSupply(act === 'fl-supply-done'); el.disabled = false; return;

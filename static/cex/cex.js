@@ -536,7 +536,7 @@ function cartHtml() {
 // -------------------------------------------------------------- список
 function statusPill(status) {
   const s = status || '—';
-  const kind = ['у технолога', 'у конструктора', 'у снабженца'].includes(s) ? 'orange'
+  const kind = ['у технолога', 'у конструктора', 'у снабженца', 'ждёт кроя'].includes(s) ? 'orange'
     : s === 'принят' || s === 'упакован' ? 'green'
       : s === 'отклонён' ? 'red'
         : s === 'новый' ? 'blue' : 'grey';
@@ -638,15 +638,16 @@ function closeModal() {
 function tabsHtml(totalOrders) {
   const tabs = [];
   if (ST.права.создать) tabs.push(['new', 'Новый заказ']);
-  const inStatus = (s) => ST.заказы.filter((o) => o.статус === s).length;
-  if (ST.права.карта) { const n = inStatus('у конструктора'); tabs.push(['design', 'Конструктор' + (n ? ' ' + n : '')]); }
+  // карты заказа идут по этапам отдельно: считаем карты, а не заказы
+  const inStatus = (s) => ST.заказы.reduce((n, o) => n + Object.values(o.карты || {}).filter((x) => x === s).length, 0);
+  if (ST.права.карта) { const n = ST.заказы.filter((o) => Object.values(o.карты || {}).includes('у конструктора')).length; tabs.push(['design', 'Конструктор' + (n ? ' ' + n : '')]); }
   if (ST.права.снабжение) { const n = inStatus('у снабженца'); tabs.push(['supply', 'Снабжение' + (n ? ' ' + n : '')]); }
   if (ST.права.принимать) {
     const n = (ST.tech.очередь || []).length;
     tabs.push(['tech', 'Приёмка' + (n ? ' ' + n : '')]);
   }
   if (ST.права.кроить) {
-    const n = (ST.cut.партии || []).filter((p) => p.остаток > 0).length;
+    const n = (ST.cut.партии || []).filter((p) => p.остаток > 0).length + (ST.cut.к_крою || []).length;
     tabs.push(['cut', 'Крой' + (n ? ' ' + n : '')]);
   }
   if (ST.права.работать) {
@@ -686,7 +687,7 @@ function techHtml() {
   const cards = q.map((o) => `
     <div class="cx-qitem" data-act="open-tech" data-num="${esc(o.номер)}">
       <div class="cx-qmain">
-        <div class="cx-qtitle">Заказ №${esc(o.номер)} <span class="cx-pill orange">${esc(o.статус)}</span></div>
+        <div class="cx-qtitle">Заказ №${esc(o.номер)} · ${(o.карты_этапа || []).length > 1 ? 'карты' : 'карта'} ${esc((o.карты_этапа || []).join(', '))}</div>
         <div class="cx-hint">${esc(o.клиент)} · ${nf(o.позиций)} поз. · ${nf(o.штук)} шт · срок ${esc(o.срок || '—')}</div>
       </div>
       <div class="cx-qright">
@@ -733,9 +734,10 @@ function techHtml() {
 }
 
 function openTech(numStr) {
-  const o = ST.заказы.find((x) => String(x.номер) === String(numStr));
+  // в очереди технолога — только карты, которые ему передал снабженец
+  const o = (ST.tech.очередь || []).find((x) => String(x.номер) === String(numStr));
   if (!o) return toast('Заказ не найден — обновите список', 'err');
-  const row = (p, i) => `
+  const row = (p) => `
     <tr>
       <td><div class="cx-cell-main">${esc(p.модель)}</div><div class="cx-cell-sub">${esc(p.характеристики || p.категория)}</div></td>
       <td>${esc(p.цвет)}</td>
@@ -744,21 +746,15 @@ function openTech(numStr) {
       <td class="num">${nf(p.количество)}</td>
       <td class="num">${nf(p.принято)}</td>
       <td class="num">${nf(p.остаток)}</td>
-      <td style="width:96px">
-        ${p.остаток > 0
-    ? `<input class="input cx-mini" type="number" min="0" max="${p.остаток}" value="${p.остаток}" data-accept="${i}">`
-    : '<span class="cx-pill green">принято</span>'}
-      </td>
     </tr>`;
-  // одна карта конструктора — одна партия: принимаем каждую карту своей кнопкой
-  const cardNos = [...new Set(o.позиции.map((p) => String(p.карта || '1')))].sort((a, b) => a - b);
-  const head = `<thead><tr><th>Модель</th><th>Цвет</th><th>Размер</th>${o.по_карте ? '<th class="num">В заказе</th><th class="num">По карте</th>' : '<th class="num">Заказано</th>'}<th class="num">Принято</th><th class="num">Остаток</th><th>Принять</th></tr></thead>`;
+  const cardNos = o.карты_этапа || [];
+  const head = `<thead><tr><th>Модель</th><th>Цвет</th><th>Размер</th>${o.по_карте ? '<th class="num">В заказе</th><th class="num">По карте</th>' : '<th class="num">Заказано</th>'}<th class="num">Уже в партиях</th><th class="num">Остаток</th></tr></thead>`;
   const tables = cardNos.map((c) => {
-    const items = o.позиции.map((p, i) => [p, i]).filter(([p]) => String(p.карта || '1') === c);
-    const left = items.reduce((s, [p]) => s + num(p.остаток), 0);
-    return `${cardNos.length > 1 ? `<h4 style="margin:14px 0 6px">Карта ${esc(c)} · осталось ${nf(left)} шт</h4>` : ''}
-      <div class="cx-scroll"><table class="cx-table">${head}<tbody>${items.map(([p, i]) => row(p, i)).join('')}</tbody></table></div>
-      ${left > 0 ? `<div class="cx-btn-row" style="margin-top:8px"><button class="btn primary" data-act="decide-accept" data-num="${esc(o.номер)}" data-card="${esc(c)}">${cardNos.length > 1 ? `Принять карту ${esc(c)} → партия` : 'Принять и создать партию'}</button></div>` : ''}`;
+    const items = o.позиции.filter((p) => String(p.карта) === String(c));
+    const left = items.reduce((s, p) => s + num(p.остаток), 0);
+    return `<h4 style="margin:14px 0 6px">Карта ${esc(c)} · ${nf(left)} шт</h4>
+      <div class="cx-scroll"><table class="cx-table">${head}<tbody>${items.map(row).join('')}</tbody></table></div>
+      <div class="cx-btn-row" style="margin-top:8px"><button class="btn primary" data-act="decide-accept" data-num="${esc(o.номер)}" data-card="${esc(c)}">Принять карту ${esc(c)} → в крой</button></div>`;
   }).join('');
 
   const st = ST.tech.статистика || {};
@@ -806,7 +802,7 @@ function openTech(numStr) {
         <div class="cx-btn-row" style="margin-top:16px">
           <button class="btn" data-act="decide-reject" data-num="${esc(o.номер)}">Отклонить</button>
         </div>
-        <div class="cx-hint" style="margin-top:8px">Каждая карта становится отдельной партией со следующим номером и статусом «крой» — её увидит закройщик. Сырьё и комментарий выше запишутся в решение.</div>
+        <div class="cx-hint" style="margin-top:8px">Принятая карта уходит закройщику, и уже он создаёт из неё партию. Остальные карты заказа идут своим ходом. Сырьё и комментарий выше запишутся в решение.</div>
       </div>
     </div>`;
   modal.hidden = false;
@@ -818,15 +814,13 @@ function techFlowHtml(numStr) {
   const hist = (ST.tech.история || {})[numStr] || [];
   if (!mats.length && !hist.length) return '';
   return `${mats.length ? `<h4 style="margin:16px 0 8px">Сырьё от снабженца</h4><div class="cx-scroll"><table class="cx-table">
-      <thead><tr><th>Материал</th><th>Цвет</th><th class="num">Нужно</th><th class="num">Есть</th><th>Статус</th><th>Комментарий</th></tr></thead>
-      <tbody>${mats.map((m) => `<tr><td>${esc(m.материал)}</td><td>${esc(m.цвет)}</td><td class="num">${nf(m.нужно)} ${esc(m.ед)}</td>
+      <thead><tr><th>Карта</th><th>Материал</th><th>Цвет</th><th class="num">Нужно</th><th class="num">Есть</th><th>Статус</th><th>Комментарий</th></tr></thead>
+      <tbody>${mats.map((m) => `<tr><td>${esc(m.карта)}</td><td>${esc(m.материал)}</td><td>${esc(m.цвет)}</td><td class="num">${nf(m.нужно)} ${esc(m.ед)}</td>
         <td class="num">${nf(m.есть)}</td><td>${esc(m.статус || '—')}</td><td>${esc(m.комментарий)}</td></tr>`).join('')}</tbody></table></div>` : ''}
     ${hist.length ? `<details style="margin-top:12px"><summary>История карты конструктора · ${nf(hist.length)}</summary>${flHistoryHtml(hist)}</details>` : ''}`;
 }
 
 async function submitDecision(kind, numStr, card) {
-  const o = ST.заказы.find((x) => String(x.номер) === String(numStr));
-  if (!o) return;
   const body = {
     номер: String(numStr),
     решение: kind,
@@ -836,28 +830,60 @@ async function submitDecision(kind, numStr, card) {
     комментарий: ($('#cx-tech-note') || {}).value || '',
     позиции: [],
   };
-  if (kind === 'принять') {
-    document.querySelectorAll('[data-accept]').forEach((el) => {
-      const i = Number(el.dataset.accept);
-      const p = o.позиции[i];
-      if (card && String(p.карта || '1') !== String(card)) return;
-      const qty = Math.max(0, Math.min(Number(el.value || 0), p.остаток));
-      if (qty > 0) body.позиции.push({ карта: p.карта || '1', модель: p.модель, цвет: p.цвет, размер: p.размер, количество: qty });
-    });
-    if (!body.позиции.length) return toast('Укажите, сколько принять', 'err');
-  }
+  if (card) body.карта = String(card);
   try {
     const res = await api(`${API}/tech/decision`, { method: 'POST', body: JSON.stringify(body) });
     closeModal();
     await refreshOrders();
     await loadTech();
     render();
-    if (kind === 'принять') toast(`Партия №${res.партия} создана · ${nf(res.штук)} шт`, 'ok');
+    if (kind === 'принять') toast(`Карта ${res.карта} передана в крой — партию создаст закройщик`, 'ok');
     else if (kind === 'вернуть') toast('Заказ возвращён в работу', 'ok');
     else toast('Заказ отклонён', 'ok');
   } catch (err) {
     toast(err.message, 'err');
   }
+}
+
+// карты, которые технолог передал в крой: закройщик сам создаёт из них партию
+function cutQueueHtml() {
+  const queued = (ST.cut.к_крою || []).map((c) => `
+    <div class="cx-card" style="margin-bottom:12px">
+      <div class="cx-card-h"><h3>Заказ №${esc(c.заказ)} · карта ${esc(c.карта)}</h3>
+        <span class="cx-hint">${esc(c.клиент)} · срок ${esc(c.срок || '—')} · ${nf(c.остаток)} шт</span></div>
+      <div class="cx-card-b">
+        <div class="cx-scroll"><table class="cx-table">
+          <thead><tr><th>Модель</th><th>Цвет</th><th>Размер</th><th class="num">По карте</th><th class="num">Уже в партиях</th><th>В новую партию</th></tr></thead>
+          <tbody>${c.позиции.filter((p) => p.остаток > 0).map((p) => `<tr>
+            <td>${esc(p.модель)}</td><td>${esc(p.цвет)}</td><td>${esc(p.размер)}</td>
+            <td class="num">${nf(p.количество)}</td><td class="num">${nf(p.принято)}</td>
+            <td style="width:96px"><input class="input cx-mini" type="number" min="0" max="${p.остаток}" value="${p.остаток}"
+              data-newparty="${esc(c.заказ)}|${esc(c.карта)}" data-pos="${esc(p.модель)}|${esc(p.цвет)}|${esc(p.размер)}"></td></tr>`).join('')}</tbody>
+        </table></div>
+        <div class="cx-btn-row" style="margin-top:8px"><button class="btn primary" data-act="cut-new-party" data-num="${esc(c.заказ)}" data-card="${esc(c.карта)}">Создать партию</button></div>
+      </div>
+    </div>`).join('');
+
+  if (!queued) return '';
+  return `<div class="cx-card" style="margin-bottom:12px"><div class="cx-card-h"><h3>Карты ждут кроя · ${nf((ST.cut.к_крою || []).length)}</h3>
+    <span class="cx-hint">партию создаёт закройщик: всю карту или часть — остаток карты останется здесь</span></div></div>${queued}`;
+}
+
+async function createParty(order, card, btn) {
+  const позиции = [...document.querySelectorAll(`[data-newparty="${CSS.escape(`${order}|${card}`)}"]`)]
+    .map((el) => { const [модель, цвет, размер] = el.dataset.pos.split('|'); return { модель, цвет, размер, количество: Number(el.value || 0) }; })
+    .filter((p) => p.количество > 0);
+  if (!позиции.length) return toast('Укажите количество для партии', 'err');
+  if (!confirm(`Создать партию из карты ${card} заказа №${order}?`)) return;
+  btn.disabled = true;
+  try {
+    const res = await api(`${API}/cut/party`, { method: 'POST', body: JSON.stringify({ заказ: order, карта: card, позиции }) });
+    await refreshOrders();
+    await loadCut();
+    CC.num = String(res.партия); ccReset(true);  // сразу открываем новую партию в карте кроя
+    render();
+    toast(`Партия №${res.партия} создана · ${nf(res.штук)} шт`, 'ok');
+  } catch (err) { toast(err.message, 'err'); btn.disabled = false; }
 }
 
 // ------------------------------------------------------------- крой (модуль 3)
@@ -1890,6 +1916,7 @@ document.addEventListener('click', async (ev) => {
   if (act === 'submit') { await submitOrder(); return; }
   if (act === 'open') { openOrder(el.dataset.num); return; }
   if (act === 'open-tech') { openTech(el.dataset.num); return; }
+  if (act === 'cut-new-party') { await createParty(el.dataset.num, el.dataset.card, el); return; }
   if (act === 'refresh-sum') {
     try { await loadSummary(); render(); toast('Сводка обновлена', 'ok'); }
     catch (err) { toast(err.message, 'err'); }

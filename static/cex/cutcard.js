@@ -45,7 +45,7 @@ function cutCardHtml() {
       ${waiting.length ? `<div class="cc-wait">Ждут кроя: ${waiting.map((x) => `<button class="rt-chip ${x.номер === CC.num ? 'on' : ''}" data-act="cc-pick" data-num="${esc(x.номер)}">№${esc(x.номер)} · ${esc(x.модель)} · ${(x.ждёт_шагов || []).length ? '⏳ шаги заказа' : 'осталось ' + nf(x.остаток)}</button>`).join('')}</div>`
         : '<div class="cx-hint" style="margin-top:10px">Партий, ожидающих крой, нет</div>'}
     </div></div>`;
-  if (!p) return head + pickBlock;
+  if (!p) return head + cutQueueHtml() + pickBlock;
   // маршрут заказа: пока его шаги не отмечены, кроить нельзя (сервер проверяет так же)
   if ((p.ждёт_шагов || []).length) {
     return head + pickBlock + `<div class="cx-notice warn">Партию №${esc(p.номер)} пока нельзя кроить: не выполнены шаги маршрута заказа —
