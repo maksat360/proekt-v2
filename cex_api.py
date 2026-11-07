@@ -107,8 +107,15 @@ BOM = ("Спецификация",
 # Справочник материалов: категории (рулон, карман, нитки…) и виды внутри них.
 # Строка с пустым «вид» — сама категория, пока в ней нет видов.
 MATERIALS = ("Материалы",
-             ["категория", "вид", "ед.", "параметры"],
-             [18, 30, 8, 34])
+             ["категория", "вид", "ед.", "параметры", "код", "тип", "поставщик", "цена", "мин. остаток"],
+             [18, 30, 8, 34, 10, 14, 20, 10, 12])
+MAT_TYPES = ("сырьё", "материал", "фурнитура", "упаковка", "полуфабрикат")
+# Журнал движения номенклатуры: остаток = сумма «количество» (приход +, расход −).
+MOVES = ("Движение материалов",
+         ["id", "дата", "документ", "материал", "цвет", "ед.", "количество", "цена", "поставщик",
+          "№ заказа", "карта", "кто", "комментарий"],
+         [6, 16, 20, 26, 18, 8, 11, 10, 20, 10, 8, 14, 30])
+MOVE_DOCS = {"поступление": 1, "расход в производство": -1, "возврат поставщику": -1, "инвентаризация": 0}
 SUPPLY_SH = ("Снабжение",
              ["№ заказа", "материал", "цвет", "ед.", "нужно", "есть", "статус", "комментарий",
               "кто", "когда", "карта"],
@@ -163,7 +170,7 @@ def ensure_sheets() -> None:
     specs = [MODELS, COLORS, SIZES, ORDERS, PARTIES, TECH, CUT, OUT, ROUTE, PACK,
              STAFF, SHIFTS, RATES, SALARY, ROUTE_MODEL, ROUTE_PARTY, ASSIGN, ITEM_LABELS, CARDS, ROLLS, PATTERNS,
              ROUTE_ORD, ROUTE_ORD_MODEL, ROUTE_ORD_PARTY, ROUTE_FIN, ROUTE_FIN_MODEL, ROUTE_FIN_PARTY,
-             PCARD, PCARD_LOG, BOM, SUPPLY_SH, STOCK_ROLLS, MATERIALS]
+             PCARD, PCARD_LOG, BOM, SUPPLY_SH, STOCK_ROLLS, MATERIALS, MOVES]
     store.ensure_sheets(specs)
     for name, headers, _ in specs:
         if store.first_row(name) != headers:
@@ -727,8 +734,16 @@ def _parse_sizes(text) -> dict[str, float]:
 
 def materials() -> list[dict]:
     return [{"категория": _s(r.get("категория")), "вид": _s(r.get("вид")),
-             "ед": _s(r.get("ед.")), "параметры": _s(r.get("параметры"))}
+             "ед": _s(r.get("ед.")), "параметры": _s(r.get("параметры")),
+             "код": _s(r.get("код")), "тип": _s(r.get("тип")), "поставщик": _s(r.get("поставщик")),
+             "цена": _num(r.get("цена")), "мин": _num(r.get("мин. остаток"))}
             for r in _rows(MATERIALS) if _s(r.get("категория"))]
+
+
+def _next_code(rows: list[dict]) -> str:
+    """Код позиции как в 1С: М-00001, следующий после самого большого."""
+    nums = [int(c[2:]) for c in (_s(r.get("код")) for r in rows) if c[:2] == "М-" and c[2:].isdigit()]
+    return f"М-{max(nums, default=0) + 1:05d}"
 
 
 def save_material(me: dict, body: dict) -> dict:
@@ -744,10 +759,25 @@ def save_material(me: dict, body: dict) -> dict:
         used = [m for m, lines in boms().items() for b in lines if kind and b["материал"].lower() == kind.lower()]
         if used:
             raise ValueError(f"«{kind}» есть в спецификации: {', '.join(sorted(set(used)))}")
+        if kind and any(_s(r.get("материал")).lower() == kind.lower() for r in _rows(MOVES)):
+            raise ValueError(f"По «{kind}» есть движения — удалить нельзя, остатки и история пропадут")
         rows = [r for r in rows if not same(r)]
     else:
-        row = {"категория": cat, "вид": kind, "ед.": _s(body.get("ед")) or "м", "параметры": _s(body.get("параметры"))}
+        typ = _s(body.get("тип"))
+        if typ and typ not in MAT_TYPES:
+            raise ValueError(f"Неизвестный тип «{typ}»")
+        if kind and any(_s(r.get("вид")).lower() == kind.lower() and _s(r.get("категория")).lower() != cat.lower()
+                        for r in rows):
+            raise ValueError(f"«{kind}» уже есть в другой группе — названия позиций не должны повторяться")
+        old = next((r for r in rows if same(r)), {})
+        row = {"категория": cat, "вид": kind, "ед.": _s(body.get("ед")) or "м", "параметры": _s(body.get("параметры")),
+               "код": _s(body.get("код")) or _s(old.get("код")) or (_next_code(rows) if kind else ""),
+               "тип": typ, "поставщик": _s(body.get("поставщик")),
+               "цена": _num(body.get("цена")) or "", "мин. остаток": _num(body.get("мин")) or ""}
         rows = [r for r in rows if not same(r)] + [row]
+        for r in rows:  # позициям, заведённым до кодов, — код при первой записи справочника
+            if _s(r.get("вид")) and not _s(r.get("код")):
+                r["код"] = _next_code(rows)
         if kind:  # заглушка категории больше не нужна, когда в ней появился вид
             rows = [r for r in rows if not (_s(r.get("категория")).lower() == cat.lower() and not _s(r.get("вид")))]
     rows.sort(key=lambda r: (_s(r.get("категория")).lower(), _s(r.get("вид")).lower()))
@@ -806,8 +836,16 @@ def _card_rows(order: dict, card: str, cards: dict | None = None) -> list[dict]:
     return [c for c in card_of(order, cards) if c["карта"] == card]
 
 
-def supply_lines(order: dict, card: str, bom: dict, cards: dict) -> tuple[list[dict], list[str]]:
+def supply_lines(order: dict, card: str, bom: dict, cards: dict,
+                 mv: list[dict] | None = None) -> tuple[list[dict], list[str]]:
     need, missing = supply_need(_card_rows(order, card, cards), bom)
+    mv = moves() if mv is None else mv
+    bal = stock(mv)
+    spent: dict[tuple, float] = {}  # уже списано в производство по этой карте
+    for m in mv:
+        if m["документ"] == "расход в производство" and m["заказ"] == order["номер"] and m["карта"] == card:
+            k = _mkey(m["материал"], m["цвет"])
+            spent[k] = spent.get(k, 0) - m["количество"]
     saved = {(_s(r.get("материал")), _s(r.get("цвет")), _s(r.get("ед."))): r
              for r in _supply_rows(order["номер"], card)}
     for n in need:
@@ -818,7 +856,154 @@ def supply_lines(order: dict, card: str, bom: dict, cards: dict) -> tuple[list[d
         need.append({"материал": mat, "цвет": color, "ед": unit, "нужно": _num(r.get("нужно")),
                      "есть": _num(r.get("есть")), "статус": _s(r.get("статус")),
                      "комментарий": _s(r.get("комментарий"))})
+    for n in need:
+        k = _mkey(n["материал"], n["цвет"])
+        n["на_складе"], n["списано"] = bal.get(k, 0), round(spent.get(k, 0), 3)
     return need, missing
+
+
+def moves() -> list[dict]:
+    return [{"id": _int(r.get("id")), "дата": _s(r.get("дата")), "документ": _s(r.get("документ")), "материал": _s(r.get("материал")),
+             "цвет": _s(r.get("цвет")), "ед": _s(r.get("ед.")), "количество": _num(r.get("количество")),
+             "цена": _num(r.get("цена")), "поставщик": _s(r.get("поставщик")),
+             "заказ": _norm_size(r.get("№ заказа")), "карта": _card_no(r.get("карта")) if _s(r.get("карта")) else "",
+             "кто": _s(r.get("кто")), "комментарий": _s(r.get("комментарий"))}
+            for r in _rows(MOVES) if _s(r.get("материал"))]
+
+
+def _mkey(mat: str, color: str) -> tuple[str, str]:
+    return (_s(mat).lower(), _s(color).lower())
+
+
+def stock(mv: list[dict] | None = None) -> dict[tuple[str, str], float]:
+    """Остаток по (материал, цвет) — сумма движений."""
+    out: dict[tuple[str, str], float] = {}
+    for m in moves() if mv is None else mv:
+        k = _mkey(m["материал"], m["цвет"])
+        out[k] = round(out.get(k, 0) + m["количество"], 3)
+    return out
+
+
+def add_move(me: dict, body: dict) -> dict:
+    """Документ движения: поступление, расход в производство, возврат поставщику, инвентаризация.
+    В инвентаризации «количество» — фактический остаток; в журнал пишется разница."""
+    doc = _s(body.get("документ"))
+    if doc not in MOVE_DOCS:
+        raise ValueError(f"Неизвестный документ «{doc}»")
+    known = {m["вид"].lower(): m for m in materials() if m["вид"]}
+    bal = stock()
+    sign = MOVE_DOCS[doc]
+    who, now = _s(me.get("логин")), _now()
+    next_id = max((_int(r.get("id")) for r in _rows(MOVES)), default=0)
+    out, short = [], []
+    for i, it in enumerate(body.get("строки") or [], start=1):
+        mat = _s(it.get("материал"))
+        if not mat:
+            continue
+        ref = known.get(mat.lower())
+        if not ref:
+            raise ValueError(f"Строка {i}: «{mat}» нет в номенклатуре — сначала заведите позицию")
+        color, qty = _s(it.get("цвет")), _num(it.get("количество"))
+        k = _mkey(ref["вид"], color)
+        have = bal.get(k, 0)
+        if sign == 0:
+            if qty < 0:
+                raise ValueError(f"Строка {i} ({mat}): фактический остаток не может быть меньше нуля")
+            delta = round(qty - have, 3)
+            if not delta:
+                continue
+        else:
+            if qty <= 0:
+                raise ValueError(f"Строка {i} ({mat}): укажите количество больше нуля")
+            delta = sign * qty
+            if delta < 0 and have + delta < -1e-9:
+                short.append(f"{ref['вид']} {color}".strip() + f": есть {have:g}, нужно {qty:g}")
+        bal[k] = round(have + delta, 3)
+        next_id += 1
+        out.append({"id": next_id, "дата": now, "документ": doc, "материал": ref["вид"], "цвет": color, "ед.": ref["ед"],
+                    "количество": delta, "цена": _num(it.get("цена")) or "",
+                    "поставщик": _s(body.get("поставщик")), "№ заказа": _s(body.get("заказ")),
+                    "карта": _s(body.get("карта")), "кто": who, "комментарий": _s(body.get("комментарий"))})
+    if short:
+        raise ValueError("Не хватает на складе — " + "; ".join(short)
+                         + ". Сначала проведите поступление или инвентаризацию")
+    if not out:
+        raise ValueError("Нет строк для проведения")
+    store.append_rows(MOVES[0], MOVES[1], out)
+    return {"документ": doc, "строк": len(out)}
+
+
+def delete_move(me: dict, body: dict) -> dict:
+    """Отменить строку журнала (как отмена проведения в 1С). Остаток не должен уйти в минус."""
+    mid = _int(body.get("id"))
+    rows = _rows(MOVES)
+    gone = next((r for r in rows if _int(r.get("id")) == mid), None)
+    if not mid or not gone:
+        raise ValueError("Строка журнала не найдена")
+    rows = [r for r in rows if r is not gone]
+    k = _mkey(gone.get("материал"), gone.get("цвет"))
+    left = sum(_num(r.get("количество")) for r in rows if _mkey(r.get("материал"), r.get("цвет")) == k)
+    if left < -1e-9:
+        raise ValueError(f"Нельзя: остаток «{_s(gone.get('материал'))} {_s(gone.get('цвет'))}» станет {left:g}"
+                         " — сначала отмените расход")
+    store.write_sheet(MOVES[0], MOVES[1], rows)
+    return {"id": mid}
+
+
+def rename_material(me: dict, body: dict) -> dict:
+    """Переименовать группу или позицию (и перенести позицию в другую группу).
+    Новое название позиции подставляется везде: спецификации, движения, снабжение заказов, рулоны."""
+    old_cat, old_kind = _s(body.get("категория_было")), _s(body.get("вид_было"))
+    cat, kind = _s(body.get("категория")) or old_cat, _s(body.get("вид")) or old_kind
+    low = str.lower
+    rows = _rows(MATERIALS)
+    if not any(low(_s(r.get("категория"))) == low(old_cat) for r in rows):
+        raise ValueError(f"Группа «{old_cat}» не найдена")
+    bom = _rows(BOM)
+    if not old_kind:  # переименование группы
+        if low(cat) != low(old_cat) and any(low(_s(r.get("категория"))) == low(cat) for r in rows):
+            raise ValueError(f"Группа «{cat}» уже есть")
+        for r in rows + bom:
+            if low(_s(r.get("категория"))) == low(old_cat):
+                r["категория"] = cat
+        store.write_sheets([(MATERIALS[0], MATERIALS[1], rows), (BOM[0], BOM[1], bom)])
+        return {"категория": cat}
+    row = next((r for r in rows if low(_s(r.get("категория"))) == low(old_cat) and low(_s(r.get("вид"))) == low(old_kind)), None)
+    if not row:
+        raise ValueError(f"Позиция «{old_kind}» не найдена")
+    if low(kind) != low(old_kind) and any(low(_s(r.get("вид"))) == low(kind) for r in rows):
+        raise ValueError(f"Позиция «{kind}» уже есть")
+    if not any(low(_s(r.get("категория"))) == low(cat) for r in rows):
+        raise ValueError(f"Группа «{cat}» не найдена — сначала создайте её")
+    cat = next(_s(r.get("категория")) for r in rows if low(_s(r.get("категория"))) == low(cat))  # написание группы
+    row["категория"], row["вид"] = cat, kind
+    rows = [r for r in rows if not (low(_s(r.get("категория"))) == low(cat) and not _s(r.get("вид")))]  # заглушка группы
+    if not any(low(_s(r.get("категория"))) == low(old_cat) for r in rows):  # старая группа опустела — остаётся пустой
+        rows.append({"категория": old_cat, "вид": ""})
+    rows.sort(key=lambda r: (low(_s(r.get("категория"))), low(_s(r.get("вид")))))
+    writes = [(MATERIALS[0], MATERIALS[1], rows)]
+    for spec in (BOM, MOVES, SUPPLY_SH, STOCK_ROLLS):
+        data = bom if spec is BOM else _rows(spec)
+        for r in data:
+            if low(_s(r.get("материал"))) == low(old_kind):
+                r["материал"] = kind
+                if spec is BOM:
+                    r["категория"] = cat
+        writes.append((spec[0], spec[1], data))
+    store.write_sheets(writes)
+    return {"категория": cat, "вид": kind}
+
+
+def delete_roll(me: dict, body: dict) -> dict:
+    code = _norm_size(body.get("код"))
+    if any(_norm_size(r.get("код рулона")) == code for r in _rows(ROLLS)):
+        raise ValueError(f"Рулон {code} уже в карте кроя — удалить нельзя")
+    rows = _rows(STOCK_ROLLS)
+    keep = [r for r in rows if _norm_size(r.get("код рулона")) != code]
+    if len(keep) == len(rows):
+        raise ValueError(f"Рулон {code} не найден")
+    store.write_sheet(STOCK_ROLLS[0], STOCK_ROLLS[1], keep)
+    return {"код": code}
 
 
 def roll_registry() -> dict[str, dict]:
@@ -834,7 +1019,7 @@ def roll_registry() -> dict[str, dict]:
 
 
 def supply_state() -> dict:
-    bom, cards = boms(), pcards()
+    bom, cards, mv = boms(), pcards(), moves()
     queue_ = []
     for o in orders():
         if o["статус"] == "отклонён":
@@ -842,11 +1027,18 @@ def supply_state() -> dict:
         for c in sorted((c for c, st in o["карты"].items() if st == SUPPLYING), key=_int):
             item = {**o, "карта_номер": c, "карта": _card_rows(o, c, cards)}
             item["штук"] = sum(x["итог"] for x in item["карта"])
-            item["сырьё"], item["без_спецификации"] = supply_lines(o, c, bom, cards)
+            item["сырьё"], item["без_спецификации"] = supply_lines(o, c, bom, cards, mv)
             queue_.append(item)
+    left = [{"материал": "", "цвет": "", "остаток": v, "_k": k} for k, v in stock(mv).items()]
+    names = {}
+    for m in mv:  # исходное написание названия и цвета
+        names.setdefault(_mkey(m["материал"], m["цвет"]), (m["материал"], m["цвет"]))
+    for x in left:
+        x["материал"], x["цвет"] = names[x.pop("_k")]
     return {"очередь": queue_, "спецификации": bom, "материалы": materials(),
             "рулоны": list(roll_registry().values())[::-1][:300],
-            "статусы": list(SUPPLY_STATUSES)}
+            "статусы": list(SUPPLY_STATUSES), "типы": list(MAT_TYPES), "документы": list(MOVE_DOCS),
+            "остатки": left, "движения": mv[::-1][:500]}
 
 
 def _check_supply_ready(order: dict, card: str, lines: list[dict]) -> None:
@@ -3712,7 +3904,11 @@ def _dispatch(ctx) -> None:
                  "/api/cex/supply": ("cex.supply", save_supply),
                  "/api/cex/supply/bom": ("cex.supply", save_bom),
                  "/api/cex/supply/roll": ("cex.supply", add_roll),
-                 "/api/cex/supply/material": ("cex.supply", save_material)}
+                 "/api/cex/supply/material": ("cex.supply", save_material),
+                 "/api/cex/supply/move": ("cex.supply", add_move),
+                 "/api/cex/supply/move/delete": ("cex.supply", delete_move),
+                 "/api/cex/supply/rename": ("cex.supply", rename_material),
+                 "/api/cex/supply/roll/delete": ("cex.supply", delete_roll)}
     if path in flow_post and method == "POST":
         code, fn = flow_post[path]
         if not _can(me, code):

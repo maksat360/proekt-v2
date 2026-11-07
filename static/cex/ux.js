@@ -76,6 +76,7 @@ const uxLeaveText = { title: 'Уйти без сохранения?', text: 'В�
 
 // куда можно уйти со страницы: вкладки, другой заказ/карта/партия, «Портал» и прочие ссылки
 const UX_NAV = '[data-act="tab"], [data-act="fl-design-open"], [data-act="fl-supply-open"], [data-act="fl-sub"], '
+  + '[data-act="fl-nom-pick"], [data-act="fl-nom-bom"], [data-act="fl-mv-new"], '
   + '[data-act="cc-pick"], [data-act="cc-open"], a[href]';
 
 document.addEventListener('click', async (ev) => {

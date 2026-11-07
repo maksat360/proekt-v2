@@ -3,7 +3,8 @@
 /* Модуль «Цех» · поток заказа: конструктор (производственная карта) → снабженец (сырьё) → технолог. */
 
 const FL = { design: { очередь: [], история: {} }, supply: { очередь: [], спецификации: {}, рулоны: [], статусы: [] },
-  num: '', rows: [], models: {}, chars: {}, allColors: {}, bomModel: '', bomRows: [], supplyTab: 'orders' };
+  num: '', rows: [], models: {}, chars: {}, allColors: {}, bomModel: '', bomRows: [], supplyTab: 'orders',
+  nomSel: '', nomQ: '', mvFilter: '', mv: null };
 
 async function loadDesign() { FL.design = await api(`${API}/design`); }
 async function loadSupply() { FL.supply = await api(`${API}/supply`); }
@@ -230,12 +231,13 @@ async function flSaveDesign(done, card) {
 // ------------------------------------------------------------- снабжение
 function supplyHtml() {
   const t = FL.supplyTab;
-  const sub = [['orders', `Карты ${nf((FL.supply.очередь || []).length)}`], ['bom', 'Спецификации'], ['mats', 'Материалы'], ['rolls', 'Рулоны']];
+  const sub = [['orders', `Карты ${nf((FL.supply.очередь || []).length)}`], ['mats', 'Номенклатура'], ['bom', 'Спецификации'],
+    ['moves', 'Движения'], ['rolls', 'Рулоны']];
   return `<div class="cx-hero compact"><div><h1>Снабжение</h1>
-      <div class="cx-sub">Сырьё по спецификациям артикулов, поступившие рулоны. Когда сырьё по карте готово — карта уходит технологу</div></div>
+      <div class="cx-sub">Номенклатура и остатки, спецификации артикулов, приход и расход сырья. Когда сырьё по карте готово — карта уходит технологу</div></div>
       <div class="cx-hero-actions"><button class="btn" data-act="refresh">Обновить</button></div></div>
     <div class="cx-tabs">${sub.map(([id, l]) => `<button class="cx-tab ${t === id ? 'on' : ''}" data-act="fl-sub" data-tab="${id}">${l}</button>`).join('')}</div>
-    ${t === 'bom' ? bomHtml() : t === 'mats' ? materialsHtml() : t === 'rolls' ? rollsHtml() : supplyOrdersHtml()}`;
+    ${t === 'bom' ? bomHtml() : t === 'mats' ? materialsHtml() : t === 'moves' ? movesHtml() : t === 'rolls' ? rollsHtml() : supplyOrdersHtml()}`;
 }
 
 function supplyOrdersHtml() {
@@ -250,6 +252,8 @@ function supplyCardHtml(o) {
   const sts = FL.supply.статусы || [];
   const mats = (o.сырьё || []).map((m, i) => `<tr>
       <td>${esc(m.материал)}</td><td>${esc(m.цвет)}</td><td class="num">${nf(m.нужно)} ${esc(m.ед)}</td>
+      <td class="num ${num(m.на_складе) < num(m.нужно) - num(m.списано) ? 'cx-neg' : ''}">${nf(m.на_складе)}</td>
+      <td class="num">${m.списано ? nf(m.списано) : '—'}</td>
       <td><input class="input cx-mini" type="number" min="0" step="any" data-fl-mat="${i}|есть" value="${esc(m.есть || '')}"></td>
       <td><select class="input" data-fl-mat="${i}|статус"><option value="">—</option>${sts.map((s) => `<option ${m.статус === s ? 'selected' : ''}>${esc(s)}</option>`).join('')}</select></td>
       <td><input class="input" data-fl-mat="${i}|комментарий" value="${esc(m.комментарий)}"></td>
@@ -264,10 +268,11 @@ function supplyCardHtml(o) {
       <h4 style="margin:18px 0 8px">Сырьё по спецификации</h4>
       ${miss.length ? `<div class="cx-notice warn">Нет спецификации для: <b>${miss.map(esc).join(', ')}</b> — заполните во вкладке «Спецификации».</div>` : ''}
       ${mats ? `<div class="cx-scroll"><table class="cx-table">
-        <thead><tr><th>Материал</th><th>Цвет</th><th class="num">Нужно</th><th>Есть / заказано</th><th>Статус</th><th>Комментарий</th></tr></thead>
+        <thead><tr><th>Материал</th><th>Цвет</th><th class="num">Нужно</th><th class="num">На складе</th><th class="num">Списано</th><th>Есть / заказано</th><th>Статус</th><th>Комментарий</th></tr></thead>
         <tbody>${mats}</tbody></table></div>` : ''}
       <div class="cx-btn-row" style="margin-top:14px">
         <button class="btn" data-act="fl-supply-save">Сохранить</button>
+        ${mats ? '<button class="btn" data-act="fl-writeoff">Списать сырьё в производство</button>' : ''}
         <button class="btn primary" data-act="fl-supply-done">Сырьё готово — передать технологу</button>
       </div>
     </div></div>`;
@@ -346,30 +351,166 @@ function bomHtml() {
     </div></div>`;
 }
 
+const flLow = (v) => String(v || '').toLowerCase();
+const flMatOf = (kind) => flMats().find((m) => m.вид && flLow(m.вид) === flLow(kind));
+const flStock = (kind) => (FL.supply.остатки || []).filter((x) => flLow(x.материал) === flLow(kind) && x.остаток);
+const flTotal = (kind) => flStock(kind).reduce((a, x) => a + num(x.остаток), 0);
+const flSuppliers = () => [...new Set([...(ST.поставщики || []), ...flMats().map((m) => m.поставщик),
+  ...(FL.supply.движения || []).map((m) => m.поставщик)].filter(Boolean))];
+// где используется: спецификации артикулов, в которых есть позиция
+function flUsedIn(kind) {
+  const out = [];
+  Object.entries(FL.supply.спецификации || {}).forEach(([model, lines]) => lines.forEach((b) => {
+    if (flLow(b.материал) === flLow(kind)) out.push({ модель: model, ...b });
+  }));
+  return out;
+}
+const flOpt = (v, cur, label) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(label || v)}</option>`;
+const flDatalists = () => `<datalist id="fl-colors">${(ST.refs.цвета || []).map((c) => `<option value="${esc(c.цвет)}">`).join('')}</datalist>
+  <datalist id="fl-suppliers">${flSuppliers().map((c) => `<option value="${esc(c)}">`).join('')}</datalist>`;
+
 function materialsHtml() {
+  const q = flLow(FL.nomQ);
+  const hit = (m) => !q || [m.вид, m.код, m.параметры, m.поставщик, m.категория].some((x) => flLow(x).includes(q));
   const blocks = flCats().map((c) => {
     const kinds = flMats().filter((m) => m.категория === c && m.вид);
+    const shown = kinds.filter(hit);
+    if (q && !shown.length && !flLow(c).includes(q)) return '';
     return `<div class="cc-sec" style="margin-top:10px">
-      <div class="cc-sec-h"><b>${esc(c)}</b><span class="cx-hint">${nf(kinds.length)} вид.</span>
-        ${kinds.length ? '' : `<button class="btn ghost" data-act="fl-mat-del" data-cat="${esc(c)}" data-kind="">✕ удалить категорию</button>`}</div>
-      ${kinds.length ? `<table class="cx-table"><thead><tr><th>Вид</th><th>Ед.</th><th>Параметры</th><th></th></tr></thead><tbody>
-        ${kinds.map((m) => `<tr><td>${esc(m.вид)}</td><td>${esc(m.ед)}</td><td>${esc(m.параметры)}</td>
-          <td><button class="btn ghost" data-act="fl-mat-del" data-cat="${esc(c)}" data-kind="${esc(m.вид)}">✕</button></td></tr>`).join('')}</tbody></table>` : ''}
+      <div class="cc-sec-h"><b>📁 ${esc(c)}</b><span class="cx-hint">${nf(kinds.length)} поз.</span>
+        <button class="btn ghost" data-act="fl-cat-ren" data-cat="${esc(c)}" aria-label="Переименовать группу ${esc(c)}">✎</button>
+        ${kinds.length ? '' : `<button class="btn ghost" data-act="fl-mat-del" data-cat="${esc(c)}" data-kind="">✕ удалить группу</button>`}</div>
+      ${shown.length ? `<div class="cx-scroll"><table class="cx-table"><thead><tr><th>Код</th><th>Наименование</th><th>Тип</th><th class="num">Остаток</th></tr></thead><tbody>
+        ${shown.map((m) => {
+          const left = flTotal(m.вид);
+          const low = m.мин && left < m.мин;
+          return `<tr class="fl-nomrow ${flLow(FL.nomSel) === flLow(m.вид) ? 'on' : ''}" data-act="fl-nom-pick" data-kind="${esc(m.вид)}" style="cursor:pointer">
+            <td class="cx-muted">${esc(m.код)}</td><td><b>${esc(m.вид)}</b>${m.параметры ? `<div class="cx-hint">${esc(m.параметры)}</div>` : ''}</td>
+            <td>${esc(m.тип || '—')}</td>
+            <td class="num">${low ? `<span class="cx-pill red" title="меньше минимума ${nf(m.мин)}">${nf(left)} ${esc(m.ед)}</span>` : `${nf(left)} ${esc(m.ед)}`}</td></tr>`;
+        }).join('')}</tbody></table></div>` : ''}
       <div class="cx-btn-row" style="margin-top:8px">
-        <input class="input" data-fl-newkind="${esc(c)}" placeholder="новый вид, напр. габардин 220" style="max-width:240px">
+        <input class="input" data-fl-newkind="${esc(c)}" placeholder="новая позиция, напр. габардин 220" style="max-width:240px">
         <input class="input cx-mini" data-fl-newunit="${esc(c)}" placeholder="ед." value="м">
         <input class="input" data-fl-newparams="${esc(c)}" placeholder="параметры: ширина, граммаж, состав" style="max-width:260px">
-        <button class="btn" data-act="fl-mat-add" data-cat="${esc(c)}">+ Вид</button>
+        <button class="btn" data-act="fl-mat-add" data-cat="${esc(c)}">+ Позиция</button>
       </div></div>`;
   }).join('');
-  return `<div class="cx-card"><div class="cx-card-h"><h3>Справочник материалов</h3><span class="cx-hint">категории и виды внутри них</span></div>
+  return `${flDatalists()}<div class="cx-grid">
+    <div class="cx-card"><div class="cx-card-h"><h3>Номенклатура</h3><span class="cx-hint">группы → позиции, остаток по всем цветам</span></div>
+      <div class="cx-card-b">
+        <div class="cx-btn-row">
+          <input class="input" type="search" id="fl-nomq" placeholder="Поиск: название, код, параметры, поставщик" value="${esc(FL.nomQ)}" style="max-width:320px" data-nodirty>
+          <input class="input" id="fl-newcat" placeholder="новая группа: ткань, фурнитура, нитки…" style="max-width:260px">
+          <button class="btn primary" data-act="fl-cat-add">+ Группа</button>
+        </div>
+        ${blocks || '<div class="cx-hint" style="margin-top:10px">Групп пока нет</div>'}
+      </div></div>
+    <div class="cx-side">${nomCardHtml()}</div>
+  </div>`;
+}
+
+function nomCardHtml() {
+  const m = flMatOf(FL.nomSel);
+  if (!m) return '<div class="cx-card"><div class="cx-empty"><b>Карточка позиции</b>Выберите позицию слева: остатки, где используется, движения</div></div>';
+  const stockRows = flStock(m.вид);
+  const used = flUsedIn(m.вид);
+  const mv = (FL.supply.движения || []).filter((x) => flLow(x.материал) === flLow(m.вид));
+  const rolls = (FL.supply.рулоны || []).filter((r) => flLow(r.материал) === flLow(m.вид));
+  const sign = (v) => (v > 0 ? `+${nf(v)}` : nf(v));
+  return `<div class="cx-card"><div class="cx-card-h"><h3>${esc(m.вид)}</h3><span class="cx-hint">${esc(m.код)} · ${esc(m.категория)}</span></div>
     <div class="cx-card-b">
-      <div class="cx-btn-row">
-        <input class="input" id="fl-newcat" placeholder="новая категория: рулон, карман, нитки…" style="max-width:280px">
-        <button class="btn primary" data-act="fl-cat-add">+ Категория</button>
+      <div class="cx-formgrid">
+        <div class="cx-field"><label>Наименование</label><input class="input" id="fl-n-вид" value="${esc(m.вид)}"></div>
+        <div class="cx-field"><label>Группа</label><select class="input" id="fl-n-категория">${flCats().map((c) => flOpt(c, m.категория)).join('')}</select></div>
+        <div class="cx-field"><label>Тип</label><select class="input" id="fl-n-тип">${flOpt('', m.тип, '—')}${(FL.supply.типы || []).map((t) => flOpt(t, m.тип)).join('')}</select></div>
+        <div class="cx-field"><label>Ед.</label><input class="input cx-mini" id="fl-n-ед" value="${esc(m.ед)}"></div>
+        <div class="cx-field"><label>Код</label><input class="input" id="fl-n-код" value="${esc(m.код)}"></div>
+        <div class="cx-field"><label>Основной поставщик</label><input class="input" id="fl-n-поставщик" list="fl-suppliers" value="${esc(m.поставщик)}"></div>
+        <div class="cx-field"><label>Цена закупки</label><input class="input cx-mini" type="number" min="0" step="any" id="fl-n-цена" value="${esc(m.цена || '')}"></div>
+        <div class="cx-field"><label>Мин. остаток</label><input class="input cx-mini" type="number" min="0" step="any" id="fl-n-мин" value="${esc(m.мин || '')}"></div>
       </div>
-      ${blocks || '<div class="cx-hint" style="margin-top:10px">Категорий пока нет</div>'}
+      <div class="cx-field" style="margin-top:8px"><label>Параметры</label><input class="input" id="fl-n-параметры" value="${esc(m.параметры)}"></div>
+      <div class="cx-btn-row" style="margin-top:10px">
+        <button class="btn primary" data-act="fl-nom-save">Сохранить</button>
+        <button class="btn" data-act="fl-mv-new" data-doc="поступление" data-kind="${esc(m.вид)}">+ Поступление</button>
+        <button class="btn" data-act="fl-mv-new" data-doc="расход в производство" data-kind="${esc(m.вид)}">− Расход</button>
+        <button class="btn ghost" data-act="fl-mat-del" data-cat="${esc(m.категория)}" data-kind="${esc(m.вид)}">✕</button>
+      </div>
+
+      <h4 style="margin:18px 0 6px">Остатки · ${nf(flTotal(m.вид))} ${esc(m.ед)}${m.мин ? ` <span class="cx-hint">(мин. ${nf(m.мин)})</span>` : ''}</h4>
+      ${stockRows.length ? `<table class="cx-table cx-table-sm"><tbody>${stockRows.map((x) => `<tr><td>${esc(x.цвет || 'без цвета')}</td>
+        <td class="num ${x.остаток < 0 ? 'cx-neg' : ''}"><b>${nf(x.остаток)}</b> ${esc(m.ед)}</td></tr>`).join('')}</tbody></table>`
+        : '<div class="cx-hint">На складе нет — проведите поступление</div>'}
+
+      <h4 style="margin:18px 0 6px">Где используется · ${nf(used.length)}</h4>
+      ${used.length ? `<table class="cx-table cx-table-sm"><thead><tr><th>Артикул</th><th>Цвет</th><th class="num">Норма на 1 шт</th></tr></thead><tbody>
+        ${used.map((u) => `<tr><td><a role="button" tabindex="0" style="cursor:pointer" data-act="fl-nom-bom" data-model="${esc(u.модель)}">${esc(u.модель)}</a></td>
+          <td>${esc(u.цвет || 'в цвет изделия')}</td>
+          <td class="num">${u.норма ? `${nf(u.норма)} ${esc(u.ед)}` : '—'}${Object.keys(u.по_размерам || {}).length ? ' <span class="cx-hint">+ по размерам</span>' : ''}</td></tr>`).join('')}</tbody></table>`
+        : '<div class="cx-hint">Ни в одной спецификации</div>'}
+
+      <h4 style="margin:18px 0 6px">Движения · ${nf(mv.length)}</h4>
+      ${mv.length ? `<div class="cx-scroll" style="max-height:260px"><table class="cx-table cx-table-sm"><tbody>${mv.slice(0, 40).map((x) => `<tr>
+        <td class="cx-muted">${esc(x.дата)}</td><td>${esc(x.документ)}${x.заказ ? `<div class="cx-hint">заказ №${esc(x.заказ)}${x.карта ? ` · карта ${esc(x.карта)}` : ''}</div>` : ''}${x.поставщик ? `<div class="cx-hint">${esc(x.поставщик)}</div>` : ''}</td>
+        <td>${esc(x.цвет)}</td><td class="num ${x.количество < 0 ? 'cx-neg' : ''}">${sign(x.количество)}</td></tr>`).join('')}</tbody></table></div>`
+        : '<div class="cx-hint">Движений пока нет</div>'}
+      ${rolls.length ? `<h4 style="margin:18px 0 6px">Рулоны · ${nf(rolls.length)}</h4>
+        <table class="cx-table cx-table-sm"><tbody>${rolls.slice(0, 20).map((r) => `<tr><td><b>${esc(r.код)}</b></td><td>${esc(r.цвет)}</td><td class="num">${esc(r.вес)} кг</td></tr>`).join('')}</tbody></table>` : ''}
     </div></div>`;
+}
+
+const flNewMove = (doc = 'поступление', kind = '') => ({ документ: doc, поставщик: '', заказ: '', карта: '', комментарий: '',
+  строки: [{ материал: kind, цвет: '', количество: '', цена: (flMatOf(kind) || {}).цена || '' }] });
+
+function movesHtml() {
+  const d = FL.mv || (FL.mv = flNewMove());
+  const isIn = d.документ === 'поступление';
+  const inv = d.документ === 'инвентаризация';
+  const kinds = flCats().map((c) => `<optgroup label="${esc(c)}">${flMats().filter((m) => m.категория === c && m.вид)
+    .map((m) => flOpt(m.вид, '', `${m.вид}${m.код ? ` · ${m.код}` : ''}`)).join('')}</optgroup>`).join('');
+  const lines = d.строки.map((r, i) => {
+    const m = flMatOf(r.материал);
+    const have = (FL.supply.остатки || []).find((x) => flLow(x.материал) === flLow(r.материал) && flLow(x.цвет) === flLow(r.цвет));
+    return `<tr>
+      <td><select class="input" data-fl-mv="${i}|материал">${flOpt('', r.материал, '— позиция —')}${kinds.replace(`value="${esc(r.материал)}"`, `value="${esc(r.материал)}" selected`)}</select></td>
+      <td><input class="input" data-fl-mv="${i}|цвет" list="fl-colors" value="${esc(r.цвет)}" placeholder="без цвета"></td>
+      <td class="num cx-muted">${r.материал ? `${nf(have ? have.остаток : 0)} ${esc((m || {}).ед || '')}` : ''}</td>
+      <td><input class="input cx-mini" type="number" min="0" step="any" data-fl-mv="${i}|количество" value="${esc(r.количество)}"></td>
+      ${isIn ? `<td><input class="input cx-mini" type="number" min="0" step="any" data-fl-mv="${i}|цена" value="${esc(r.цена)}"></td>` : ''}
+      <td><button class="btn ghost" data-act="fl-mv-del" data-i="${i}">✕</button></td></tr>`;
+  }).join('');
+  const f = FL.mvFilter;
+  const journal = (FL.supply.движения || []).filter((x) => !f || flLow(x.материал) === flLow(f));
+  return `${flDatalists()}<div class="cx-card"><div class="cx-card-h"><h3>Новый документ</h3>
+      <span class="cx-hint">${inv ? 'впишите фактический остаток — разница спишется или оприходуется' : 'остаток пересчитается сразу после проведения'}</span></div>
+    <div class="cx-card-b">
+      <div class="cx-formgrid">
+        <div class="cx-field"><label>Документ</label><select class="input" data-fl-mvh="документ">${(FL.supply.документы || []).map((x) => flOpt(x, d.документ)).join('')}</select></div>
+        ${isIn || d.документ === 'возврат поставщику' ? `<div class="cx-field"><label>Поставщик</label><input class="input" data-fl-mvh="поставщик" list="fl-suppliers" value="${esc(d.поставщик)}"></div>` : ''}
+        ${!inv ? `<div class="cx-field"><label>Заказ №</label><input class="input cx-mini" data-fl-mvh="заказ" inputmode="numeric" value="${esc(d.заказ)}"></div>
+        <div class="cx-field"><label>Карта</label><input class="input cx-mini" data-fl-mvh="карта" inputmode="numeric" value="${esc(d.карта)}"></div>` : ''}
+        <div class="cx-field"><label>Комментарий</label><input class="input" data-fl-mvh="комментарий" value="${esc(d.комментарий)}"></div>
+      </div>
+      <div class="cx-scroll" style="margin-top:12px"><table class="cx-table">
+        <thead><tr><th>Позиция</th><th>Цвет</th><th class="num">Сейчас</th><th>${inv ? 'Факт' : 'Количество'}</th>${isIn ? '<th>Цена</th>' : ''}<th></th></tr></thead>
+        <tbody>${lines}</tbody></table></div>
+      <div class="cx-btn-row" style="margin-top:10px">
+        <button class="btn" data-act="fl-mv-add">+ Строка</button>
+        <button class="btn primary" data-act="fl-mv-post">Провести</button>
+      </div>
+    </div></div>
+    <div class="cx-card" style="margin-top:14px"><div class="cx-card-h"><h3>Журнал движений</h3>
+      <select class="input" id="fl-mvfilter" data-nodirty style="max-width:260px">${flOpt('', f, 'все позиции')}${flMats().filter((m) => m.вид).map((m) => flOpt(m.вид, f)).join('')}</select></div>
+      <div class="cx-card-b"><div class="cx-scroll"><table class="cx-table">
+        <thead><tr><th>Дата</th><th>Документ</th><th>Позиция</th><th>Цвет</th><th class="num">Кол-во</th><th class="num">Цена</th><th>Поставщик</th><th>Заказ</th><th>Кто</th><th>Комментарий</th><th></th></tr></thead>
+        <tbody>${journal.slice(0, 300).map((x) => `<tr><td class="cx-muted">${esc(x.дата)}</td><td>${esc(x.документ)}</td>
+          <td><a role="button" tabindex="0" style="cursor:pointer" data-act="fl-nom-pick" data-kind="${esc(x.материал)}">${esc(x.материал)}</a></td><td>${esc(x.цвет)}</td>
+          <td class="num ${x.количество < 0 ? 'cx-neg' : ''}">${x.количество > 0 ? '+' : ''}${nf(x.количество)} ${esc(x.ед)}</td>
+          <td class="num">${x.цена ? nf(x.цена) : ''}</td><td>${esc(x.поставщик)}</td>
+          <td>${x.заказ ? `№${esc(x.заказ)}${x.карта ? ` · к.${esc(x.карта)}` : ''}` : ''}</td><td>${esc(x.кто)}</td><td>${esc(x.комментарий)}</td>
+          <td>${x.id ? `<button class="btn ghost" data-act="fl-mv-undo" data-id="${x.id}" aria-label="Отменить строку">✕</button>` : ''}</td></tr>`).join('')
+          || '<tr><td colspan="11" class="cx-empty">Движений пока нет</td></tr>'}</tbody></table></div></div></div>`;
 }
 
 function rollsHtml() {
@@ -388,10 +529,11 @@ function rollsHtml() {
       <datalist id="fl-colors">${(ST.refs.цвета || []).map((c) => `<option value="${esc(c.цвет)}">`).join('')}</datalist>
       <div class="cx-btn-row" style="margin-top:12px"><button class="btn primary" data-act="fl-roll-add">Внести рулон</button></div>
       <div class="cx-scroll" style="margin-top:14px"><table class="cx-table">
-        <thead><tr><th>Код</th><th>Дата</th><th>Материал</th><th>Цвет</th><th class="num">г/м²</th><th class="num">кг</th><th>Заказ</th><th>Поставщик</th><th>Внёс</th></tr></thead>
+        <thead><tr><th>Код</th><th>Дата</th><th>Материал</th><th>Цвет</th><th class="num">г/м²</th><th class="num">кг</th><th>Заказ</th><th>Поставщик</th><th>Внёс</th><th></th></tr></thead>
         <tbody>${list.map((r) => `<tr><td><b>${esc(r.код)}</b></td><td>${esc(r.дата)}</td><td>${esc(r.материал)}</td><td>${esc(r.цвет)}</td>
-          <td class="num">${esc(r.граммы)}</td><td class="num">${esc(r.вес)}</td><td>${esc(r.заказ)}</td><td>${esc(r.поставщик)}</td><td>${esc(r.внёс)}</td></tr>`).join('')
-          || '<tr><td colspan="9" class="cx-empty">Рулонов пока нет</td></tr>'}</tbody></table></div>
+          <td class="num">${esc(r.граммы)}</td><td class="num">${esc(r.вес)}</td><td>${esc(r.заказ)}</td><td>${esc(r.поставщик)}</td><td>${esc(r.внёс)}</td>
+          <td><button class="btn ghost" data-act="fl-roll-del" data-code="${esc(r.код)}" aria-label="Удалить рулон ${esc(r.код)}">✕</button></td></tr>`).join('')
+          || '<tr><td colspan="10" class="cx-empty">Рулонов пока нет</td></tr>'}</tbody></table></div>
     </div></div>`;
 }
 
@@ -471,21 +613,90 @@ document.addEventListener('click', async (ev) => {
   if (act === 'fl-bom-add') { FL.bomRows.push({ категория: '', материал: '', цвет: '', норма: '', ед: 'м', параметры: '', по_размерам: {} }); return render(); }
   if (act === 'fl-cat-add') {
     const cat = (($('#fl-newcat') || {}).value || '').trim();
-    if (!cat) return toast('Впишите категорию', 'err');
-    await flPost('/supply/material', { категория: cat }, `Категория «${cat}» добавлена`);
+    if (!cat) return toast('Впишите группу', 'err');
+    await flPost('/supply/material', { категория: cat }, `Группа «${cat}» добавлена`);
     return;
   }
   if (act === 'fl-mat-add') {
     const c = el.dataset.cat;
     const val = (a) => ((document.querySelector(`[${a}="${CSS.escape(c)}"]`) || {}).value || '').trim();
-    if (!val('data-fl-newkind')) return toast('Впишите вид', 'err');
-    await flPost('/supply/material', { категория: c, вид: val('data-fl-newkind'), ед: val('data-fl-newunit'), параметры: val('data-fl-newparams') }, 'Вид добавлен');
+    const kind = val('data-fl-newkind');
+    if (!kind) return toast('Впишите название позиции', 'err');
+    if (await flPost('/supply/material', { категория: c, вид: kind, ед: val('data-fl-newunit'), параметры: val('data-fl-newparams') }, 'Позиция добавлена')) {
+      FL.nomSel = kind; render();
+    }
     return;
   }
   if (act === 'fl-mat-del') {
     const { cat, kind } = el.dataset;
-    if (!confirm(kind ? `Удалить «${kind}» из «${cat}»?` : `Удалить категорию «${cat}»?`)) return;
-    await flPost('/supply/material', { категория: cat, вид: kind, удалить: true }, 'Удалено');
+    if (!confirm(kind ? `Удалить «${kind}» из «${cat}»?` : `Удалить группу «${cat}»?`)) return;
+    if (await flPost('/supply/material', { категория: cat, вид: kind, удалить: true }, 'Удалено') && flLow(kind) === flLow(FL.nomSel)) {
+      FL.nomSel = ''; render();
+    }
+    return;
+  }
+  if (act === 'fl-nom-pick') {
+    ev.preventDefault();
+    FL.nomSel = el.dataset.kind; FL.supplyTab = 'mats';
+    render();
+    if (window.innerWidth < 1000) document.querySelector('.cx-side')?.scrollIntoView({ behavior: 'smooth' });
+    return;
+  }
+  if (act === 'fl-nom-bom') {
+    ev.preventDefault();
+    FL.supplyTab = 'bom'; FL.bomModel = el.dataset.model;
+    FL.bomRows = ((FL.supply.спецификации || {})[FL.bomModel] || []).map((r) => ({ ...r }));
+    return render();
+  }
+  if (act === 'fl-nom-save') {
+    const m = flMatOf(FL.nomSel);
+    const v = (f) => (($(`#fl-n-${f}`) || {}).value || '').trim();
+    const вид = v('вид') || m.вид, категория = v('категория') || m.категория;
+    if (вид !== m.вид || категория !== m.категория) {
+      try {
+        await api(`${API}/supply/rename`, { method: 'POST', body: JSON.stringify({ категория_было: m.категория, вид_было: m.вид, категория, вид }) });
+      } catch (err) { return toast(err.message, 'err'); }
+      FL.nomSel = вид;
+    }
+    await flPost('/supply/material', { категория, вид, тип: v('тип'), ед: v('ед'), код: v('код'),
+      поставщик: v('поставщик'), цена: v('цена'), мин: v('мин'), параметры: v('параметры') }, `«${m.вид}» сохранено`);
+    return;
+  }
+  if (act === 'fl-cat-ren') {
+    const old = el.dataset.cat;
+    const name = (prompt(`Новое название группы «${old}»`, old) || '').trim();
+    if (name && name !== old) await flPost('/supply/rename', { категория_было: old, категория: name }, `Группа «${name}»`);
+    return;
+  }
+  if (act === 'fl-mv-undo') {
+    if (!confirm('Отменить эту строку журнала? Остаток пересчитается.')) return;
+    await flPost('/supply/move/delete', { id: el.dataset.id }, 'Строка отменена');
+    return;
+  }
+  if (act === 'fl-roll-del') {
+    if (!confirm(`Удалить рулон ${el.dataset.code}?`)) return;
+    await flPost('/supply/roll/delete', { код: el.dataset.code }, 'Рулон удалён');
+    return;
+  }
+  if (act === 'fl-mv-new') { FL.mv = flNewMove(el.dataset.doc, el.dataset.kind); FL.supplyTab = 'moves'; return render(); }
+  if (act === 'fl-mv-add') { FL.mv.строки.push({ материал: '', цвет: '', количество: '', цена: '' }); return render(); }
+  if (act === 'fl-mv-del') { FL.mv.строки.splice(Number(el.dataset.i), 1); if (!FL.mv.строки.length) FL.mv = flNewMove(FL.mv.документ); return render(); }
+  if (act === 'fl-mv-post') {
+    const d = FL.mv;
+    el.disabled = true;
+    if (await flPost('/supply/move', d, `Проведено: ${d.документ}`)) FL.mv = flNewMove(d.документ);
+    el.disabled = false;
+    return render();
+  }
+  if (act === 'fl-writeoff') {
+    const [номер, карта] = FL.num.split('|');
+    const строки = FL.rows.map((m) => ({ материал: m.материал, цвет: m.цвет, количество: Math.round((num(m.нужно) - num(m.списано)) * 1000) / 1000 }))
+      .filter((m) => m.количество > 0);
+    if (!строки.length) return toast('По этой карте всё сырьё уже списано', 'ok');
+    if (!confirm(`Списать в производство по заказу №${номер}, карта ${карта}:\n${строки.map((m) => `• ${m.материал} ${m.цвет} — ${nf(m.количество)}`).join('\n')}`)) return;
+    el.disabled = true;
+    if (await flPost('/supply/move', { документ: 'расход в производство', заказ: номер, карта, строки }, 'Сырьё списано')) flOpenSupply(FL.num);
+    el.disabled = false;
     return;
   }
   if (act === 'fl-bom-del') { FL.bomRows.splice(Number(el.dataset.i), 1); return render(); }
@@ -514,6 +725,14 @@ document.addEventListener('input', (ev) => {
   if (t.dataset.flChars) FL.chars[t.dataset.flChars] = t.value;
   if (t.dataset.flMat) pick('flMat', FL.rows);
   if (t.dataset.flBom) pick('flBom', FL.bomRows);
+  if (t.dataset.flMv) pick('flMv', FL.mv.строки);
+  if (t.dataset.flMvh) FL.mv[t.dataset.flMvh] = t.value;
+  if (t.id === 'fl-nomq') {
+    FL.nomQ = t.value;
+    const pos = t.selectionStart;
+    render();
+    const n = $('#fl-nomq'); if (n) { n.focus(); n.setSelectionRange(pos, pos); }
+  }
   if (t.dataset.flBomsize) {
     const [i, z] = t.dataset.flBomsize.split('|');
     const r = FL.bomRows[Number(i)];
@@ -525,7 +744,16 @@ document.addEventListener('input', (ev) => {
 // спецификация: категория меняет список видов, вид подставляет ед. и параметры из справочника
 document.addEventListener('change', (ev) => {
   const t = ev.target;
-  if (ST.view !== 'supply' || !t.dataset.flBom || t.tagName !== 'SELECT') return;
+  if (ST.view !== 'supply') return;
+  if (t.id === 'fl-mvfilter') { FL.mvFilter = t.value; return render(); }
+  // документ меняет набор полей; позиция подставляет цену из карточки
+  if (t.dataset.flMvh === 'документ') return render();
+  if (t.dataset.flMv && t.tagName === 'SELECT') {
+    const r = FL.mv.строки[Number(t.dataset.flMv.split('|')[0])];
+    if (!r.цена) r.цена = (flMatOf(r.материал) || {}).цена || '';
+    return render();
+  }
+  if (!t.dataset.flBom || t.tagName !== 'SELECT') return;
   const [i, f] = t.dataset.flBom.split('|');
   const r = FL.bomRows[Number(i)];
   r[f] = t.value;

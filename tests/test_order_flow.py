@@ -221,7 +221,7 @@ class MaterialsTests(unittest.TestCase):
 
     def test_catalog_and_size_norms(self):
         cex_api.save_material(ME, {"категория": "Рулон"})
-        self.assertEqual(cex_api.materials(), [{"категория": "Рулон", "вид": "", "ед": "м", "параметры": ""}])
+        self.assertEqual([(m["категория"], m["вид"], m["код"]) for m in cex_api.materials()], [("Рулон", "", "")])
         cex_api.save_material(ME, {"категория": "Рулон", "вид": "Габардин", "ед": "кг", "параметры": "220 г/м²"})
         self.assertEqual([m["вид"] for m in cex_api.materials()], ["Габардин"])  # заглушка категории ушла
         with self.assertRaisesRegex(ValueError, "есть виды"):
@@ -238,6 +238,61 @@ class MaterialsTests(unittest.TestCase):
         self.assertEqual(need, [{"материал": "Габардин", "цвет": "Чёрный", "ед": "кг", "нужно": 5.0}])  # 10×0.3 + 5×0.4
         with self.assertRaisesRegex(ValueError, "укажите норму"):
             cex_api.save_bom(ME, {"модель": "П1", "строки": [{"материал": "Габардин"}]})
+
+    def test_nomenclature_moves_and_stock(self):
+        cex_api.save_material(ME, {"категория": "Рулон", "вид": "Габардин", "ед": "кг", "тип": "сырьё", "мин": 5})
+        cex_api.save_material(ME, {"категория": "Нитки", "вид": "Нить 40/2", "ед": "шт"})
+        self.assertEqual({m["вид"]: m["код"] for m in cex_api.materials()}, {"Габардин": "М-00001", "Нить 40/2": "М-00002"})
+        cex_api.save_material(ME, {"категория": "Рулон", "вид": "Габардин", "ед": "кг", "цена": 900})  # правка — код тот же
+        self.assertEqual(next(m for m in cex_api.materials() if m["вид"] == "Габардин")["код"], "М-00001")
+        with self.assertRaisesRegex(ValueError, "в другой группе"):
+            cex_api.save_material(ME, {"категория": "Нитки", "вид": "габардин"})
+        with self.assertRaisesRegex(ValueError, "нет в номенклатуре"):
+            cex_api.add_move(ME, {"документ": "поступление", "строки": [{"материал": "Ситец", "количество": 1}]})
+
+        cex_api.add_move(ME, {"документ": "поступление", "поставщик": "Ткани+", "строки": [
+            {"материал": "габардин", "цвет": "Чёрный", "количество": 20, "цена": 900}]})
+        with self.assertRaisesRegex(ValueError, "Не хватает"):
+            cex_api.add_move(ME, {"документ": "расход в производство", "строки": [
+                {"материал": "Габардин", "цвет": "Чёрный", "количество": 25}]})
+        cex_api.add_move(ME, {"документ": "расход в производство", "заказ": "7", "карта": "1", "строки": [
+            {"материал": "Габардин", "цвет": "чёрный", "количество": 5}]})
+        cex_api.add_move(ME, {"документ": "инвентаризация", "строки": [
+            {"материал": "Габардин", "цвет": "Чёрный", "количество": 14}]})  # было 15, факт 14 → −1
+        self.assertEqual(cex_api.stock(), {("габардин", "чёрный"): 14})
+        self.assertEqual([m["количество"] for m in cex_api.moves()], [20, -5, -1])
+        with self.assertRaisesRegex(ValueError, "есть движения"):
+            cex_api.save_material(ME, {"категория": "Рулон", "вид": "Габардин", "удалить": True})
+
+        cex_api.save_bom(ME, {"модель": "П1", "строки": [{"материал": "Габардин", "ед": "кг", "норма": 0.5}]})
+        lines, _ = cex_api.supply_lines({"номер": "7"}, "1", cex_api.boms(),
+                                        {"7": [{"карта": "1", "модель": "П1", "цвет": "Чёрный", "размер": "42", "итог": 10}]})
+        self.assertEqual((lines[0]["на_складе"], lines[0]["списано"]), (14, 5))
+
+    def test_rename_and_delete(self):
+        cex_api.save_material(ME, {"категория": "Рулон", "вид": "Габардин", "ед": "кг"})
+        cex_api.save_material(ME, {"категория": "Ткань"})
+        cex_api.save_bom(ME, {"модель": "П1", "строки": [{"категория": "Рулон", "материал": "Габардин", "норма": 1}]})
+        cex_api.add_move(ME, {"документ": "поступление", "строки": [{"материал": "Габардин", "количество": 10}]})
+        cex_api.add_move(ME, {"документ": "расход в производство", "строки": [{"материал": "Габардин", "количество": 4}]})
+        cex_api.add_roll(ME, {"код": "R1", "материал": "Габардин", "вес": 20})
+
+        cex_api.rename_material(ME, {"категория_было": "Рулон", "вид_было": "Габардин", "категория": "ткань", "вид": "Габардин 220"})
+        self.assertEqual([(m["категория"], m["вид"]) for m in cex_api.materials()], [("Рулон", ""), ("Ткань", "Габардин 220")])
+        self.assertEqual(cex_api.boms()["П1"][0]["материал"], "Габардин 220")
+        self.assertEqual({m["материал"] for m in cex_api.moves()}, {"Габардин 220"})
+        self.assertEqual(cex_api.roll_registry()["R1"]["материал"], "Габардин 220")
+        cex_api.rename_material(ME, {"категория_было": "Ткань", "категория": "Ткани"})
+        self.assertEqual(cex_api.boms()["П1"][0]["категория"], "Ткани")
+
+        income, spend = cex_api.moves()
+        with self.assertRaisesRegex(ValueError, "станет -4"):
+            cex_api.delete_move(ME, {"id": income["id"]})
+        cex_api.delete_move(ME, {"id": spend["id"]})
+        cex_api.delete_move(ME, {"id": income["id"]})
+        self.assertEqual(cex_api.moves(), [])
+        cex_api.delete_roll(ME, {"код": "R1"})
+        self.assertEqual(cex_api.roll_registry(), {})
 
 
 class PackOrderStatusTests(unittest.TestCase):

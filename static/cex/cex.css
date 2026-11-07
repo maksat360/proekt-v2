@@ -578,3 +578,7 @@ body.ux-dirty .ux-badge { opacity: 1; transform: none; }
   .cx-main.cx-enter > *, .cx-queue > .cx-qitem, .cx-toast:not([hidden]), .ux-sheet, .ux-sheet-wrap { animation: none !important; }
   .ux-badge, .cx-tab { transition: none; }
 }
+
+/* номенклатура: выбранная позиция */
+.fl-nomrow:hover td { background: var(--fill); }
+.fl-nomrow.on td { background: var(--blue-soft); }
