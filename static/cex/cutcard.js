@@ -145,7 +145,6 @@ document.addEventListener('click', async (ev) => {
   if (act === 'cc-pick' || act === 'cc-open') {
     const n = act === 'cc-pick' ? el.dataset.num : (document.getElementById('cc-num').value || '').trim();
     if (!(ST.cut.партии || []).find((x) => x.номер === n)) return toast(`Партии №${n} нет`, 'err');
-    if (n !== CC.num && ccTotal() && !confirm('Введённые данные не сохранены. Открыть другую партию?')) return;
     CC.num = n; ccReset(true); render(); return;
   }
   if (act === 'cc-clear') { if (confirm('Очистить форму?')) { ccReset(true); render(); } return; }

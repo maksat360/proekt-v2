@@ -56,6 +56,7 @@ async function api(path, opts = {}) {
   if (!res.ok || !data || data.ok === false) {
     throw new Error((data && data.error) || 'Не получилось выполнить запрос');
   }
+  if ((opts.method || 'GET') !== 'GET' && typeof uxClean === 'function') uxClean();  // сохранили — метка снята
   return data.data;
 }
 

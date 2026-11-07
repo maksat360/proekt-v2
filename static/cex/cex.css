@@ -507,3 +507,74 @@ select.input {
   .pt-kids .cx-nrow { margin-left: 12px; }
   .pt-kids .cx-nrow::before { left: -14px; width: 10px; }
 }
+
+/* ---------- движение и «не сохранено» (ux.js) ---------- */
+@keyframes uxRise { from { opacity: 0; transform: translateY(14px) scale(.992); } to { opacity: 1; transform: none; } }
+@keyframes uxFade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes uxSheetIn { from { opacity: 0; transform: translateY(12px) scale(.94); } to { opacity: 1; transform: none; } }
+@keyframes uxToastIn { from { opacity: 0; transform: translate(-50%, -14px) scale(.96); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+/* смена вкладки: блоки поднимаются по очереди */
+.cx-main.cx-enter > * { animation: uxRise .5s var(--ease) both; }
+.cx-main.cx-enter > :nth-child(2) { animation-delay: .04s; }
+.cx-main.cx-enter > :nth-child(3) { animation-delay: .08s; }
+.cx-main.cx-enter > :nth-child(4) { animation-delay: .12s; }
+.cx-main.cx-enter > :nth-child(n+5) { animation-delay: .16s; }
+.cx-queue > .cx-qitem { animation: uxRise .45s var(--ease) both; }
+.cx-queue > .cx-qitem:nth-child(2) { animation-delay: .03s; }
+.cx-queue > .cx-qitem:nth-child(3) { animation-delay: .06s; }
+.cx-queue > .cx-qitem:nth-child(n+4) { animation-delay: .09s; }
+.cx-main:not(.cx-enter) .cx-queue > .cx-qitem { animation: none; }  /* обновления внутри экрана — без мельтешения */
+.cx-main.cx-enter .cx-queue > .cx-qitem { animation-delay: .1s; }
+
+.cx-toast:not([hidden]) { animation: uxToastIn .42s var(--ease) both; }
+.cx-tab { transition: background .3s var(--ease), color .2s var(--ease), box-shadow .3s var(--ease), transform .15s var(--ease); }
+.cx-tab:active { transform: scale(.96); }
+.cx-qitem.on { box-shadow: 0 0 0 2px var(--blue), var(--shadow-lg); }
+.btn:focus-visible, .cx-tab:focus-visible, .rt-chip:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+
+/* изменённое и не сохранённое поле — синяя обводка */
+.input.ux-changed { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
+
+.ux-badge {
+  display: inline-flex; align-items: center; gap: 7px; margin-left: 12px; padding: 5px 11px 5px 9px;
+  border-radius: 980px; font-size: 12px; font-weight: 600; color: var(--orange, #c76a00);
+  background: rgba(255, 159, 10, .14); opacity: 0; transform: scale(.9); pointer-events: none;
+  transition: opacity .3s var(--ease), transform .3s var(--ease);
+}
+.ux-badge i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 3px rgba(255, 159, 10, .22); }
+body.ux-dirty .ux-badge { opacity: 1; transform: none; }
+
+/* окно «Уйти без сохранения?» */
+.ux-sheet-wrap {
+  position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 20px;
+  background: rgba(8, 12, 24, .32); -webkit-backdrop-filter: blur(12px) saturate(140%); backdrop-filter: blur(12px) saturate(140%);
+  animation: uxFade .2s ease both;
+}
+.ux-sheet {
+  width: min(340px, 100%); padding: 26px 22px 18px; text-align: center; border-radius: 28px;
+  background: var(--glass-strong); border: 1px solid var(--glass-brd); box-shadow: var(--shadow-lg), var(--glass-edge);
+  -webkit-backdrop-filter: var(--blur-heavy); backdrop-filter: var(--blur-heavy);
+  animation: uxSheetIn .38s var(--ease) both;
+}
+.ux-sheet-ico {
+  width: 44px; height: 44px; margin: 0 auto 12px; display: grid; place-items: center; border-radius: 50%;
+  font-weight: 800; font-size: 22px; color: #fff; background: linear-gradient(180deg, #ffb340, #ff9500);
+  box-shadow: 0 8px 20px -8px rgba(255, 149, 0, .8);
+}
+.ux-sheet h3 { margin: 0 0 6px; font-size: 18px; font-weight: 700; letter-spacing: -.025em; }
+.ux-sheet p { margin: 0 0 18px; font-size: 13.5px; line-height: 1.45; color: var(--ink-2); }
+.ux-sheet-btns { display: grid; gap: 8px; }
+.ux-sheet-btns .btn { width: 100%; min-height: 46px; font-size: 15px; font-weight: 600; }
+.ux-danger { color: var(--red, #e5484d); background: transparent; box-shadow: none; }
+.ux-danger:hover { background: var(--red-soft, rgba(229, 72, 77, .12)); box-shadow: none; filter: none; }
+.ux-sheet-wrap.out { animation: uxFade .18s ease reverse both; }
+.ux-sheet-wrap.out .ux-sheet { transition: transform .18s var(--ease); transform: scale(.96); }
+
+@media (max-width: 620px) {
+  .ux-badge { margin-left: 6px; font-size: 0; padding: 6px; gap: 0; }  /* на телефоне — только точка */
+}
+@media (prefers-reduced-motion: reduce) {
+  .cx-main.cx-enter > *, .cx-queue > .cx-qitem, .cx-toast:not([hidden]), .ux-sheet, .ux-sheet-wrap { animation: none !important; }
+  .ux-badge, .cx-tab { transition: none; }
+}
