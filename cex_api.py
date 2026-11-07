@@ -245,11 +245,13 @@ def orders() -> list[dict]:
     out = [grouped[n] for n in order]
     out.sort(key=lambda o: _int(o["номер"]), reverse=True)
     cards = pcards()
+    catalog = {_s(r.get("модель")): _s(r.get("категория")) for r in _rows(MODELS)} if cards else {}
     for o in out:
         o["заказано"] = o["штук"]
         # после конструктора дальше идёт итоговое количество из карты, а не из заказа
         if o["статус"] != DESIGN and o["номер"] in cards:
-            cats = {p["модель"]: p["категория"] for p in o["позиции"]}
+            # артикул, добавленный конструктором, берёт категорию из справочника моделей
+            cats = {**catalog, **{p["модель"]: p["категория"] for p in o["позиции"] if p["категория"]}}
             o["позиции"] = [{"категория": cats.get(c["модель"], ""), "модель": c["модель"],
                              "цвет": c["цвет"], "размер": c["размер"], "количество": c["итог"],
                              "заказано": c["заказано"], "характеристики": c["характеристики"]}
@@ -853,13 +855,17 @@ def _num(v) -> float:
         return 0.0
 
 
+# «готово к упаковке» значит: раскроенные настилы прошли маршрут; недокроенный остаток кроить можно
+CUTTABLE = ("крой", "в производстве", "готово к упаковке")
+
+
 def save_card(me: dict, body: dict) -> dict:
     num = _s(body.get("партия"))
     state = cut_state()
     party = next((p for p in state["партии"] if p["номер"] == num), None)
     if not party:
         raise ValueError(f"Партии №{num} нет")
-    if party["статус"] not in ("крой", "в производстве"):
+    if party["статус"] not in CUTTABLE:
         raise ValueError(f"Партия в статусе «{party['статус']}» — крой недоступен")
     if party.get("ждёт_шагов"):
         raise ValueError("Сначала выполните шаги маршрута заказа: " + ", ".join(party["ждёт_шагов"]))
@@ -987,7 +993,7 @@ def save_cut(me: dict, body: dict) -> dict:
         raise ValueError("Партия не найдена")
     if party["остаток"] <= 0:
         raise ValueError("Партия уже раскроена полностью")
-    if party["статус"] not in ("крой", "в производстве"):
+    if party["статус"] not in CUTTABLE:
         raise ValueError(f"Партия в статусе «{party['статус']}» — крой недоступен")
     if party.get("ждёт_шагов"):
         raise ValueError("Сначала выполните шаги маршрута заказа: " + ", ".join(party["ждёт_шагов"]))

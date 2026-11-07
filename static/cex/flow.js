@@ -48,7 +48,7 @@ function designCardHtml(o) {
       <td><input class="input cx-mini" data-fl-row="${i}|размер" value="${esc(r.размер)}"></td>
       <td class="num">${nf(r.заказано)}</td>
       <td><input class="input cx-mini" type="number" min="0" data-fl-row="${i}|итог" value="${esc(r.итог)}"></td>
-      <td><input class="input" data-fl-row="${i}|характеристики" value="${esc(r.характеристики)}" placeholder="длина, ткань, фурнитура…"></td>
+      <td><input class="input" data-fl-row="${i}|характеристики" value="${esc(r.характеристики)}" placeholder="длина, посадка, детали кроя…"></td>
       <td><button class="btn ghost" data-act="fl-row-del" data-i="${i}" title="Убрать строку">✕</button></td>
     </tr>`).join('');
   const total = FL.rows.reduce((s, r) => s + num(r.итог), 0);
