@@ -78,12 +78,36 @@ def _save_sessions() -> None:
         print("сессии не сохранены:", exc)
 
 
+def _pw_tag(user: dict | None) -> str:
+    """Отпечаток пароля: сменили пароль — старые сессии этого человека перестают работать."""
+    return hashlib.sha256(("session::" + str((user or {}).get("пароль", ""))).encode("utf-8")).hexdigest()[:16]
+
+
 def _new_session(login: str, company: str) -> str:
     token = secrets.token_urlsafe(24)
+    tag = _pw_tag(find_user(login, company))
     with SESSIONS_LOCK:
-        SESSIONS[token] = {"логин": login, "цех": company, "ts": datetime.now().timestamp()}
+        SESSIONS[token] = {"логин": login, "цех": company, "ts": datetime.now().timestamp(), "pw": tag}
     _save_sessions()
     return token
+
+
+def _session_user(token: str, data: dict) -> dict | None:
+    """Пользователь живой сессии или None: отключён, удалён или пароль сменили после входа."""
+    user = find_user(data["логин"], data["цех"])
+    if not user or str(user.get("активен", "1")) not in ("1", "True", "true"):
+        return None
+    tag = _pw_tag(user)
+    if data.get("pw") == tag:
+        return user
+    with SESSIONS_LOCK:
+        if "pw" in data:
+            SESSIONS.pop(token, None)  # пароль сменили — сессия больше не действует
+            user = None
+        else:
+            data["pw"] = tag  # сессия до этого обновления: запоминаем текущий пароль
+    _save_sessions()
+    return user
 mimetypes.add_type("application/manifest+json", ".webmanifest")
 _load_sessions()
 VERBOSE = False
@@ -817,8 +841,8 @@ class Handler(BaseHTTPRequestHandler):
             key = (data["логин"], data["цех"])
             if key in seen:
                 continue
-            user = find_user(data["логин"], data["цех"])
-            if not user or str(user.get("активен", "1")) not in ("1", "True", "true"):
+            user = _session_user(tok, data)
+            if not user:
                 continue
             seen.add(key)
             out.append((tok, data, user))
@@ -832,8 +856,8 @@ class Handler(BaseHTTPRequestHandler):
             data = SESSIONS.get(token)
         if not data:
             return None
-        user = find_user(data["логин"], data["цех"])
-        if not user or str(user.get("активен", "1")) not in ("1", "True", "true"):
+        user = _session_user(token, data)
+        if not user:
             return None
         return user
 

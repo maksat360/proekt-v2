@@ -676,6 +676,22 @@ def supply_state() -> dict:
             "статусы": list(SUPPLY_STATUSES)}
 
 
+def _check_supply_ready(num: str, lines: list[dict]) -> None:
+    """Технологу — только когда по каждому сырью из спецификации отмечено, что оно есть или заказано."""
+    order = next((o for o in orders() if o["номер"] == num), None)
+    need, missing = supply_need(card_of(order, pcards()), boms()) if order else ([], [])
+    if missing:
+        raise ValueError("Нет спецификации для модели: " + ", ".join(missing) + " — заполните её во вкладке «Спецификации»")
+    marked = {(l["материал"], l["цвет"], l["ед."]): l["статус"] for l in lines}
+    empty = [f'{n["материал"]} {n["цвет"]}'.strip() for n in need
+             if not marked.get((n["материал"], n["цвет"], n["ед"]))]
+    if empty:
+        raise ValueError("Отметьте статус сырья: " + ", ".join(empty))
+    short = [k[0] + (" " + k[1] if k[1] else "") for k, st in marked.items() if st == "не хватает"]
+    if short:
+        raise ValueError("Сырья не хватает: " + ", ".join(short) + " — передать технологу пока нельзя")
+
+
 def save_supply(me: dict, body: dict) -> dict:
     """Снабженец отмечает по каждому сырью, что есть/заказано; «готово» — заказ уходит технологу."""
     num = _s(body.get("номер"))
@@ -694,6 +710,8 @@ def save_supply(me: dict, body: dict) -> dict:
                       "есть": _num(it.get("есть")), "статус": status,
                       "комментарий": _s(it.get("комментарий")), "кто": who, "когда": now})
     done = bool(body.get("готово"))
+    if done:
+        _check_supply_ready(num, lines)
     rows = [r for r in _rows(SUPPLY_SH) if _norm_size(r.get("№ заказа")) != num] + lines
     writes = [(SUPPLY_SH[0], SUPPLY_SH[1], rows)]
     if done:
@@ -2622,13 +2640,26 @@ def save_pack(me: dict, body: dict) -> dict:
     left = party["остаток"] - total
     party_rows = _rows(PARTIES)
     new_status = party["статус"]
+    writes = [(PACK[0], PACK[1], rows), (PARTIES[0], PARTIES[1], party_rows)]
     if left <= 0:
         new_status = "упакован"
+        order_num = ""
         for r in party_rows:
             if _s(r.get("№ партии")) == num:
                 r["статус"] = new_status
+                order_num = _norm_size(r.get("№ заказа"))
+        # заказ принят целиком и все его партии упакованы — заказ тоже «упакован»
+        if order_num and all(_s(r.get("статус")) in DONE_PARTY for r in party_rows
+                             if _norm_size(r.get("№ заказа")) == order_num):
+            orders_rows = _rows(ORDERS)
+            hit = [r for r in orders_rows if _norm_size(r.get("№ заказа")) == order_num
+                   and _s(r.get("статус")) == "принят"]
+            for r in hit:
+                r["статус"] = "упакован"
+            if hit:
+                writes.append((ORDERS[0], ORDERS[1], orders_rows))
 
-    store.write_sheets([(PACK[0], PACK[1], rows), (PARTIES[0], PARTIES[1], party_rows)])
+    store.write_sheets(writes)
     return {"коробка": box, "штук": total, "этикеток": len(prepared),
             "статус": new_status, "готово": left <= 0}
 

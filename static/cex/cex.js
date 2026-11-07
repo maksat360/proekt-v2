@@ -537,7 +537,7 @@ function cartHtml() {
 function statusPill(status) {
   const s = status || '—';
   const kind = ['у технолога', 'у конструктора', 'у снабженца'].includes(s) ? 'orange'
-    : s === 'принят' ? 'green'
+    : s === 'принят' || s === 'упакован' ? 'green'
       : s === 'отклонён' ? 'red'
         : s === 'новый' ? 'blue' : 'grey';
   return `<span class="cx-pill ${kind}">${esc(s)}</span>`;

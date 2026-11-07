@@ -99,9 +99,17 @@ class OrderFlowTests(unittest.TestCase):
             cex_api.add_roll(ME, {"код": "R-1", "вес": 1})
         self.assertIn("R-1", cex_api.roll_registry())
 
+        cloth = {"материал": "Ткань", "цвет": "Красный", "ед": "м", "нужно": 30, "есть": 30,
+                 "статус": "есть на складе"}
+        thread = {"материал": "Нитки", "цвет": "Белый", "ед": "бобина", "нужно": 2, "есть": 0}
+        with self.assertRaisesRegex(ValueError, "Отметьте статус сырья: Нитки"):
+            cex_api.save_supply(ME, {"номер": "7", "готово": True, "строки": [cloth, thread]})
+        with self.assertRaisesRegex(ValueError, "не хватает"):
+            cex_api.save_supply(ME, {"номер": "7", "готово": True, "строки": [
+                cloth, {**thread, "статус": "не хватает"}]})
+        self.assertEqual(cex_api.queue(), [])  # заказ остался у снабженца
         cex_api.save_supply(ME, {"номер": "7", "готово": True, "строки": [
-            {"материал": "Ткань", "цвет": "Красный", "ед": "м", "нужно": 30, "есть": 30,
-             "статус": "есть на складе"}]})
+            cloth, {**thread, "статус": "заказано"}]})
         self.assertEqual([q["номер"] for q in cex_api.queue()], ["7"])
 
         # технолог принимает по итогу карты — больше, чем было в заказе
@@ -116,6 +124,40 @@ class OrderFlowTests(unittest.TestCase):
             r["статус"] = cex_api.NEW
         self.assertEqual(self.order()["штук"], 15)
         self.assertEqual([q["номер"] for q in cex_api.queue()], ["7"])
+
+
+class PackOrderStatusTests(unittest.TestCase):
+    """Упаковали последнюю партию заказа — заказ из «принят» становится «упакован»."""
+
+    def setUp(self):
+        self._old = (cex_api.store, cex_api.pack_state)
+        cex_api.store = self.st = FakeStore()
+        self.st.sheets[cex_api.ORDERS[0]] = [{"№ заказа": 9, "размер": "42", "статус": "принят"},
+                                             {"№ заказа": 8, "размер": "42", "статус": "принят"}]
+        self.st.sheets[cex_api.PARTIES[0]] = [
+            {"№ партии": 1, "№ заказа": 9, "статус": "в производстве"},
+            {"№ партии": 2, "№ заказа": 9, "статус": "в производстве"},
+            {"№ партии": 3, "№ заказа": 8, "статус": "в производстве"}]
+        cex_api.pack_state = lambda me: {"партии": [
+            {"номер": n, "остаток": 5, "готово_к_упаковке": 5, "статус": "в производстве",
+             "коробка_следующая": 1, "строки": [{"цвет": "К", "размер": "42", "остаток": 5}]}
+            for n in ("1", "2", "3")]}
+
+    def tearDown(self):
+        cex_api.store, cex_api.pack_state = self._old
+
+    def status(self, num):
+        return next(r["статус"] for r in self.st.sheets[cex_api.ORDERS[0]] if str(r["№ заказа"]) == num)
+
+    def pack(self, party):
+        cex_api.save_pack(ME, {"партия": party, "позиции": [{"цвет": "К", "размер": "42", "количество": 5}]})
+
+    def test_order_packed_after_last_party(self):
+        self.pack("1")
+        self.assertEqual(self.status("9"), "принят")  # партия 2 ещё не упакована
+        self.pack("2")
+        self.assertEqual(self.status("9"), "упакован")
+        self.assertEqual(self.status("8"), "принят")  # чужой заказ не тронут
 
 
 if __name__ == "__main__":
