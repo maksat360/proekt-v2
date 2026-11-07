@@ -68,7 +68,7 @@ function ccFormHtml(p) {
         <tbody>${colors.map((c) => `<tr><th class="cx-gcolor">${esc(c)}</th>${sizes.map((z) => {
           const k = `${c}|${z}`;
           if (!(k in left)) return '<td class="cc-na">—</td>';
-          return `<td><input class="cx-gin" type="number" min="0" inputmode="numeric" data-cc-cell="${si}|${esc(k)}" value="${g[k] ? esc(g[k]) : ''}" placeholder="${left[k] - (used[k] || 0) + (Number(g[k]) || 0)}"></td>`;
+          return `<td><input class="cx-gin" type="number" min="0" inputmode="numeric" data-cc-cell="${si}|${esc(k)}" value="${g[k] ? esc(g[k]) : ''}" placeholder="${Math.max(0, left[k] - (used[k] || 0) + (Number(g[k]) || 0))}"></td>`;
         }).join('')}</tr>`).join('')}</tbody>
       </table></div>
     </div>`).join('');
@@ -89,7 +89,7 @@ function ccFormHtml(p) {
         </div>
         <div class="cc-step">2. Разделы
           <label class="cc-count">сколько разделов <input class="input" id="cc-nsecs" type="number" min="1" max="40" value="${CC.secs.length}"></label></div>
-        <div class="cx-hint" style="margin-bottom:8px">В каждом разделе — сколько штук по цвету и размеру. В пустой клетке серым — сколько ещё осталось по плану.</div>
+        <div class="cx-hint" style="margin-bottom:8px">В каждом разделе — сколько штук по цвету и размеру. В пустой клетке серым — сколько ещё осталось по плану. План — подсказка: можно вписать больше, если раскроили больше.</div>
         ${secs}
       </div>
       <div class="cx-gfoot">

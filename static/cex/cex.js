@@ -854,10 +854,10 @@ function cutQueueHtml() {
       <div class="cx-card-b">
         <div class="cx-scroll"><table class="cx-table">
           <thead><tr><th>Модель</th><th>Цвет</th><th>Размер</th><th class="num">По карте</th><th class="num">Уже в партиях</th><th>В новую партию</th></tr></thead>
-          <tbody>${c.позиции.filter((p) => p.остаток > 0).map((p) => `<tr>
+          <tbody>${c.позиции.map((p) => `<tr>
             <td>${esc(p.модель)}</td><td>${esc(p.цвет)}</td><td>${esc(p.размер)}</td>
             <td class="num">${nf(p.количество)}</td><td class="num">${nf(p.принято)}</td>
-            <td style="width:96px"><input class="input cx-mini" type="number" min="0" max="${p.остаток}" value="${p.остаток}"
+            <td style="width:96px"><input class="input cx-mini" type="number" min="0" value="${p.остаток || ''}" placeholder="0"
               data-newparty="${esc(c.заказ)}|${esc(c.карта)}" data-pos="${esc(p.модель)}|${esc(p.цвет)}|${esc(p.размер)}"></td></tr>`).join('')}</tbody>
         </table></div>
         <div class="cx-btn-row" style="margin-top:8px"><button class="btn primary" data-act="cut-new-party" data-num="${esc(c.заказ)}" data-card="${esc(c.карта)}">Создать партию</button></div>
@@ -866,7 +866,7 @@ function cutQueueHtml() {
 
   if (!queued) return '';
   return `<div class="cx-card" style="margin-bottom:12px"><div class="cx-card-h"><h3>Карты ждут кроя · ${nf((ST.cut.к_крою || []).length)}</h3>
-    <span class="cx-hint">партию создаёт закройщик: всю карту или часть — остаток карты останется здесь</span></div></div>${queued}`;
+    <span class="cx-hint">партию создаёт закройщик: всю карту, часть или больше — карта только подсказка; недобранный остаток останется здесь</span></div></div>${queued}`;
 }
 
 async function createParty(order, card, btn) {

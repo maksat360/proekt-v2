@@ -526,7 +526,7 @@ def cut_queue() -> list[dict]:
 
 
 def create_party(me: dict, body: dict) -> dict:
-    """Закройщик создаёт партию из карты «ждёт кроя»: всю карту или часть позиций."""
+    """Закройщик создаёт партию из карты «ждёт кроя»: всю карту, часть или больше карты."""
     num = _s(body.get("заказ"))
     card = _card_no(body.get("карта"))
     current = {o["номер"]: o for o in orders()}.get(num)
@@ -546,10 +546,8 @@ def create_party(me: dict, body: dict) -> dict:
             continue
         key = (_s(it.get("модель")), _s(it.get("цвет")), _norm_size(it.get("размер")))
         name = " / ".join(key)
-        if key not in remaining:
+        if key not in remaining:  # цвета и размеры — от конструктора, количество — любое
             raise ValueError(f"Позиции {name} нет в карте {card}")
-        if accepted.get(key, 0) + qty > remaining[key]:
-            raise ValueError(f"По позиции {name} осталось {remaining[key]} шт — нельзя взять {qty}")
         accepted[key] = accepted.get(key, 0) + qty
     total = sum(accepted.values())
     if total <= 0:
@@ -1064,7 +1062,6 @@ def save_card(me: dict, body: dict) -> dict:
                       "вес": weight or _num(known["вес"])})
 
     index = {(r["цвет"], r["размер"]): r for r in party["строки"]}
-    left = {k: r["остаток"] for k, r in index.items()}
     sections = []
     for si, sec in enumerate(body.get("разделы") or [], start=1):
         items = []
@@ -1075,10 +1072,7 @@ def save_card(me: dict, body: dict) -> dict:
             key = (_s(p.get("цвет")), _norm_size(p.get("размер")))
             if key not in index:
                 raise ValueError(f"Раздел {si}: {key[0]} / {key[1]} нет в партии")
-            if qty > left[key]:
-                raise ValueError(f"Раздел {si}: {key[0]} / {key[1]} — осталось по плану {left[key]} шт, "
-                                 f"нельзя {qty}. Лишнее исправит технолог")
-            left[key] -= qty
+            # план — подсказка: закройщик может раскроить больше, чем осталось по плану
             items.append((key, qty))
         if items:
             sections.append(items)

@@ -125,11 +125,19 @@ class OrderFlowTests(unittest.TestCase):
             {"модель": "П1", "цвет": "Красный", "размер": "46", "количество": 4}]})
         self.assertEqual((part["штук"], part["вся_карта"]), (17, False))
         self.assertEqual(self.order()["статус"], cex_api.CUTQ)
-        with self.assertRaisesRegex(ValueError, "осталось 0 шт"):
+        # карта — подсказка: по 42 осталось 0, но закройщик берёт ещё 1
+        extra = cex_api.create_party(ME, {"заказ": "7", "карта": "1", "позиции": [
+            {"модель": "П1", "цвет": "Красный", "размер": "42", "количество": 1}]})
+        self.assertEqual((extra["штук"], extra["вся_карта"]), (1, False))
+        with self.assertRaisesRegex(ValueError, "нет в карте"):  # новые размеры добавляет конструктор
             cex_api.create_party(ME, {"заказ": "7", "карта": "1", "позиции": [
-                {"модель": "П1", "цвет": "Красный", "размер": "42", "количество": 1}]})
+                {"модель": "П1", "цвет": "Красный", "размер": "48", "количество": 1}]})
         rest = cex_api.create_party(ME, {"заказ": "7", "карта": "1"})  # без списка — весь остаток
         self.assertEqual((rest["штук"], rest["вся_карта"]), (3, True))
+        # и в карте кроя можно раскроить больше плана партии
+        cut = cex_api.save_card(ME, {"партия": str(rest["партия"]), "длина": 5, "разделы": [
+            {"позиции": [{"цвет": "Красный", "размер": "44", "факт": 5}]}]})
+        self.assertEqual(cut["штук"], 5)
         o = self.order()
         self.assertEqual((o["статус"], o["карты"], o["остаток"]), ("принят", {"1": cex_api.IN_PARTY}, 0))
         self.assertEqual(cex_api.cut_queue(), [])
