@@ -3774,16 +3774,17 @@ VIRTUAL_STARTS = {START_STAGE} | {k["старт"] for k in KINDS.values()}
 
 def _old_seamstresses() -> list[str]:
     """Логины с прежней ролью «Швея»: лист «сотрудники» и запасной users.xlsx."""
-    out = []
+    out, in_sheet = [], set()
     if ACCOUNTS in store.sheet_names():
         for r in store.read_sheet(ACCOUNTS):
+            in_sheet.add(_s(r.get("логин")))
             if _s(r.get("роль")).lower() in OLD_SEW and _s(r.get("логин")):
                 out.append(_s(r.get("логин")))
     try:
         from server import read_table  # noqa: WPS433
-        for r in read_table("users"):
+        for r in read_table("users"):  # запасной файл — только для тех, кого нет в листе
             login = _s(r.get("логин"))
-            if _s(r.get("роль")).lower() in OLD_SEW and login and login not in out:
+            if _s(r.get("роль")).lower() in OLD_SEW and login and login not in in_sheet and login not in out:
                 out.append(login)
     except Exception:  # noqa: BLE001
         pass
