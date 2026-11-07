@@ -278,6 +278,7 @@ def orders() -> list[dict]:
             o["штук"] = sum(p["количество"] for p in o["позиции"])
             o["по_карте"] = True
         o["_этапы"] = stored
+        o["_сохранены"] = [c["карта"] for c in saved or []]
     accepted = accepted_map()
     for o in out:
         o["позиций"] = len(o["позиции"])
@@ -294,7 +295,10 @@ def orders() -> list[dict]:
             o["остаток"] += p["остаток"]
             left[p["карта"]] = left.get(p["карта"], 0) + p["остаток"]
         stored = o.pop("_этапы")
-        o["карты"] = {c: stored.get(c) or _legacy_stage(o["статус"], left[c]) for c in left}
+        for c in o.pop("_сохранены"):  # пока все карты у конструктора, в позициях — заказ начальника
+            left.setdefault(c, 0)
+        o["карты"] = {c: stored.get(c) or _legacy_stage(o["статус"], left[c])
+                      for c in sorted(left, key=_int)}
         for p in o["позиции"]:
             p["этап"] = o["карты"][p["карта"]]
     return out
