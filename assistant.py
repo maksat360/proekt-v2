@@ -63,6 +63,15 @@ def farewell(fio: str, now: datetime | None = None) -> str:
     return f"До свидания, {name}, сэр. {wish}." if name else f"До свидания, сэр. {wish}."
 
 
+# ----------------------------------------------- готовые фразы из звукового пакета (voice.clip_b64)
+FAREWELL_CLIP = "всегда_к_вашим_услугам"  # прощание — голосом Джарвиса из фильма
+
+
+def greeting_clip(now: datetime | None = None) -> str:
+    """Клип на приветствие: утром — «Доброе утро» из фильма; днём и вечером клипа нет — синтез с именем."""
+    return "доброе_утро" if 5 <= (now or datetime.now()).hour < 12 else ""
+
+
 def _clean_sections(raw) -> list[dict]:
     out = []
     for s in raw or []:
@@ -270,7 +279,7 @@ def ask(fio: str, role: str, text: str, sections, history=None, tools=None, know
     ids = {s["id"] for s in secs}
     tools = tools or {}
     if not text:
-        return {"ответ": "Слушаю вас, сэр.", "открыть": "", "модель": ""}
+        return {"ответ": "Слушаю вас, сэр.", "открыть": "", "модель": "", "клип": "да_сэр"}
     menu = "\n".join(f"- {s['id']}: {s['label']}" for s in secs) or "- (разделов нет)"
     acts = "\n".join(f"- {n}: {d[0]}" for n, d in tools.items())
     knows = "\n".join(f"- {k}" for k in (knowledge or [])[:40])
@@ -304,7 +313,7 @@ def ask(fio: str, role: str, text: str, sections, history=None, tools=None, know
         target = _match(text, secs)
         label = next((s["label"] for s in secs if s["id"] == target), "")
         return {"ответ": f"Открываю «{label}», сэр." if label else "Боюсь, сейчас я не на связи, сэр. Выберите раздел в меню.",
-                "открыть": target, "без_модели": True, "модель": ""}
+                "открыть": target, "без_модели": True, "модель": "", "клип": "есть" if target else ""}
     act = str(data.get("действие") or "none").strip()
     answer = _clean_answer(str(data.get("ответ") or ""))
     target = str(data.get("id") or "").strip() if act == "open" else ""
@@ -315,7 +324,7 @@ def ask(fio: str, role: str, text: str, sections, history=None, tools=None, know
     if not answer:
         label = next((s["label"] for s in secs if s["id"] == target), "")
         answer = f"Открываю «{label}», сэр." if label else "Слушаю, сэр."
-    return {"ответ": answer, "открыть": target, "модель": engine}
+    return {"ответ": answer, "открыть": target, "модель": engine, "клип": "есть" if target else ""}
 
 
 # эти данные никогда не уходят в облако — пересказывает только локальная модель
@@ -337,7 +346,7 @@ def _answer_with_data(text: str, act: str, tools: dict, args: dict) -> dict:
         answer = _clean_answer(raw)
     except Exception:  # noqa: BLE001
         answer, engine = facts[:300], ""
-    return {"ответ": answer or facts[:300], "открыть": "", "модель": engine}
+    return {"ответ": answer or facts[:300], "открыть": "", "модель": engine, "клип": ""}  # цифры — только синтезом
 
 
 # ------------------------------------------------ данные для инструментов (сервер даёт по правам)

@@ -1238,14 +1238,18 @@ class Handler(BaseHTTPRequestHandler):
             import assistant
             import voice
             text = assistant.greeting(str(me.get("фио") or ""))
-            self._json({"ok": True, "data": {"текст": text, "аудио": voice.tts(text) if "голос" in query else ""}})
+            audio = voice.clip_b64(assistant.greeting_clip())  # утром — «Доброе утро» голосом из фильма
+            if not audio and "голос" in query:
+                audio = voice.tts(text)
+            self._json({"ok": True, "data": {"текст": text, "аудио": audio}})
             return
 
         if path == "/api/assistant/bye":  # прощание перед выходом — по имени и отчеству
             import assistant
             import voice
             text = assistant.farewell(str(me.get("фио") or ""))
-            self._json({"ok": True, "data": {"текст": text, "аудио": voice.tts(text)}})
+            self._json({"ok": True, "data": {"текст": text,
+                                             "аудио": voice.clip_b64(assistant.FAREWELL_CLIP) or voice.tts(text)}})
             return
 
         if path == "/api/assistant" and method == "POST":
@@ -1256,7 +1260,8 @@ class Handler(BaseHTTPRequestHandler):
             res = assistant.ask(str(me.get("фио") or ""), ROLE_LABELS.get(role, role),
                                 str(body.get("текст") or ""), body.get("разделы"), body.get("история"),
                                 self._assistant_tools(me), self._assistant_knowledge(me))
-            res["аудио"] = voice.tts(res.get("ответ", ""))  # голос Yuri с Мака — одинаковый на всех устройствах
+            res["аудио"] = voice.clip_b64(str(res.get("клип") or "")) or voice.tts(res.get("ответ", ""))
+            # клип из пакета (настоящий голос Джарвиса) важнее синтеза; цифры всегда синтезом
             self._json({"ok": True, "data": res})
             return
 

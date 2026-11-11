@@ -190,6 +190,28 @@ def capture(obj, seen):
     return mock.patch("urllib.request.urlopen", fake)
 
 
+class AssistantClipTests(unittest.TestCase):
+    """Готовые фразы из звукового пакета: привязка к событиям."""
+
+    def test_greeting_clip_morning_only(self):
+        self.assertEqual(assistant.greeting_clip(datetime(2026, 11, 11, 9)), "доброе_утро")
+        self.assertEqual(assistant.greeting_clip(datetime(2026, 11, 11, 16)), "")
+
+    def test_empty_and_open_get_clips(self):
+        self.assertEqual(assistant.ask("А Б", "Швея", "", MENU)["клип"], "да_сэр")
+        with reply({"действие": "open", "id": "orders", "ответ": "Ваши заказы, сэр."}):
+            res = assistant.ask("А Б", "Швея", "мои заказы", MENU)
+        self.assertEqual((res["открыть"], res["клип"]), ("orders", "есть"))
+        with reply({"действие": "none", "ответ": "Слушаю, сэр."}):
+            self.assertEqual(assistant.ask("А Б", "Швея", "привет", MENU)["клип"], "")
+
+    def test_clip_b64_missing_is_empty(self):
+        import voice
+        self.assertEqual(voice.clip_b64("нет_такого"), "")
+        self.assertEqual(voice.clip_b64("../../etc/passwd"), "")  # имя чистится
+        self.assertEqual(voice.clip_b64(""), "")
+
+
 class AssistantKnowledgeTests(unittest.TestCase):
     """Знания о возможностях сотрудника попадают в системный промпт — и только они."""
 
