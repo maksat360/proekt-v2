@@ -875,7 +875,8 @@ class Handler(BaseHTTPRequestHandler):
         path, query = url.path, parse_qs(url.query)
         try:
             if path.startswith("/api/"):
-                if method == "POST":
+                # помощник ждёт модель до минуты и ничего не пишет — не держим блокировку записи
+                if method == "POST" and not path.startswith("/api/assistant"):
                     with WRITE_LOCK:
                         self._api(method, path, query)
                 else:
@@ -895,6 +896,17 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path in ("/cex/items", "/cex/items/"):
                 self._static("cex/items.html")
+                return
+            if path in ("/ca", "/ca/"):  # как поставить сертификат на телефон (для https и микрофона)
+                self._static("ca.html")
+                return
+            if path == "/ca.crt":
+                ca = DATA / "tls" / "ca.crt"
+                if not ca.is_file():
+                    self._send(b"https not enabled", "text/plain; charset=utf-8", 404)
+                    return
+                self._send(ca.read_bytes(), "application/x-x509-ca-cert",
+                           extra={"Content-Disposition": 'attachment; filename="proekt-v2-ca.crt"'})
                 return
             if DEV and path == "/__dev_login":
                 login = (query.get("логин") or ["boss"])[0]
@@ -943,6 +955,98 @@ class Handler(BaseHTTPRequestHandler):
         if ctype.startswith("text/") or target.suffix in (".js", ".css", ".html"):
             ctype += "; charset=utf-8"
         self._send(target.read_bytes(), ctype)
+
+    def _assistant_tools(self, me: dict) -> dict:
+        """Инструменты Джарвиса — строго по правам сотрудника (как у кнопок на сайте)."""
+        import assistant
+        tools = {}
+
+        def capabilities():
+            return assistant.capabilities_summary(self._assistant_knowledge(me))
+
+        tools["capabilities"] = ("что может этот сотрудник: его доступы и возможности на портале",
+                                 {}, capabilities)
+        if can(me, "wh.view"):
+            def stock(запрос: str = ""):
+                import warehouse
+                return assistant.stock_summary(warehouse.stock_items(), str(запрос))
+
+            def wb_orders():
+                import wb_sync
+                return assistant.wb_summary(wb_sync.counts(), wb_sync.list_orders(None, None),
+                                            datetime.now().strftime("%Y-%m-%d"))
+
+            tools["stock"] = ("остатки готовой продукции на складе: сколько есть, чего больше или меньше всего, "
+                              "что закончилось; запрос — модель, цвет, размер или категория",
+                              {"запрос": {"type": "string", "description": "например «477 чёрный 46» или пусто — весь склад"}},
+                              stock)
+            tools["wb_orders"] = ("заказы Wildberries FBS: сколько всего, новых, сегодня, по кабинетам и что заказали", {},
+                                  wb_orders)
+        if can(me, "wb.manage"):
+            def wb_refresh():
+                import wb_sync
+                with WRITE_LOCK:  # как кнопка «Обновить из WB» — пишет заказы
+                    res = wb_sync.sync(actor=str(me.get("фио", "")))
+                err = "; ".join(str(e) for e in res.get("ошибки") or [])
+                return f"обновлено из WB: новых {res.get('создано', 0)}, изменено {res.get('обновлено', 0)}" + (
+                    f"; ошибки: {err}" if err else "")
+
+            tools["wb_refresh"] = ("обновить заказы из Wildberries по API (как кнопка «Обновить из WB» в «Заказы WB»)", {},
+                                   wb_refresh)
+        if can(me, "cex.view"):
+            def cex_status():
+                import cex_api
+                return assistant.cex_summary(cex_api.summary(me))
+
+            tools["cex_status"] = ("состояние цеха: сколько партий и заказов в пошиве, что ждёт по этапам, "
+                                   "недостачи кроя", {}, cex_status)
+        if can(me, "cex.work"):
+            def my_work():
+                import cex_api
+                return assistant.my_work_summary(cex_api.work_state(me, as_worker=True))
+
+            tools["my_work"] = ("моя работа в цехе: что у меня в работе, что можно взять, сколько я сдал сегодня",
+                                {}, my_work)
+        if can(me, "cex.pay") or can(me, "cex.work"):  # payroll_data сама режет «только своё» без права cex.pay
+            def salary():
+                import cex_api
+                return assistant.payroll_summary(cex_api.payroll_data(datetime.now().strftime("%Y-%m"), me))
+
+            tools["salary"] = ("зарплата за текущий месяц: своя; у бухгалтера и начальника — всего цеха",
+                               {}, salary)
+        if can(me, "orders.view"):
+            def shop_orders():
+                import warehouse
+                return assistant.shop_orders_summary(warehouse.orders())
+
+            tools["shop_orders"] = ("заказы магазина от клиентов: сколько новых, собрано, отменено, по клиентам",
+                                    {}, shop_orders)
+        elif can(me, "orders.create"):  # клиент и все, кто заказывает от себя, — только свои заказы
+            def my_orders():
+                import warehouse
+                return assistant.shop_orders_summary(warehouse.orders(author=str(me.get("фио") or "")), "ваших ")
+
+            tools["my_orders"] = ("мои заказы в магазине: статусы моих заказов", {}, my_orders)
+        if can(me, "staff.view"):
+            def staff():
+                import cex_api
+                people = cex_api.staff_people(str(me.get("цех") or ""))
+                for p in people:
+                    p["должность"] = perms.role_label(str(p.get("должность") or ""))
+                return assistant.staff_summary(people)
+
+            tools["staff"] = ("сотрудники: кто работает и в какой должности", {}, staff)
+        return tools
+
+    def _assistant_knowledge(self, me: dict) -> list[str]:
+        """Что может этот сотрудник — из каталога прав (perms.CATALOG): ответы на «как…» и «где…»
+        только в рамках его доступов. Скрытый старый учёт партий не рассказываем."""
+        groups: dict[str, list[str]] = {}
+        for code, group, label, _roles in perms.CATALOG:
+            if group == "Старый учёт партий" or not can(me, code):
+                continue
+            groups.setdefault(group, []).append(label[0].lower() + label[1:])
+        return [f"{g}: {', '.join(items)}" for g, items in groups.items()]
 
     # -- api --------------------------------------------------------------
     def _api(self, method: str, path: str, query: dict):
@@ -1128,6 +1232,50 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
             self._json({"ok": True, "data": {"логотип": name, "url": "/static/" + name}})
+            return
+
+        if path == "/api/assistant/hello":  # приветствие после входа — по имени и отчеству
+            import assistant
+            import voice
+            text = assistant.greeting(str(me.get("фио") or ""))
+            self._json({"ok": True, "data": {"текст": text, "аудио": voice.tts(text) if "голос" in query else ""}})
+            return
+
+        if path == "/api/assistant/bye":  # прощание перед выходом — по имени и отчеству
+            import assistant
+            import voice
+            text = assistant.farewell(str(me.get("фио") or ""))
+            self._json({"ok": True, "data": {"текст": text, "аудио": voice.tts(text)}})
+            return
+
+        if path == "/api/assistant" and method == "POST":
+            import assistant
+            import voice
+            body = self._body()
+            role = str(me.get("роль") or "")
+            res = assistant.ask(str(me.get("фио") or ""), ROLE_LABELS.get(role, role),
+                                str(body.get("текст") or ""), body.get("разделы"), body.get("история"),
+                                self._assistant_tools(me), self._assistant_knowledge(me))
+            res["аудио"] = voice.tts(res.get("ответ", ""))  # голос Yuri с Мака — одинаковый на всех устройствах
+            self._json({"ok": True, "data": res})
+            return
+
+        if path == "/api/assistant/stt" and method == "POST":  # запись с микрофона → текст (Whisper на Маке)
+            import voice
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = 0
+            if not 0 < length <= 5_000_000:
+                self._err("запись пустая или длиннее 5 МБ")
+                return
+            audio = self.rfile.read(length)
+            try:
+                text = voice.transcribe(audio, self.headers.get("Content-Type") or "")
+            except Exception as exc:  # noqa: BLE001
+                self._err(f"не распознано: {exc}", 503)
+                return
+            self._json({"ok": True, "data": {"текст": text}})
             return
 
         if path == "/api/me":
@@ -1862,6 +2010,10 @@ class Handler(BaseHTTPRequestHandler):
                     target = query.get("получатель", ["ЖСК"])[0]
                     self._json({"ok": True, "data": warehouse.shipments(target)})
                     return
+                if path == "/api/wh/from_cex":
+                    import cex_api
+                    self._json({"ok": True, "data": cex_api.pack_awaiting()})
+                    return
                 if path == "/api/wh/purchases":
                     self._json({"ok": True, "data": warehouse.purchases()})
                     return
@@ -1932,6 +2084,10 @@ class Handler(BaseHTTPRequestHandler):
                     res = warehouse.receive_multi(
                         str(body.get("поставщик", "")), str(body.get("партия", "")),
                         as_num(body.get("неликвид")), body.get("позиции") or [])
+                    src = body.get("из_цеха") or {}
+                    if src.get("партия"):  # приёмка упакованного в цехе: отметить коробки принятыми
+                        import cex_api  # POST уже под WRITE_LOCK
+                        cex_api.pack_received(str(src["партия"]), str(src.get("цвет", "")))
                     self._json({"ok": True, **res})
                     return
                 if path == "/api/wh/export":
@@ -1962,8 +2118,10 @@ class Handler(BaseHTTPRequestHandler):
                 import wb_sync
                 status = query.get("статус", [""])[0] or None
                 cab = query.get("кабинет", [""])[0] or None
+                import cabinets_store
                 self._json({"ok": True, "data": wb_sync.list_orders(status, cab),
-                            "счётчики": wb_sync.counts()})
+                            "счётчики": wb_sync.counts(cab),
+                            "кабинеты": [{"id": c["id"], "name": c["name"]} for c in cabinets_store.cabinets()]})
             except Exception as exc:  # noqa: BLE001
                 self._err(f"заказы WB: {exc}", 500)
             return
@@ -1974,7 +2132,19 @@ class Handler(BaseHTTPRequestHandler):
                 return
             try:
                 import wb_sync
-                self._json({"ok": True, "data": wb_sync.aggregate_order()})
+                cab = query.get("кабинет", [""])[0] or None
+                self._json({"ok": True, "data": wb_sync.aggregate_order(cab)})
+            except Exception as exc:  # noqa: BLE001
+                self._err(f"заказы FBS: {exc}", 500)
+            return
+
+        if path == "/api/fbs/aggregates" and method == "GET":  # сборка FBS — отдельно по каждому кабинету
+            if not can(me, "wh.view"):
+                self._err("нет доступа", 403)
+                return
+            try:
+                import wb_sync
+                self._json({"ok": True, "data": wb_sync.aggregates()})
             except Exception as exc:  # noqa: BLE001
                 self._err(f"заказы FBS: {exc}", 500)
             return
@@ -2070,7 +2240,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/wb/cabinets" and method == "GET":
-            if not can(me, "wb.manage") and not can(me, "wh.view"):
+            if not can(me, "wb.manage") and not can(me, "wh.view") and not can(me, "orders.fbo"):
                 self._err("нет доступа", 403)
                 return
             import cabinets_store
@@ -2111,11 +2281,9 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:  # noqa: BLE001
                 self._err(f"склад недоступен: {exc}", 500)
                 return
-            if role == "client":
-                self._json({"ok": True, "data": warehouse.orders(client=str(me.get("фио")))})
-                return
-            if not can(me, "orders.view"):
-                self._err("нет доступа к заказам", 403)
+            # «Мои заказы» — свои (и FBO, оформленные мной); весь список — у тех, кто собирает
+            if role == "client" or "мои" in query or not can(me, "orders.view"):
+                self._json({"ok": True, "data": warehouse.orders(author=str(me.get("фио")))})
                 return
             self._json({"ok": True, "data": warehouse.orders()})
             return
@@ -2165,15 +2333,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             body = self._body()
             oid = int(as_num(body.get("id")))
-            if role == "client":
-                own = [o for o in warehouse.orders(client=str(me.get("фио")))
+            if role == "client" or not can(me, "orders.view"):
+                own = [o for o in warehouse.orders(author=str(me.get("фио")))
                        if int(o.get("id", 0)) == oid]
                 if not own:
                     self._err("это не ваш заказ", 403)
                     return
-            elif not can(me, "orders.view"):
-                self._err("нет прав", 403)
-                return
             try:
                 self._json({"ok": True, **warehouse.cancel_order(
                     oid, str(me.get("фио")), str(body.get("причина", "")))})
@@ -2202,8 +2367,22 @@ class Handler(BaseHTTPRequestHandler):
                 self._err(f"склад недоступен: {exc}", 500)
                 return
             body = self._body()
+            who = str(me.get("фио"))
+            client, kind, cabinet = who, "свой", ""
+            if str(body.get("тип", "")).upper() == "FBO":
+                if not can(me, "orders.fbo"):
+                    self._err("нет прав на заказ FBO", 403)
+                    return
+                import cabinets_store
+                cab = next((c for c in cabinets_store.cabinets()
+                            if c.get("id") == body.get("кабинет") and c.get("active", 1)), None)
+                if not cab:
+                    self._err("Выберите кабинет WB")
+                    return
+                kind, cabinet = "FBO", str(cab.get("name") or cab.get("id"))
+                client = f"FBO · {cabinet}"
             try:
-                res = warehouse.create_order(str(me.get("фио")), body.get("позиции") or [])
+                res = warehouse.create_order(client, body.get("позиции") or [], who, kind, cabinet)
                 self._json({"ok": True, **res})
             except ValueError as exc:
                 self._err(str(exc))
@@ -2347,6 +2526,7 @@ def main():
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("-v", "--verbose", action="store_true")
     parser.add_argument("--dev", action="store_true")
+    parser.add_argument("--https-port", type=int, default=8443, help="0 — без https")
     args = parser.parse_args()
     VERBOSE, DEV = args.verbose, args.dev
     ensure_tables()
@@ -2369,10 +2549,39 @@ def main():
 
     threading.Thread(target=_boot_sync, daemon=True).start()
 
+    def _warm_voice():  # Whisper грузится заранее — первая фраза распознаётся сразу
+        try:
+            import voice
+            if voice.stt_available():
+                with voice._LOCK:
+                    voice._worker()
+            if voice.neural_available():  # нейросетевой голос грузится дольше — тоже заранее, в фоне
+                voice._tstart()
+            voice.tts("Готов.")  # Piper грузит голос ~1 с — пусть первая фраза Джарвиса будет без задержки
+        except Exception as exc:  # noqa: BLE001
+            print("распознавание речи не готово:", exc)
+
+    threading.Thread(target=_warm_voice, daemon=True).start()
+
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"Проект V2.1 · http://{args.host}:{args.port}")
     if args.host in ("0.0.0.0", ""):
         print(f"С телефона в Wi-Fi: http://{lan_ip()}:{args.port}")
+    if args.host in ("0.0.0.0", "") and args.https_port:
+        # https нужен браузеру для микрофона (голосовой Джарвис); http остаётся для приложений и старых ссылок
+        try:
+            import ssl
+            import tls_cert
+            crt, key = tls_cert.ensure(lan_ip())
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ctx.load_cert_chain(crt, key)
+            secure = ThreadingHTTPServer((args.host, args.https_port), Handler)
+            # рукопожатие — в потоке запроса, чтобы медленный телефон не держал приём соединений
+            secure.socket = ctx.wrap_socket(secure.socket, server_side=True, do_handshake_on_connect=False)
+            threading.Thread(target=secure.serve_forever, daemon=True).start()
+            print(f"HTTPS (микрофон для Джарвиса): https://{lan_ip()}:{args.https_port} · сертификат: http://{lan_ip()}:{args.port}/ca")
+        except Exception as exc:  # noqa: BLE001
+            print("https не включён:", exc)
     print(f"Данные: {DATA}")
     try:
         server.serve_forever()
