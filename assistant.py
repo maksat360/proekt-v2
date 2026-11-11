@@ -122,7 +122,8 @@ def _cloud_cfg() -> dict | None:
     try:
         raw = json.loads(CLOUD_FILE.read_text(encoding="utf-8"))
         cfg = {"base": str(raw.get("base", "")).rstrip("/"), "key": str(raw.get("key", "")),
-               "model": str(raw.get("model", ""))}
+               "model": str(raw.get("model", "")),
+               "без_локальной": bool(raw.get("без_локальной"))}  # true — Ollama не вызывается совсем
         cfg = cfg if cfg["base"] and cfg["key"] and cfg["model"] else None
     except Exception:  # noqa: BLE001 — битый конфиг не должен ронять ассистента
         cfg = None
@@ -165,7 +166,7 @@ def _chat_cloud(cfg: dict, messages: list[dict], json_mode: bool, limit: int) ->
 
 
 def _chat_local(messages: list[dict], json_mode: bool, limit: int) -> str:
-    body = {"model": _model(), "stream": False, "think": False, "keep_alive": "30m",  # модель держим в памяти
+    body = {"model": _model(), "stream": False, "think": False, "keep_alive": "5m",  # выгружается через 5 мин простоя
             "options": {"temperature": 0.5, "num_predict": limit}, "messages": messages}
     if json_mode:
         body["format"] = "json"
@@ -178,8 +179,12 @@ def _chat_local(messages: list[dict], json_mode: bool, limit: int) -> str:
 def _chat_ex(messages: list[dict], json_mode: bool = False, limit: int = 200,
              local_only: bool = False) -> tuple[str, str]:
     """Текст ответа + какая модель ответила (подпись на сайте: «gpt-oss-120b · облако»)."""
-    cfg = None if local_only else _cloud_cfg()
-    if cfg:
+    cfg = _cloud_cfg()
+    no_local = bool(cfg and cfg.get("без_локальной"))
+    if no_local and local_only:
+        # локальной нет, а эти данные в облако нельзя — пусть вызывающий покажет сухие цифры
+        raise RuntimeError("зарплата/сотрудники — только локально, а локальная отключена")
+    if cfg and not local_only:
         for _attempt in range(2):  # один повтор: у облака бывают единичные сбои (Cloudflare 403 и т.п.)
             try:
                 text = _chat_cloud(cfg, messages, json_mode, limit)
@@ -187,7 +192,8 @@ def _chat_ex(messages: list[dict], json_mode: bool = False, limit: int = 200,
                     return text, cfg["model"] + " · облако"
             except Exception:  # noqa: BLE001
                 continue
-        # облако недоступно (нет сети, лимит) — локальная модель
+        if no_local:
+            raise RuntimeError("облако недоступно, локальная отключена")
     return _chat_local(messages, json_mode, limit), _model() + " · локально"
 
 

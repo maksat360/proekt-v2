@@ -274,6 +274,34 @@ class AssistantCloudTests(unittest.TestCase):
                 mock.patch("urllib.request.urlopen", fake):
             self.assertEqual(assistant._chat([{"role": "user", "content": "привет"}]), "локальный ответ")
 
+    def test_no_local_mode(self):
+        cfg = dict(self.CFG, без_локальной=True)
+        calls = []
+
+        def fake(req, timeout=0, **_):
+            calls.append(req.full_url)
+            raise OSError("облако лежит")
+
+        with mock.patch.object(assistant, "_cloud_cfg", lambda: cfg), \
+                mock.patch("urllib.request.urlopen", fake):
+            with self.assertRaises(RuntimeError):  # локальную не трогаем — сразу ошибка
+                assistant._chat([{"role": "user", "content": "привет"}])
+            with self.assertRaises(RuntimeError):  # зарплата в облако не уйдёт — сухие цифры покажет вызывающий
+                assistant._chat([{"role": "user", "content": "зарплата"}], local_only=True)
+        self.assertTrue(all("groq" in u for u in calls))  # локальная Ollama ни разу не вызвана
+
+    def test_local_model_sleeps_fast(self):
+        seen = {}
+
+        def fake(req, timeout=0, **_):
+            seen.update(json.loads(req.data.decode("utf-8")))
+            return io.BytesIO(json.dumps({"message": {"content": "ок"}}).encode())
+
+        with mock.patch.object(assistant, "_cloud_cfg", lambda: None), \
+                mock.patch("urllib.request.urlopen", fake):
+            assistant._chat([{"role": "user", "content": "привет"}])
+        self.assertEqual(seen.get("keep_alive"), "5m")  # память освобождается через 5 минут простоя
+
     def test_salary_retold_locally_only(self):
         calls = []
 
