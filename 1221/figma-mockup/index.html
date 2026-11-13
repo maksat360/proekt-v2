@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Швейный портал — дизайн-макет для Figma</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: "Inter", -apple-system, "Segoe UI", Roboto, sans-serif;
+    background:#E7E9ED; color:#111827; -webkit-font-smoothing:antialiased;
+    padding:48px 0 96px;
+  }
+  .canvas-head { width:1440px; margin:0 auto 40px; }
+  .canvas-head h1 { font-size:28px; font-weight:700; letter-spacing:-.02em; }
+  .canvas-head p { margin-top:6px; font-size:14px; color:#6B7280; }
+
+  .frame { width:1440px; margin:0 auto 72px; background:#fff; border-radius:10px;
+           overflow:hidden; box-shadow:0 10px 34px rgba(15,23,34,.14); }
+  .frame.mobile { width:390px; }
+  .frame-label { width:1440px; margin:0 auto 14px; font-size:13px; font-weight:600;
+                 color:#6B7280; text-transform:uppercase; letter-spacing:.08em; }
+
+  /* ---------- App shell ---------- */
+  .app { display:flex; min-height:900px; }
+  .sidebar { width:248px; background:#0F1722; color:#94A3B8; display:flex; flex-direction:column; flex-shrink:0; }
+  .logo { padding:20px 20px 16px; display:flex; align-items:center; gap:10px; color:#fff; font-weight:700; font-size:16px; }
+  .logo .mark { width:28px; height:28px; border-radius:8px; background:#2563EB; display:flex; align-items:center; justify-content:center; font-size:14px; color:#fff; }
+  .nav { flex:1; padding:8px 12px; }
+  .nav-group { margin:14px 8px 6px; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.08em; color:#475569; }
+  .nav-item { display:flex; align-items:center; gap:10px; padding:9px 12px; border-radius:8px; font-size:14px; margin:1px 0; }
+  .nav-item .dot { width:6px; height:6px; border-radius:50%; background:#475569; }
+  .nav-item.active { background:#1E293B; color:#fff; }
+  .nav-item.active .dot { background:#3B82F6; }
+  .sidebar-foot { padding:16px 20px; border-top:1px solid #1E293B; font-size:13px; color:#64748B; }
+  .sidebar-foot b { display:block; color:#E2E8F0; font-size:14px; }
+
+  .main { flex:1; background:#F6F7F9; min-width:0; }
+  .topbar { height:60px; background:#fff; border-bottom:1px solid #E5E7EB; display:flex; align-items:center; gap:16px; padding:0 28px; }
+  .topbar .search { flex:1; max-width:420px; background:#F3F4F6; border:1px solid #E5E7EB; border-radius:8px; padding:8px 14px; font-size:14px; color:#9CA3AF; }
+  .env-badge { font-size:12px; font-weight:600; color:#92400E; background:#FEF3C7; border:1px solid #FDE68A; padding:5px 10px; border-radius:6px; }
+  .avatar { width:34px; height:34px; border-radius:50%; background:#2563EB; color:#fff; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:600; }
+  .content { padding:28px; }
+  .page-title { font-size:22px; font-weight:700; letter-spacing:-.01em; }
+  .page-sub { font-size:14px; color:#6B7280; margin-top:4px; }
+
+  /* ---------- Components ---------- */
+  .cards { display:grid; grid-template-columns:repeat(4,1fr); gap:16px; margin-top:24px; }
+  .card { background:#fff; border:1px solid #E5E7EB; border-radius:12px; padding:18px 20px; }
+  .card .kpi-label { font-size:13px; color:#6B7280; }
+  .card .kpi-value { font-size:30px; font-weight:700; margin-top:6px; letter-spacing:-.02em; }
+  .card .kpi-delta { font-size:12px; margin-top:4px; }
+  .up { color:#047857; } .down { color:#B91C1C; } .warn { color:#B45309; }
+
+  .panel { background:#fff; border:1px solid #E5E7EB; border-radius:12px; }
+  .panel-head { padding:16px 20px; border-bottom:1px solid #EEF0F3; font-size:15px; font-weight:600; display:flex; justify-content:space-between; align-items:center; }
+  .panel-body { padding:16px 20px; }
+
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th { text-align:left; font-size:12px; font-weight:600; color:#6B7280; text-transform:uppercase; letter-spacing:.05em; padding:10px 16px; border-bottom:1px solid #EEF0F3; }
+  td { padding:13px 16px; border-bottom:1px solid #F3F4F6; vertical-align:middle; }
+  tr:last-child td { border-bottom:none; }
+  td .sub { display:block; font-size:12px; color:#9CA3AF; margin-top:2px; }
+  .num { font-weight:600; }
+
+  .chip { display:inline-flex; align-items:center; gap:6px; font-size:12px; font-weight:600; padding:4px 10px; border-radius:99px; }
+  .chip.blue   { background:#DBEAFE; color:#1D4ED8; }
+  .chip.violet { background:#EDE9FE; color:#6D28D9; }
+  .chip.amber  { background:#FEF3C7; color:#B45309; }
+  .chip.green  { background:#D1FAE5; color:#047857; }
+  .chip.gray   { background:#F3F4F6; color:#4B5563; }
+  .chip.red    { background:#FEE2E2; color:#B91C1C; }
+
+  .bar { height:6px; width:110px; background:#EEF0F3; border-radius:99px; overflow:hidden; }
+  .bar i { display:block; height:100%; background:#2563EB; border-radius:99px; }
+
+  .btn { display:inline-flex; align-items:center; gap:8px; font-size:14px; font-weight:600; padding:9px 16px; border-radius:8px; border:1px solid #E5E7EB; background:#fff; color:#111827; }
+  .btn.primary { background:#2563EB; border-color:#2563EB; color:#fff; }
+  .toolbar { display:flex; gap:10px; align-items:center; margin:20px 0 16px; }
+  .toolbar .spacer { flex:1; }
+  .filter { font-size:13px; color:#6B7280; background:#fff; border:1px solid #E5E7EB; border-radius:8px; padding:9px 14px; }
+
+  .grid-2 { display:grid; grid-template-columns:1.6fr 1fr; gap:16px; margin-top:16px; }
+  .list-row { display:flex; justify-content:space-between; align-items:center; padding:11px 0; border-bottom:1px solid #F3F4F6; font-size:14px; }
+  .list-row:last-child { border-bottom:none; }
+  .list-row .muted { font-size:12px; color:#9CA3AF; }
+
+  .stepper { position:relative; padding-left:26px; }
+  .step { position:relative; padding:0 0 22px; }
+  .step::before { content:""; position:absolute; left:-20px; top:4px; width:12px; height:12px; border-radius:50%; background:#fff; border:3px solid #CBD5E1; }
+  .step.done::before { border-color:#2563EB; background:#2563EB; }
+  .step.now::before  { border-color:#F59E0B; }
+  .step::after { content:""; position:absolute; left:-15px; top:18px; bottom:0; width:2px; background:#E5E7EB; }
+  .step:last-child::after { display:none; }
+  .step .t { font-size:14px; font-weight:600; }
+  .step .s { font-size:12px; color:#6B7280; margin-top:2px; }
+
+  .fabric { position:relative; height:340px; border:1px dashed #CBD5E1; border-radius:10px;
+            background:repeating-linear-gradient(45deg,#F8FAFC,#F8FAFC 10px,#F1F5F9 10px,#F1F5F9 20px); }
+  .piece { position:absolute; border:2px solid #2563EB; background:rgba(37,99,235,.08); border-radius:6px;
+           display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:600; color:#1D4ED8; }
+  .fabric-tag { position:absolute; top:10px; left:12px; font-size:12px; color:#64748B; font-weight:600; }
+
+  .banner { display:flex; gap:10px; align-items:center; background:#FFFBEB; border:1px solid #FDE68A; color:#92400E;
+            border-radius:10px; padding:12px 16px; font-size:13px; font-weight:500; margin-bottom:16px; }
+
+  .tabs { display:flex; gap:6px; margin:20px 0 16px; }
+  .tab { font-size:14px; font-weight:600; padding:8px 14px; border-radius:8px; color:#6B7280; }
+  .tab.active { background:#0F1722; color:#fff; }
+  .tab .cnt { opacity:.6; font-weight:500; }
+
+  /* ---------- Mobile ---------- */
+  .m-screen { min-height:844px; background:#F6F7F9; display:flex; flex-direction:column; }
+  .m-head { background:#0F1722; color:#fff; padding:52px 20px 16px; }
+  .m-head .t { font-size:18px; font-weight:700; }
+  .m-off { margin-top:10px; display:inline-flex; gap:6px; align-items:center; font-size:12px; font-weight:600;
+           background:#78350F; color:#FDE68A; padding:5px 10px; border-radius:99px; }
+  .m-body { flex:1; padding:20px 16px; }
+  .m-scan { background:#2563EB; color:#fff; border-radius:14px; padding:26px 16px; text-align:center; font-size:17px; font-weight:700; }
+  .m-scan .s { font-size:13px; font-weight:400; opacity:.8; margin-top:4px; }
+  .m-item { background:#fff; border:1px solid #E5E7EB; border-radius:10px; padding:13px 14px; margin-top:10px; font-size:14px; }
+  .m-item .muted { font-size:12px; color:#9CA3AF; margin-top:2px; }
+  .m-sec { font-size:12px; font-weight:700; color:#6B7280; text-transform:uppercase; letter-spacing:.06em; margin:22px 0 4px; }
+  .m-nav { display:flex; border-top:1px solid #E5E7EB; background:#fff; padding:10px 0 26px; }
+  .m-nav div { flex:1; text-align:center; font-size:11px; color:#9CA3AF; }
+  .m-nav div.on { color:#2563EB; font-weight:700; }
+</style>
+</head>
+<body>
+
+<div class="canvas-head">
+  <h1>Швейный портал — дизайн-макет</h1>
+  <p>Фреймы 1440×900 (десктоп, PWA) и 390×844 (мобильный склад). Импорт в Figma: плагин <b>html.to.design</b> → вставить URL страницы.</p>
+</div>
+
+<!-- ================= 01 · Дашборд ================= -->
+<div class="frame-label">01 · Портал — Главная</div>
+<div class="frame"><div class="app">
+  <aside class="sidebar">
+    <div class="logo"><span class="mark">Ш</span> Швейный портал</div>
+    <nav class="nav">
+      <div class="nav-item active"><span class="dot"></span>Главная</div>
+      <div class="nav-group">Цех</div>
+      <div class="nav-item"><span class="dot"></span>Заказы</div>
+      <div class="nav-item"><span class="dot"></span>Карты кроя</div>
+      <div class="nav-item"><span class="dot"></span>Маршруты и этапы</div>
+      <div class="nav-item"><span class="dot"></span>Снабжение</div>
+      <div class="nav-item"><span class="dot"></span>Зарплата</div>
+      <div class="nav-group">Склад</div>
+      <div class="nav-item"><span class="dot"></span>Остатки</div>
+      <div class="nav-item"><span class="dot"></span>Приход</div>
+      <div class="nav-item"><span class="dot"></span>Отгрузка</div>
+      <div class="nav-group">Продажи</div>
+      <div class="nav-item"><span class="dot"></span>Магазин</div>
+      <div class="nav-item"><span class="dot"></span>Wildberries FBS</div>
+      <div class="nav-group">Система</div>
+      <div class="nav-item"><span class="dot"></span>Ассистент</div>
+      <div class="nav-item"><span class="dot"></span>Доступы</div>
+    </nav>
+    <div class="sidebar-foot"><b>Ирина Петрова</b>Администратор · цех</div>
+  </aside>
+  <main class="main">
+    <div class="topbar">
+      <div class="search">Поиск: заказ, артикул, штрихкод…</div>
+      <span class="env-badge">LAN · источник данных: Excel</span>
+      <div class="avatar">ИП</div>
+    </div>
+    <div class="content">
+      <div class="page-title">Главная</div>
+      <div class="page-sub">Сводка по цеху, складу и FBS · 11 ноября 2026</div>
+      <div class="cards">
+        <div class="card"><div class="kpi-label">Заказы в работе</div><div class="kpi-value">24</div><div class="kpi-delta up">▲ 3 за неделю</div></div>
+        <div class="card"><div class="kpi-label">Сшито сегодня</div><div class="kpi-value">312 <span style="font-size:15px;color:#9CA3AF;font-weight:500">шт</span></div><div class="kpi-delta up">▲ план 280</div></div>
+        <div class="card"><div class="kpi-label">FBS на сборку</div><div class="kpi-value">58</div><div class="kpi-delta warn">● 6 к отгрузке сегодня</div></div>
+        <div class="card"><div class="kpi-label">Критичные остатки</div><div class="kpi-value">5</div><div class="kpi-delta down">▼ 1 позиция в минусе</div></div>
+      </div>
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-head">Заказы по этапам <span class="chip blue">цех</span></div>
+          <div class="panel-body">
+            <div class="list-row"><span>Снабжение</span><span class="num">2 <span class="muted">заказа</span></span><div class="bar"><i style="width:12%"></i></div></div>
+            <div class="list-row"><span>Крой</span><span class="num">6</span><div class="bar"><i style="width:36%;background:#7C3AED"></i></div></div>
+            <div class="list-row"><span>Пошив</span><span class="num">11</span><div class="bar"><i style="width:64%;background:#F59E0B"></i></div></div>
+            <div class="list-row"><span>ОТК</span><span class="num">4</span><div class="bar"><i style="width:24%;background:#10B981"></i></div></div>
+            <div class="list-row"><span>Упаковка / отгрузка</span><span class="num">3</span><div class="bar"><i style="width:18%;background:#6B7280"></i></div></div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head">Последние события</div>
+          <div class="panel-body">
+            <div class="list-row"><span>З-1041 → этап «Пошив»<br><span class="muted">Ольга П. · 12:41</span></span><span class="chip amber">пошив</span></div>
+            <div class="list-row"><span>Приход рулона КУ-180-СИН<br><span class="muted">Склад · +42 кг · 11:20</span></span><span class="chip green">приход</span></div>
+            <div class="list-row"><span>FBS #4821 собран<br><span class="muted">кабинет «Основной» · 10:05</span></span><span class="chip blue">FBS</span></div>
+            <div class="list-row"><span>Отрицательный остаток ФЛ-120-СЕР<br><span class="muted">Склад · 09:48</span></span><span class="chip red">риск</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div></div>
+
+<!-- ================= 02 · Цех — Заказы ================= -->
+<div class="frame-label">02 · Цех — Заказы</div>
+<div class="frame"><div class="app">
+  <aside class="sidebar">
+    <div class="logo"><span class="mark">Ш</span> Швейный портал</div>
+    <nav class="nav">
+      <div class="nav-item"><span class="dot"></span>Главная</div>
+      <div class="nav-group">Цех</div>
+      <div class="nav-item active"><span class="dot"></span>Заказы</div>
+      <div class="nav-item"><span class="dot"></span>Карты кроя</div>
+      <div class="nav-item"><span class="dot"></span>Маршруты и этапы</div>
+      <div class="nav-item"><span class="dot"></span>Снабжение</div>
+      <div class="nav-item"><span class="dot"></span>Зарплата</div>
+    </nav>
+    <div class="sidebar-foot"><b>Ирина Петрова</b>Администратор · цех</div>
+  </aside>
+  <main class="main">
+    <div class="topbar"><div class="search">Поиск по заказам…</div><span class="env-badge">LAN · Excel</span><div class="avatar">ИП</div></div>
+    <div class="content">
+      <div class="page-title">Заказы на пошив</div>
+      <div class="page-sub">Статус-машина: Снабжение → Крой → Пошив → ОТК → Упаковка → Отгружен</div>
+      <div class="toolbar">
+        <span class="filter">Этап: все ▾</span>
+        <span class="filter">Срок: ноябрь ▾</span>
+        <span class="filter">Ответственный ▾</span>
+        <div class="spacer"></div>
+        <span class="btn">Печать этикеток</span>
+        <span class="btn primary">+ Новый заказ</span>
+      </div>
+      <div class="panel">
+        <table>
+          <tr><th>№</th><th>Изделие</th><th>Кол-во</th><th>Этап</th><th>Прогресс</th><th>Срок</th><th>Ответственный</th></tr>
+          <tr><td class="num">З-1042</td><td>Костюм рабочий «Сварщик»<span class="sub">КК-087 · брезент ОП 480</span></td><td class="num">300</td><td><span class="chip violet">Крой</span></td><td><div class="bar"><i style="width:45%"></i></div></td><td>14.11</td><td>И. Петрова</td></tr>
+          <tr><td class="num">З-1041</td><td>Куртка утеплённая «Север»<span class="sub">КК-086 · оксфорд 240</span></td><td class="num">150</td><td><span class="chip amber">Пошив</span></td><td><div class="bar"><i style="width:62%;background:#F59E0B"></i></div></td><td>13.11</td><td>А. Сидорова</td></tr>
+          <tr><td class="num">З-1040</td><td>Халат медицинский<span class="sub">КК-084 · кулирка 180</span></td><td class="num">500</td><td><span class="chip amber">Пошив</span></td><td><div class="bar"><i style="width:88%;background:#F59E0B"></i></div></td><td>12.11</td><td>М. Ким</td></tr>
+          <tr><td class="num">З-1039</td><td>Футболка базовая<span class="sub">КК-083 · кулирка 160</span></td><td class="num">1000</td><td><span class="chip green">ОТК</span></td><td><div class="bar"><i style="width:96%;background:#10B981"></i></div></td><td>12.11</td><td>О. Гусева</td></tr>
+          <tr><td class="num">З-1038</td><td>Брюки рабочие<span class="sub">КК-085 · смесовая 220</span></td><td class="num">240</td><td><span class="chip violet">Крой</span></td><td><div class="bar"><i style="width:20%"></i></div></td><td>15.11</td><td>И. Петрова</td></tr>
+          <tr><td class="num">З-1037</td><td>Жилет сигнальный<span class="sub">КК-082 · оксфорд 210</span></td><td class="num">180</td><td><span class="chip green">Готов</span></td><td><div class="bar"><i style="width:100%;background:#10B981"></i></div></td><td>10.11</td><td>А. Сидорова</td></tr>
+          <tr><td class="num">З-1036</td><td>Рубашка «Оксфорд»<span class="sub">ожидает ткань</span></td><td class="num">320</td><td><span class="chip blue">Снабжение</span></td><td><div class="bar"><i style="width:5%"></i></div></td><td>18.11</td><td>М. Ким</td></tr>
+          <tr><td class="num">З-1035</td><td>Костюм «Лето»<span class="sub">КК-079 · сорочечная</span></td><td class="num">400</td><td><span class="chip gray">Отгружен</span></td><td><div class="bar"><i style="width:100%;background:#6B7280"></i></div></td><td>08.11</td><td>О. Гусева</td></tr>
+        </table>
+      </div>
+    </div>
+  </main>
+</div></div>
+
+<!-- ================= 03 · Карта кроя ================= -->
+<div class="frame-label">03 · Цех — Карта кроя</div>
+<div class="frame"><div class="app">
+  <aside class="sidebar">
+    <div class="logo"><span class="mark">Ш</span> Швейный портал</div>
+    <nav class="nav">
+      <div class="nav-item"><span class="dot"></span>Главная</div>
+      <div class="nav-group">Цех</div>
+      <div class="nav-item"><span class="dot"></span>Заказы</div>
+      <div class="nav-item active"><span class="dot"></span>Карты кроя</div>
+      <div class="nav-item"><span class="dot"></span>Маршруты и этапы</div>
+      <div class="nav-item"><span class="dot"></span>Снабжение</div>
+      <div class="nav-item"><span class="dot"></span>Зарплата</div>
+    </nav>
+    <div class="sidebar-foot"><b>Ирина Петрова</b>Администратор · цех</div>
+  </aside>
+  <main class="main">
+    <div class="topbar"><div class="search">Поиск по картам кроя…</div><span class="env-badge">LAN · Excel</span><div class="avatar">ИП</div></div>
+    <div class="content">
+      <div class="page-title">Карта кроя КК-087 · Костюм рабочий «Сварщик»</div>
+      <div class="page-sub">Заказ З-1042 · 300 шт · статус: <span class="chip violet">Крой</span></div>
+      <div style="display:grid;grid-template-columns:280px 1fr 300px;gap:16px;margin-top:20px">
+        <div class="panel"><div class="panel-head">Материал</div><div class="panel-body">
+          <div class="list-row"><span>Ткань</span><b>Брезент ОП 480</b></div>
+          <div class="list-row"><span>Ширина</span><b>90 см</b></div>
+          <div class="list-row"><span>Норма / шт</span><b>2,41 м</b></div>
+          <div class="list-row"><span>Потребность</span><b>723 м</b></div>
+          <div class="m-sec" style="margin:14px 0 6px">Рулоны</div>
+          <div class="list-row"><span>Р-2214</span><span class="chip green">38 м</span></div>
+          <div class="list-row"><span>Р-2215</span><span class="chip green">41 м</span></div>
+          <div class="list-row"><span>Р-2219</span><span class="chip amber">резерв · 35 м</span></div>
+        </div></div>
+        <div class="panel"><div class="panel-head">Расклад · настил 12,4 м <span class="chip blue">выход 93%</span></div><div class="panel-body">
+          <div class="fabric">
+            <span class="fabric-tag">ширина 90 см · настил №3</span>
+            <div class="piece" style="left:24px;top:44px;width:200px;height:130px">Спинка ×1</div>
+            <div class="piece" style="left:236px;top:44px;width:150px;height:130px">Полочка ×2</div>
+            <div class="piece" style="left:398px;top:44px;width:120px;height:60px">Капюшон ×1</div>
+            <div class="piece" style="left:398px;top:116px;width:120px;height:58px">Карман ×2</div>
+            <div class="piece" style="left:530px;top:44px;width:110px;height:190px">Рукав ×2</div>
+            <div class="piece" style="left:652px;top:44px;width:150px;height:130px">Спинка ×1</div>
+            <div class="piece" style="left:24px;top:186px;width:200px;height:120px">Полочка ×2</div>
+            <div class="piece" style="left:236px;top:186px;width:150px;height:120px">Обтачка ×2</div>
+            <div class="piece" style="left:398px;top:186px;width:120px;height:120px">Манжета ×4</div>
+            <div class="piece" style="left:652px;top:186px;width:150px;height:120px">Рукав ×2</div>
+          </div>
+        </div></div>
+        <div class="panel"><div class="panel-head">Маршрут</div><div class="panel-body">
+          <div class="stepper">
+            <div class="step done"><div class="t">Снабжение</div><div class="s">Ткань выдана · Р-2214, Р-2215</div></div>
+            <div class="step now"><div class="t">Крой</div><div class="s">Раскройный стол 1 · И. Петрова</div></div>
+            <div class="step"><div class="t">Пошив</div><div class="s">Линия 2 · 6 швей</div></div>
+            <div class="step"><div class="t">ОТК</div><div class="s">Выборка 10%</div></div>
+            <div class="step"><div class="t">Упаковка</div><div class="s">Короб 40 шт</div></div>
+          </div>
+          <div style="margin-top:6px"><span class="btn primary" style="width:100%;justify-content:center">Передать на пошив</span></div>
+        </div></div>
+      </div>
+    </div>
+  </main>
+</div></div>
+
+<!-- ================= 04 · Склад — Остатки ================= -->
+<div class="frame-label">04 · Склад — Остатки</div>
+<div class="frame"><div class="app">
+  <aside class="sidebar">
+    <div class="logo"><span class="mark">Ш</span> Швейный портал</div>
+    <nav class="nav">
+      <div class="nav-item"><span class="dot"></span>Главная</div>
+      <div class="nav-group">Склад</div>
+      <div class="nav-item active"><span class="dot"></span>Остатки</div>
+      <div class="nav-item"><span class="dot"></span>Приход</div>
+      <div class="nav-item"><span class="dot"></span>Размещение</div>
+      <div class="nav-item"><span class="dot"></span>Отгрузка</div>
+      <div class="nav-item"><span class="dot"></span>Штрихкоды</div>
+      <div class="nav-group">Продажи</div>
+      <div class="nav-item"><span class="dot"></span>Магазин</div>
+      <div class="nav-item"><span class="dot"></span>Wildberries FBS</div>
+    </nav>
+    <div class="sidebar-foot"><b>Игорь Ткачёв</b>Кладовщик · склад</div>
+  </aside>
+  <main class="main">
+    <div class="topbar"><div class="search">Поиск: артикул, наименование, штрихкод…</div><span class="env-badge">Офлайн-снимок: 11.11 · 08:00</span><div class="avatar">ИТ</div></div>
+    <div class="content">
+      <div class="page-title">Остатки склада</div>
+      <div class="page-sub">Адресное хранение · резерв под заказы цеха и FBS</div>
+      <div class="banner">⚠ Позиция ФЛ-120-СЕР в минусе (−3,4 кг) — проверьте очередь офлайн-операций и сведите приход.</div>
+      <div class="toolbar">
+        <span class="filter">Зона: все ▾</span>
+        <span class="filter">Только критичные</span>
+        <div class="spacer"></div>
+        <span class="btn">Приход</span>
+        <span class="btn">Размещение</span>
+        <span class="btn primary">Отгрузка</span>
+      </div>
+      <div class="panel">
+        <table>
+          <tr><th>Артикул</th><th>Наименование</th><th>Остаток</th><th>Резерв</th><th>Адрес</th><th>Штрихкод</th><th>Статус</th></tr>
+          <tr><td class="num">КУ-180-СИН</td><td>Кулирка 180 г/м², синяя</td><td class="num">42,6 кг</td><td>18 кг</td><td class="num">A-03-2</td><td style="color:#6B7280">4601234567890</td><td><span class="chip green">норма</span></td></tr>
+          <tr><td class="num">БР-480-ХК</td><td>Брезент ОП 480 г/м², хаки</td><td class="num">18,2 кг</td><td>16 кг</td><td class="num">A-01-1</td><td style="color:#6B7280">4601234567906</td><td><span class="chip amber">низкий</span></td></tr>
+          <tr><td class="num">НИТ-40/2-БЕЛ</td><td>Нитки 40/2, белые</td><td class="num">240 шт</td><td>60 шт</td><td class="num">B-12-4</td><td style="color:#6B7280">4601234567913</td><td><span class="chip green">норма</span></td></tr>
+          <tr style="background:#FEF2F2"><td class="num">ФЛ-120-СЕР</td><td>Фланель 120 г/м², серая</td><td class="num" style="color:#B91C1C">−3,4 кг</td><td>—</td><td class="num">C-02-1</td><td style="color:#6B7280">4601234567920</td><td><span class="chip red">минус</span></td></tr>
+          <tr><td class="num">МОЛ-Т5-ЧЁР</td><td>Молния Т5, 60 см, чёрная</td><td class="num">1 240 шт</td><td>300 шт</td><td class="num">B-08-2</td><td style="color:#6B7280">4601234567937</td><td><span class="chip green">норма</span></td></tr>
+          <tr style="background:#FEF2F2"><td class="num">КРА-ПП-25</td><td>Краитель ПП-25</td><td class="num" style="color:#B91C1C">0 кг</td><td>—</td><td class="num">C-05-3</td><td style="color:#6B7280">4601234567944</td><td><span class="chip red">заказать</span></td></tr>
+        </table>
+      </div>
+    </div>
+  </main>
+</div></div>
+
+<!-- ================= 05 · Wildberries FBS ================= -->
+<div class="frame-label">05 · Wildberries — FBS-заказы</div>
+<div class="frame"><div class="app">
+  <aside class="sidebar">
+    <div class="logo"><span class="mark">Ш</span> Швейный портал</div>
+    <nav class="nav">
+      <div class="nav-item"><span class="dot"></span>Главная</div>
+      <div class="nav-group">Продажи</div>
+      <div class="nav-item"><span class="dot"></span>Магазин</div>
+      <div class="nav-item active"><span class="dot"></span>Wildberries FBS</div>
+      <div class="nav-item"><span class="dot"></span>Кабинеты WB</div>
+    </nav>
+    <div class="sidebar-foot"><b>Марат Ким</b>Менеджер · маркетплейсы</div>
+  </aside>
+  <main class="main">
+    <div class="topbar"><div class="search">Поиск по номеру заказа WB…</div><span class="env-badge">Синхронизация WB: 12 мин назад</span><div class="avatar">МК</div></div>
+    <div class="content">
+      <div class="page-title">FBS-заказы Wildberries</div>
+      <div class="page-sub">Сборка по кабинетам · печать стикеров · отгрузка в СЦ</div>
+      <div class="tabs">
+        <span class="tab active">Все <span class="cnt">58</span></span>
+        <span class="tab">Основной <span class="cnt">41</span></span>
+        <span class="tab">Маркет <span class="cnt">17</span></span>
+      </div>
+      <div class="toolbar">
+        <span class="filter">Статус: все ▾</span>
+        <span class="filter">К отгрузке сегодня</span>
+        <div class="spacer"></div>
+        <span class="btn">Печать стикеров</span>
+        <span class="btn primary">Начать сборку</span>
+      </div>
+      <div class="panel">
+        <table>
+          <tr><th>№ WB</th><th>Товар</th><th>Размер</th><th>Кабинет</th><th>Статус сборки</th><th>Собрал</th><th>СЦ</th></tr>
+          <tr><td class="num">4821</td><td>Костюм рабочий «Сварщик»</td><td>52</td><td>Основной</td><td><span class="chip green">собран</span></td><td>Ольга П.</td><td>Казань</td></tr>
+          <tr><td class="num">4822</td><td>Куртка утеплённая «Север»</td><td>48</td><td>Основной</td><td><span class="chip amber">в сборке</span></td><td>Игорь Т.</td><td>Казань</td></tr>
+          <tr><td class="num">4823</td><td>Халат медицинский</td><td>M</td><td>Основной</td><td><span class="chip blue">новый</span></td><td>—</td><td>Электросталь</td></tr>
+          <tr><td class="num">4824</td><td>Футболка базовая</td><td>L</td><td>Маркет</td><td><span class="chip blue">новый</span></td><td>—</td><td>Казань</td></tr>
+          <tr><td class="num">4825</td><td>Жилет сигнальный</td><td>XL</td><td>Маркет</td><td><span class="chip green">собран</span></td><td>Ольга П.</td><td>Новосибирск</td></tr>
+          <tr><td class="num">4826</td><td>Брюки рабочие</td><td>54</td><td>Основной</td><td><span class="chip red">нет остатка</span></td><td>—</td><td>Казань</td></tr>
+        </table>
+      </div>
+      <div class="cards" style="grid-template-columns:repeat(4,1fr)">
+        <div class="card"><div class="kpi-label">Новые</div><div class="kpi-value">37</div></div>
+        <div class="card"><div class="kpi-label">В сборке</div><div class="kpi-value">9</div></div>
+        <div class="card"><div class="kpi-label">Собрано</div><div class="kpi-value">11</div></div>
+        <div class="card"><div class="kpi-label">Без остатка</div><div class="kpi-value down" style="color:#B91C1C">1</div></div>
+      </div>
+    </div>
+  </main>
+</div></div>
+
+<!-- ================= 06 · Мобильный — Склад ================= -->
+<div class="frame-label" style="width:390px">06 · Мобильный — Склад (PWA / Android)</div>
+<div class="frame mobile">
+  <div class="m-screen">
+    <div class="m-head">
+      <div class="t">Склад · Приход</div>
+      <span class="m-off">● Офлайн · очередь: 3 операции</span>
+    </div>
+    <div class="m-body">
+      <div class="m-scan">Сканировать штрихкод<div class="s">сканер TC15 или камера</div></div>
+      <div class="m-sec">Последний скан</div>
+      <div class="m-item">
+        <b>КУ-180-СИН · Кулирка 180, синяя</b>
+        <div class="muted">4601234567890 · адрес A-03-2</div>
+      </div>
+      <div class="m-sec">Очередь (отправится при связи)</div>
+      <div class="m-item">Приход · КУ-180-СИН · <b>+12 кг</b><div class="muted">12:07 · ожидает сети</div></div>
+      <div class="m-item">Размещение · МОЛ-Т5-ЧЁР · <b>B-08-2</b><div class="muted">11:52 · ожидает сети</div></div>
+      <div class="m-item">Отгрузка · заказ З-1035 · <b>400 шт</b><div class="muted">11:31 · ожидает сети</div></div>
+    </div>
+    <div class="m-nav">
+      <div class="on">Скан</div><div>Остатки</div><div>Приход</div><div>Отгрузка</div><div>Ещё</div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

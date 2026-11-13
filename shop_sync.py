@@ -210,6 +210,8 @@ def sync_from_excel(path: str | Path | None = None, force: bool = False) -> dict
                 "количество": qty,
                 "цена": price,
                 "фото": _clean(old_item.get("фото")),
+                "название": _clean(old_item.get("название")),
+                "описание": _clean(old_item.get("описание")),
                 "иконка": ICONS.get(cat, "tshirt"),
             }
 
@@ -229,6 +231,8 @@ def sync_from_excel(path: str | Path | None = None, force: bool = False) -> dict
                 "наименование": name,
                 "иконка": item["иконка"],
                 "фото": item["фото"],
+                "название": item["название"],
+                "описание": item["описание"],
             })
 
         write_table("products", products)
@@ -263,3 +267,65 @@ def sync_if_changed() -> dict:
                    "checked_at": datetime.now().strftime("%H:%M:%S")}
         _write_status(payload)
         return payload
+
+
+def import_wb_photos_by_model(path: str | Path, aliases: dict | None = None) -> dict:
+    """Фото из выгрузки WB, где артикул — модель, а цвет отдельно (ЖСК): первое фото — всем размерам
+    той же модели и цвета. Только товарам без фото; уже заданные не трогаем.
+    shortcut: храним ссылку на CDN WB, а не файл — если WB удалит фото, картинка пропадёт."""
+    import warehouse  # noqa: WPS433
+    from server import read_table, write_table  # noqa: WPS433
+
+    photos = {}
+    for r in warehouse.wb_rows(path):
+        if r["фото"].startswith("http"):
+            for k in warehouse.alias_keys(r["ключ"], aliases):  # цвет WB, названный в «главном» иначе
+                photos.setdefault(k[:3], r["фото"])  # без размера: одно фото на модель и цвет
+    with _LOCK:
+        products = read_table("products")
+        hit, cards = 0, set()
+        for p in products:
+            k = warehouse.name_key(_clean(p.get("наименование")))
+            url = photos.get(k[:3]) if k else None
+            if url and not _clean(p.get("фото")):
+                p["фото"] = url
+                hit += 1
+                cards.add(url)
+        if hit:
+            write_table("products", products)
+    return {"карточек_в_файле": len(photos), "товаров_с_фото": hit, "карточек_применено": len(cards)}
+
+
+def import_wb_photos(path: str | Path, overwrite: bool = False) -> dict:
+    """Фото из выгрузки WB «Общие характеристики» (лист «Товары»): B — артикул
+    «Брюки/483/темно-синий/», H — ссылки через «;». Первое фото — всем размерам
+    этого цвета. Фото, уже заданные в портале, не трогаем (overwrite=False).
+    shortcut: храним ссылку на CDN WB, а не файл — если WB удалит фото, картинка пропадёт."""
+    from server import read_table, write_table  # noqa: WPS433
+
+    def key(v) -> str:
+        return _clean(v).lower().replace("ё", "е").rstrip("/").strip()
+
+    wb = load_workbook(path, read_only=True, data_only=True)
+    try:
+        photos = {}
+        for r in wb["Товары"].iter_rows(min_row=5, values_only=True):
+            if len(r) > 7 and r[1] and r[7]:
+                first = str(r[7]).split(";")[0].strip()
+                if first.startswith("http"):
+                    photos.setdefault(key(r[1]), first)
+    finally:
+        wb.close()
+    with _LOCK:
+        products = read_table("products")
+        hit = 0
+        cards = set()
+        for p in products:
+            url = photos.get(key(_clean(p.get("наименование")).rsplit("/", 1)[0]))  # «Брюки/477/бежевый/42» → без размера
+            if url and (overwrite or not _clean(p.get("фото"))):
+                p["фото"] = url
+                hit += 1
+                cards.add(url)
+        if hit:
+            write_table("products", products)
+    return {"карточек_в_файле": len(photos), "товаров_с_фото": hit, "карточек_применено": len(cards)}

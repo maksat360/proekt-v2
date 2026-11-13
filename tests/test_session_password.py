@@ -43,3 +43,12 @@ class SessionPasswordTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReadablePasswordTests(unittest.TestCase):
+    def test_admin_sees_plain_and_default_only(self):
+        import cex_api
+        self.assertEqual(cex_api._readable_pw("qwe12"), "qwe12")
+        self.assertEqual(cex_api._readable_pw(server.hash_password("123456")), "123456")
+        self.assertEqual(cex_api._readable_pw(server.hash_password("secret")), "")
+        self.assertEqual(cex_api._readable_pw("изменён"), "")

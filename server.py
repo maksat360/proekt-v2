@@ -136,7 +136,7 @@ SCHEMAS = {
     "announcements": ["дата", "логин", "фио", "цех", "текст", "активен"],
     "periods": ["код", "название", "начало", "конец"],
     "products": ["id", "артикул", "категория", "модель", "цвет", "размер",
-                 "количество", "фк", "цена", "наименование", "иконка", "фото"],
+                 "количество", "фк", "цена", "наименование", "иконка", "фото", "название", "описание"],
     "sales": ["id", "дата", "id_товара", "наименование", "количество", "цена", "сумма",
               "покупатель", "кто", "отменена"],
     "operations": ["id", "дата", "тип", "id_товара", "наименование", "количество",
@@ -356,9 +356,12 @@ def find_user(login: str, company: str | None = None) -> dict | None:
 
 
 def portal_roles(u: dict) -> list[str]:
-    roles = perms.roles_of(u)
-    out = [r for r in roles if r in ROLE_LABELS]
-    return out + (["prod"] if len(out) < len(roles) else [])
+    out: list[str] = []
+    for r in perms.roles_of(u):  # свои роли — по процессу, производственные — «prod»
+        pr = perms.portal_role(r)
+        if pr not in out:
+            out.append(pr)
+    return out
 
 
 def public_user(u: dict) -> dict:
@@ -1051,6 +1054,23 @@ class Handler(BaseHTTPRequestHandler):
     # -- api --------------------------------------------------------------
     def _api(self, method: str, path: str, query: dict):
         me = self._session()
+
+        if path == "/api/cex/access/logins.xlsx" and method == "GET":  # логины и пароли — Excel
+            import cex_api
+            if not me:
+                self._err("войдите", 401)
+                return
+            try:
+                data = cex_api.logins_xlsx(me)
+            except PermissionError as exc:
+                self._err(str(exc), 403)
+                return
+            fname = f"Логины и пароли {datetime.now():%Y-%m-%d}.xlsx"
+            disp = (f"attachment; filename=\"logins_{datetime.now():%Y%m%d}.xlsx\"; "
+                    "filename*=UTF-8''" + quote(fname))
+            self._send(data, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                       200, {"Content-Disposition": disp, "Cache-Control": "no-store"})
+            return
 
         if path.startswith("/api/cex/"):
             import cex_api
@@ -1939,6 +1959,64 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True})
             return
 
+        if path == "/api/shop/card" and method == "POST":  # карточка: название, описание, фото, цены размеров
+            if not can(me, "shop.price"):
+                self._err("карточку меняет начальник или менеджер", 403)
+                return
+            body = self._body()
+            ids = {str(x) for x in (body.get("ids") or [])}
+            photos = [str(u).strip() for u in (body.get("фото") or []) if str(u).strip()]
+            if any(not (u.startswith("http") or u.startswith("/static/")) for u in photos):
+                self._err("фото — ссылка http… или загруженный файл")
+                return
+            prices = {str(k): as_num(v, -1) for k, v in (body.get("цены") or {}).items() if str(v).strip() != ""}
+            if any(p < 0 for p in prices.values()):
+                self._err("Цена не может быть отрицательной")
+                return
+            # POST уже под WRITE_LOCK (см. _route)
+            products = read_table("products")
+            card = [p for p in products if str(p.get("id")) in ids]
+            if not card:
+                self._err("товар не найден", 404)
+                return
+            for p in card:
+                p["название"] = str(body.get("название") or "").strip()[:120]
+                p["описание"] = str(body.get("описание") or "").strip()[:2000]
+                p["фото"] = ";".join(photos)
+                if str(p.get("id")) in prices:
+                    p["цена"] = prices[str(p.get("id"))]
+            write_table("products", products)
+            self._json({"ok": True, "изменено": len(card)})
+            return
+
+        if path == "/api/shop/photo" and method == "POST":  # своё фото карточки (вместо/вдобавок к WB)
+            if not can(me, "shop.price"):
+                self._err("фото меняет начальник или менеджер", 403)
+                return
+            import base64
+            body = self._body()
+            raw = str(body.get("данные", ""))
+            if "," in raw[:100]:
+                raw = raw.split(",", 1)[1]
+            ext = str(body.get("ext", "jpg")).lower().replace("jpeg", "jpg")
+            if ext not in ("png", "jpg", "webp"):
+                self._err("поддерживаются JPG, PNG, WEBP")
+                return
+            try:
+                data = base64.b64decode(raw, validate=True)
+            except Exception:
+                self._err("файл повреждён")
+                return
+            if len(data) > 5_000_000:
+                self._err("файл больше 5 МБ")
+                return
+            folder = STATIC / "uploads" / "shop"
+            folder.mkdir(parents=True, exist_ok=True)
+            name = hashlib.sha1(data).hexdigest()[:16] + "." + ext
+            (folder / name).write_bytes(data)
+            self._json({"ok": True, "url": "/static/uploads/shop/" + name})
+            return
+
         if path == "/api/sales" and method == "GET":
             rows = read_table("sales")
             for r in rows:
@@ -1987,6 +2065,65 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True, "вернулось": qty, "товар": name})
             return
 
+        if path.startswith("/api/wh/addr/"):  # адресное хранение: ячейки P/N, коробки K, мешки M
+            if not can(me, "wh.write" if method == "POST" else "wh.view"):
+                self._err("нет доступа к адресам склада", 403)
+                return
+            import addresses
+            who = str(me.get("фио", ""))
+            sub = path[len("/api/wh/addr/"):]
+            arg = lambda k, d="": str(query.get(k, [d])[0])  # noqa: E731
+            try:
+                if method == "GET" and sub == "summary":
+                    self._json({"ok": True, "data": addresses.summary()})
+                elif method == "GET" and sub == "state":
+                    self._json({"ok": True, "data": addresses.state(arg("код"))})
+                elif method == "GET" and sub == "where":
+                    self._json({"ok": True, "data": addresses.where(arg("товар"))})
+                elif method == "GET" and sub == "journal":
+                    self._json({"ok": True, "data": addresses.journal()})
+                elif method == "GET" and sub == "codes.xlsx":  # печать: стеллаж, тип или новые коды «от»
+                    kind, rack, start = addresses.norm(arg("тип")), int(as_num(arg("стеллаж", "0"))), addresses.norm(arg("от"))
+                    rows = addresses.places(kind, rack)
+                    if start:
+                        rows = [r for r in rows if r["код"] >= start and r["статус"] == "active"]
+                    if not rows:
+                        raise ValueError("нет кодов для печати")
+                    label = start or (f"{kind}{rack or ''}" if kind else "все")
+                    disp = (f"attachment; filename=\"codes_{label}.xlsx\"; "
+                            "filename*=UTF-8''" + quote(f"Адреса {label}.xlsx"))
+                    self._send(addresses.codes_xlsx(rows, label),
+                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 200,
+                               {"Content-Disposition": disp, "Cache-Control": "no-store"})
+                elif method == "POST":
+                    body = self._body()
+                    if sub == "rack":
+                        made = addresses.create_rack(who, str(body.get("зона", "")), int(as_num(body.get("стеллаж"))),
+                                                     int(as_num(body.get("этажей"))), int(as_num(body.get("ячеек"))))
+                        self._json({"ok": True, "создано": len(made), "коды": made})
+                    elif sub == "issue":
+                        self._json({"ok": True, "коды": addresses.issue(who, str(body.get("тип", "")),
+                                                                     int(as_num(body.get("количество"))))})
+                    elif sub == "put":
+                        self._json({"ok": True, **addresses.put(who, body.get("код"), str(body.get("наименование", "")),
+                                                                as_num(body.get("количество")))})
+                    elif sub == "box":
+                        self._json({"ok": True, **addresses.box_to(who, body.get("коробка"), body.get("ячейка"))})
+                    elif sub == "move":
+                        self._json({"ok": True, **addresses.move(who, body.get("откуда"), body.get("куда"),
+                                                                 body.get("позиции") or [])})
+                    elif sub == "relabel":
+                        self._json({"ok": True, **addresses.relabel(who, body.get("старый"), body.get("новый"))})
+                    else:
+                        self._err("неизвестный запрос", 404)
+                else:
+                    self._err("неизвестный запрос", 404)
+            except ValueError as exc:
+                self._err(str(exc))
+            except Exception as exc:  # noqa: BLE001
+                self._err(f"адреса: {exc}", 500)
+            return
+
         if path.startswith("/api/wh/") and method == "GET":
             if not can(me, "wh.view"):
                 self._err("нет доступа к складу", 403)
@@ -2021,6 +2158,41 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 if path == "/api/wh/purchases":
                     self._json({"ok": True, "data": warehouse.purchases()})
+                    return
+                if path == "/api/wh/receipts":
+                    self._json({"ok": True, "data": warehouse.receipts()})
+                    return
+                if path == "/api/wh/full.xlsx":  # весь склад одной книгой
+                    fname = f"Склад {datetime.now():%Y-%m-%d %H%M}.xlsx"
+                    disp = (f"attachment; filename=\"sklad_{datetime.now():%Y%m%d_%H%M}.xlsx\"; "
+                            "filename*=UTF-8''" + quote(fname))
+                    self._send(warehouse.full_xlsx(),
+                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                               200, {"Content-Disposition": disp})
+                    return
+                if path == "/api/wh/receipt":
+                    self._json({"ok": True, "data": warehouse.receipt_lines(
+                        str(query.get("дата", [""])[0]),
+                        str(query.get("поставщик", [warehouse.ALL_SUPPLIERS])[0]),
+                        str(query.get("партия", [warehouse.ALL_SUPPLIERS])[0]))})
+                    return
+                if path == "/api/wh/receipt.xlsx":  # Excel принятого: день + поставщик («*» — все)
+                    day = str(query.get("дата", [""])[0])
+                    sup = str(query.get("поставщик", [warehouse.ALL_SUPPLIERS])[0])
+                    bat = str(query.get("партия", [warehouse.ALL_SUPPLIERS])[0])
+                    if day and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+                        self._err("дата в формате ГГГГ-ММ-ДД", 400)
+                        return
+                    try:
+                        data = warehouse.receipt_xlsx(day, sup, bat)
+                    except ValueError as exc:
+                        self._err(str(exc), 404)
+                        return
+                    fname = (f"Принято {day or ''} {'все' if sup == warehouse.ALL_SUPPLIERS else sup}"
+                             f"{'' if bat == warehouse.ALL_SUPPLIERS else ' партия ' + bat}.xlsx")
+                    disp = f"attachment; filename=\"receipt_{bat if bat != warehouse.ALL_SUPPLIERS else day}.xlsx\"; filename*=UTF-8''" + quote(fname)
+                    self._send(data, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                               200, {"Content-Disposition": disp})
                     return
                 if path == "/api/wh/sync_status":
                     self._json({"ok": True, "data": warehouse.flush_status()})
@@ -2088,7 +2260,8 @@ class Handler(BaseHTTPRequestHandler):
                 if path == "/api/wh/receive_multi":
                     res = warehouse.receive_multi(
                         str(body.get("поставщик", "")), str(body.get("партия", "")),
-                        as_num(body.get("неликвид")), body.get("позиции") or [])
+                        as_num(body.get("неликвид")), body.get("позиции") or [],
+                        bool(body.get("сразу_на_склад")))
                     src = body.get("из_цеха") or {}
                     if src.get("партия"):  # приёмка упакованного в цехе: отметить коробки принятыми
                         import cex_api  # POST уже под WRITE_LOCK
@@ -2126,9 +2299,81 @@ class Handler(BaseHTTPRequestHandler):
                 import cabinets_store
                 self._json({"ok": True, "data": wb_sync.list_orders(status, cab),
                             "счётчики": wb_sync.counts(cab),
+                            "поставки": [g for g in wb_sync.supplies() if not cab or g["кабинет"] == cab],
                             "кабинеты": [{"id": c["id"], "name": c["name"]} for c in cabinets_store.cabinets()]})
             except Exception as exc:  # noqa: BLE001
                 self._err(f"заказы WB: {exc}", 500)
+            return
+
+        if path == "/api/wb/supplies" and method == "GET":  # архив поставок FBS
+            if not can(me, "wh.view"):
+                self._err("нет доступа", 403)
+                return
+            import wb_sync
+            import cabinets_store
+            names = {c["id"]: c["name"] for c in cabinets_store.cabinets()}
+            self._json({"ok": True, "data": [{**g, "название": names.get(g["кабинет"], g["кабинет"])}
+                                             for g in wb_sync.supplies()]})
+            return
+
+        if path == "/api/wb/supply" and method == "GET":  # строки поставки для правки на сайте
+            if not can(me, "wh.view"):
+                self._err("нет доступа", 403)
+                return
+            import wb_sync
+            import cabinets_store
+            names = {c["id"]: c["name"] for c in cabinets_store.cabinets()}
+            day = str(query.get("дата", [""])[0])
+            cab = str(query.get("кабинет", [""])[0])
+            self._json({"ok": True, "data": wb_sync.supply_lines(day, cab, names),
+                        "товары": wb_sync.product_names()})
+            return
+
+        if path in ("/api/wb/supply/edit", "/api/wb/supply/import") and method == "POST":
+            if not can(me, "wb.manage"):
+                self._err("нет прав", 403)
+                return
+            import wb_sync
+            body = self._body()
+            who = str(me.get("фио", ""))
+            try:
+                if path.endswith("/edit"):
+                    res = wb_sync.change_sent(dict(body.get("изменения") or {}), who)
+                else:
+                    import base64
+                    raw = str(body.get("данные", ""))
+                    raw = raw.split(",", 1)[1] if "," in raw[:200] else raw
+                    data = base64.b64decode(raw)
+                    if len(data) > 5_000_000:
+                        raise ValueError("файл больше 5 МБ")
+                    res = wb_sync.supply_import_xlsx(data, who)
+            except ValueError as exc:
+                self._err(str(exc))
+                return
+            self._json({"ok": True, **res})
+            return
+
+        if path == "/api/wb/supply.xlsx" and method == "GET":  # Excel поставки: день + кабинет
+            if not can(me, "wh.view"):
+                self._err("нет доступа", 403)
+                return
+            import wb_sync
+            import cabinets_store
+            day = str(query.get("дата", [""])[0])
+            cab = str(query.get("кабинет", [""])[0])
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+                self._err("дата в формате ГГГГ-ММ-ДД", 400)
+                return
+            names = {c["id"]: c["name"] for c in cabinets_store.cabinets()}
+            try:
+                data = wb_sync.supply_xlsx(day, cab, names)
+            except ValueError as exc:
+                self._err(str(exc), 404)
+                return
+            fname = f"Поставка FBS {day} {names.get(cab, cab) if cab else 'все кабинеты'}.xlsx"
+            disp = (f"attachment; filename=\"supply_{day}.xlsx\"; filename*=UTF-8''" + quote(fname))
+            self._send(data, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                       200, {"Content-Disposition": disp})
             return
 
         if path == "/api/fbs/aggregate" and method == "GET":
@@ -2165,8 +2410,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             try:
                 import wb_sync
+                subs = body.get("замены") or {}
+                subs = {str(k): str(v) for k, v in subs.items() if v} if isinstance(subs, dict) else {}
                 self._json({"ok": True, **wb_sync.confirm_items([str(i) for i in ids],
-                                                                str(me.get("фио", "")))})
+                                                                str(me.get("фио", "")), subs)})
             except Exception as exc:  # noqa: BLE001
                 self._err(f"подтверждение: {exc}", 500)
             return

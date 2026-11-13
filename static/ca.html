@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Сертификат для HTTPS</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #0e1422; color: #e8eefc; font: 16px/1.5 system-ui, sans-serif; }
+  main { max-width: 560px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 6px; }
+  h2 { font-size: 17px; margin: 26px 0 8px; color: #7fd3ff; }
+  p, li { color: #c9d4ee; }
+  ol { padding-left: 22px; }
+  .btn { display: block; text-align: center; background: #1f6feb; color: #fff; text-decoration: none;
+         border-radius: 12px; padding: 14px; font-weight: 600; margin: 18px 0; }
+  .btn.alt { background: #13284d; color: #cfe3ff; }
+  code { background: #1a2440; padding: 1px 6px; border-radius: 6px; }
+  .note { font-size: 14px; color: #8a98b8; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Голосовой Джарвис на телефоне</h1>
+  <p>Браузер включает микрофон только на защищённом адресе (https). Для этого один раз поставьте на телефон сертификат нашего сервера.</p>
+
+  <a class="btn" href="/ca.crt">1. Скачать сертификат</a>
+
+  <h2>iPhone / iPad</h2>
+  <ol>
+    <li>Откройте эту страницу в <b>Safari</b> и нажмите «Скачать сертификат» → «Разрешить».</li>
+    <li>Настройки → <b>Профиль загружен</b> → Установить (введите код телефона).</li>
+    <li>Настройки → Основные → Об этом устройстве → <b>Доверие сертификатам</b> → включите «Proekt V2 local CA».</li>
+  </ol>
+
+  <h2>Android</h2>
+  <ol>
+    <li>Нажмите «Скачать сертификат».</li>
+    <li>Настройки → Безопасность → Шифрование и учётные данные → <b>Установить сертификат</b> → <b>Сертификат ЦС</b> → выберите скачанный файл.</li>
+    <li>Название пунктов зависит от телефона: можно найти в настройках поиском «сертификат».</li>
+  </ol>
+
+  <a class="btn alt" id="go" href="#">2. Открыть сайт по https</a>
+  <p class="note">Без сертификата сайт работает как раньше по обычному адресу — только без голоса. Сертификат действует только для нашего сервера в этой сети.</p>
+</main>
+<script>
+  document.getElementById('go').href = 'https://' + location.hostname + ':8443/';
+</script>
+</body>
+</html>

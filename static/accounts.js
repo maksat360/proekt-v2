@@ -19,7 +19,11 @@
   const list = () => call('/api/accounts').catch(() => []);
   const switchTo = (login, company) => call('/api/accounts/switch', { логин: login, цех: company });
   const forget = (login, company) => call('/api/accounts/forget', { логин: login, цех: company });
-  const logout = () => fetch('/api/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => {});
+  const logout = async () => {
+    if (window.assistBye) await window.assistBye();  // Джарвис прощается, пока сессия ещё жива
+    return fetch('/api/logout', { method: 'POST', credentials: 'same-origin' }).catch(() => {});
+  };
+  const forgetJarvis = () => { if (window.assistForget) window.assistForget(); };
 
   function close() { document.querySelectorAll('.v2acc-menu').forEach((m) => m.remove()); }
 
@@ -58,12 +62,14 @@
         }
         if (row && !row.classList.contains('cur')) {
           if (opts.beforeLeave && !opts.beforeLeave()) return;
+          forgetJarvis();
           await switchTo(row.dataset.v2accLogin, row.dataset.v2accCompany);
           location.href = opts.after || location.pathname;
           return;
         }
         if (ev.target.closest('[data-v2acc-add]')) {
           if (opts.beforeLeave && !opts.beforeLeave()) return;
+          forgetJarvis();
           location.href = '/?add=1'; return;
         }
         if (ev.target.closest('[data-v2acc-out]')) {

@@ -8,6 +8,7 @@ const ST = {
   user: null,
   права: {},
   refs: { категории: [], модели: [], цвета: [], размеры: [] },
+  stock: {},       // модель → {«цвет|размер»: остаток} — подсказка в «Новом заказе»
   заказы: [],
   клиенты: [],
   источник: '',
@@ -15,7 +16,6 @@ const ST = {
   tech: { очередь: [], отклонённые: [], статистика: {}, журнал: [] },
   cut: { партии: [], ставка: 15, партия: null },
   work: { этапы: [], очередь: [], мои: [], все: [], итог: {} },
-  pack: { партии: [], партия: null },
   payroll: { месяц: '', люди: [], итого: {}, закрыто: 0, только_своё: false },
   sum: { кпі: {}, этапы: [], недостачи: [], артикулы: [], выработка: [] },
   cart: [],
@@ -74,18 +74,21 @@ async function boot() {
   const want = new URLSearchParams(location.search).get('view');
   const allowed = {
     new: ST.права.создать, tech: ST.права.принимать, cut: ST.права.кроить,
-    design: ST.права.карта, supply: ST.права.снабжение,
-    work: ST.права.работать, pack: ST.права.упаковывать,
+    design: ST.права.карта, supply: ST.права.снабжение, nom: ST.права.снабжение,
+    work: ST.права.работать,
     payroll: ST.права.зарплата || ST.права.работать, sum: ST.права.зарплата,
     route: ST.права.маршрут, route_ord: ST.права.маршрут, route_fin: ST.права.маршрут, assign: ST.права.принимать,
     staff: ST.права.сотрудники || ST.права.этапы || ST.права.права,
   };
   if (want && allowed[want]) ST.view = want;
+  const sub = new URLSearchParams(location.search).get('sub');  // вкладка внутри раздела (ссылка Джарвиса)
+  if (sub && ST.view === 'supply') FL.supplyTab = sub;
+  if (sub && ST.view === 'nom') FL.nomTab = sub;
+  if (sub && ST.view === 'staff') AC.sub = sub;
   if (!ST.права.создать && !want) {
     ST.view = ST.права.карта ? 'design' : ST.права.снабжение ? 'supply' : ST.права.принимать ? 'tech'
       : (ST.права.кроить ? 'cut'
-        : (ST.права.упаковывать ? 'pack'
-          : (ST.права.работать ? 'work' : (ST.права.зарплата ? 'payroll' : 'list'))));
+        : (ST.права.работать ? 'work' : (ST.права.зарплата ? 'payroll' : 'list')));
   }
   if (multiRole()) {
     const only = asTabs();
@@ -95,10 +98,9 @@ async function boot() {
   }
   if (ST.view === 'tech') await loadTech();
   if (ST.view === 'design') await loadDesign();
-  if (ST.view === 'supply') await loadSupply();
+  if (ST.view === 'supply' || ST.view === 'nom') await loadSupply();
   if (ST.view === 'cut') await loadCut();
   if (ST.view === 'work') await loadWork();
-  if (ST.view === 'pack') await loadPack();
   if (ST.view === 'payroll') await loadPayroll();
   if (ST.view === 'sum') await loadSummary();
   if (rtIsView(ST.view)) await loadRoutes();
@@ -114,11 +116,6 @@ async function loadSummary() {
 async function loadPayroll(month) {
   const m = month || ST.payroll.месяц || new Date().toISOString().slice(0, 7);
   ST.payroll = await api(`${API}/payroll?месяц=${encodeURIComponent(m)}`);
-}
-
-async function loadPack() {
-  const data = await api(`${API}/pack`);
-  ST.pack = { ...data, партия: ST.pack.партия };
 }
 
 async function loadWork() {
@@ -170,11 +167,11 @@ const AS_ROLES = {
   admin: { label: 'Начальник', tabs: null },
   manager: { label: 'Менеджер', tabs: ['new', 'list', 'tech', 'payroll', 'sum', 'staff'] },
   designer: { label: 'Конструктор', tabs: ['design', 'list'] },
-  supply: { label: 'Снабженец', tabs: ['supply', 'list'] },
+  supply: { label: 'Снабженец', tabs: ['supply', 'nom', 'list'] },
   storekeeper: { label: 'Складчик', tabs: ['new', 'list'] },
   technologist: { label: 'Технолог', tabs: ['tech', 'assign', 'route_ord', 'route', 'route_fin', 'work', 'list', 'staff'] },
   cutter: { label: 'Закройщик', tabs: ['cut'] },
-  packer: { label: 'Упаковщик', tabs: ['pack'] },
+  packer: { label: 'Упаковщик', tabs: ['work'] },
   accountant: { label: 'Бухгалтер', tabs: ['payroll', 'sum'] },
 };
 
@@ -217,10 +214,9 @@ async function loadView(v) {
   try {
     if (v === 'tech') await loadTech();
     if (v === 'design') await loadDesign();
-    if (v === 'supply') await loadSupply();
+    if (v === 'supply' || v === 'nom') await loadSupply();
     if (v === 'cut') await loadCut();
     if (v === 'work') await loadWork();
-    if (v === 'pack') await loadPack();
     if (v === 'payroll') await loadPayroll();
     if (v === 'sum') await loadSummary();
     if (rtIsView(v)) await loadRoutes();
@@ -266,13 +262,12 @@ function render() {
 
   const topTitle = $('#cx-top-title') || document.querySelector('.cx-top-title');
   if (topTitle) {
-    topTitle.textContent = ({ work: 'Работа', cut: 'Крой', tech: 'Приёмка', design: 'Конструктор', supply: 'Снабжение',
-      pack: 'Упаковка', payroll: 'Зарплата', sum: 'Сводка', route: 'Швейный маршрут', route_ord: 'Маршрут заказа', route_fin: 'Маршрут ГП', assign: 'Распределение',
+    topTitle.textContent = ({ work: 'Работа', cut: 'Крой', tech: 'Приёмка', design: 'Конструктор', supply: 'Снабжение', nom: 'Номенклатура',
+      payroll: 'Зарплата', sum: 'Сводка', route: 'Швейный маршрут', route_ord: 'Маршрут заказа', route_fin: 'Маршрут ГП', assign: 'Распределение',
       staff: 'Сотрудники и роли' })[ST.view] || 'Заказ на пошив';
   }
   const insideParty = ST.view === 'cut' && ST.cut.партия;
-  const insideParty2 = ST.view === 'pack' && ST.pack.партия;
-  const ownHeader = insideParty || insideParty2 || ['work', 'cut', 'tech', 'design', 'supply', 'pack', 'payroll', 'sum', 'route', 'route_ord', 'route_fin', 'assign', 'staff'].includes(ST.view);
+  const ownHeader = insideParty || ['work', 'cut', 'tech', 'design', 'supply', 'nom', 'payroll', 'sum', 'route', 'route_ord', 'route_fin', 'assign', 'staff'].includes(ST.view);
   main.innerHTML = `
     ${ownHeader ? '' : `<div class="cx-hero">
       <div>
@@ -311,9 +306,9 @@ function viewHtml() {
   if (ST.view === 'tech') return techHtml();
   if (ST.view === 'design') return designHtml();
   if (ST.view === 'supply') return supplyHtml();
+  if (ST.view === 'nom') return nomHtml();
   if (ST.view === 'cut') return cutCardHtml();
   if (ST.view === 'work') return workHtml();
-  if (ST.view === 'pack') return packHtml();
   if (ST.view === 'payroll') return payrollHtml();
   if (ST.view === 'sum') return summaryHtml();
   if (rtIsView(ST.view)) return routeHtml();
@@ -420,7 +415,39 @@ function gridTotals() {
   return { qty, pos };
 }
 
+// Склад рядом с заказом: «сейчас → прогноз». Только подсказка — заказ склад не меняет и не резервирует.
+function stockOf(key) {
+  const st = ST.stock[ST.form.модель];
+  return st && Object.prototype.hasOwnProperty.call(st, key) ? num(st[key]) : (st ? 0 : null);
+}
+function stockLine(key) {
+  const now = stockOf(key);
+  if (now == null) return `<div class="cx-gstk" data-stk="${esc(key)}"></div>`;
+  const plan = Math.max(0, Math.round(num(ST.grid[key])));
+  const lvl = now <= 0 ? 'zero' : now < 10 ? 'low' : 'ok';
+  return `<div class="cx-gstk ${lvl}" data-stk="${esc(key)}" title="Сейчас на складе ${nf(now)} · заказ ${nf(plan)} · прогноз ${nf(now + plan)}">${nf(now)}${plan ? ` → <b>${nf(now + plan)}</b>` : ''}</div>`;
+}
+function loadStock(model) {
+  if (!model || ST.stock[model] || ST.stockLoading === model) return;
+  ST.stockLoading = model;
+  api(`${API}/stock?модель=${encodeURIComponent(model)}`)
+    .then((d) => { ST.stock[model] = d || {}; })
+    .catch(() => { ST.stock[model] = {}; })
+    .finally(() => { ST.stockLoading = ''; if (ST.form.модель === model) render(); });
+}
+function stockTableHtml() {
+  const st = ST.stock[ST.form.модель];
+  const keys = Object.keys(ST.grid).filter((k) => num(ST.grid[k]) > 0);
+  if (!st || !keys.length) return '';
+  const rows = keys.map((k) => { const [c, z] = k.split('|'); const now = stockOf(k); const plan = Math.round(num(ST.grid[k]));
+    return `<tr><td>${esc(c)}</td><td>${esc(z)}</td><td class="num ${now <= 0 ? 'cx-neg' : ''}">${nf(now)}</td><td class="num">+${nf(plan)}</td><td class="num"><b>${nf(now + plan)}</b></td></tr>`; }).join('');
+  return `<div class="cx-gstock-card"><div class="cx-hint" style="margin-bottom:6px"><b>Склад и прогноз</b> · только подсказка: заказ на пошив склад не меняет и не резервирует</div>
+    <div class="cx-scroll"><table class="cx-table"><thead><tr><th>Цвет</th><th>Размер</th><th class="num">Сейчас на складе</th><th class="num">Заказ</th><th class="num">Прогноз</th></tr></thead>
+    <tbody>${rows}</tbody></table></div></div>`;
+}
+
 function gridHtml(colors, sizes, own) {
+  loadStock(ST.form.модель);
   if (!sizes.length) return '<div class="cx-card-b"><div class="cx-notice">У модели нет размерной сетки</div></div>';
   if (!colors.length) return '<div class="cx-card-b"><div class="cx-notice">Справочник цветов пуст</div></div>';
   const q = (ST.gridFilter || '').trim().toLowerCase();
@@ -430,10 +457,11 @@ function gridHtml(colors, sizes, own) {
     return `<tr data-grid-row="${esc(c.цвет)}" ${hide ? 'hidden' : ''} class="${rowSum ? 'filled' : ''}">
       <th class="cx-gcolor">${esc(c.цвет)}${c.тон ? `<span>${esc(c.тон)}</span>` : ''}</th>
       ${sizes.map((s) => {
-        const v = ST.grid[gridKey(c.цвет, s.размер)];
+        const k = gridKey(c.цвет, s.размер);
+        const v = ST.grid[k];
         return `<td><input class="cx-gin" type="number" min="0" step="1" inputmode="numeric"
-          data-grid="${esc(gridKey(c.цвет, s.размер))}" value="${v ? esc(v) : ''}" placeholder="·"
-          aria-label="${esc(c.цвет)}, размер ${esc(s.размер)}"></td>`;
+          data-grid="${esc(k)}" value="${v ? esc(v) : ''}" placeholder="·"
+          aria-label="${esc(c.цвет)}, размер ${esc(s.размер)}">${stockLine(k)}</td>`;
       }).join('')}
       <td class="cx-gsum" data-grid-sum="${esc(c.цвет)}">${rowSum ? nf(rowSum) : ''}</td>
     </tr>`;
@@ -451,6 +479,7 @@ function gridHtml(colors, sizes, own) {
         <tbody>${rows}</tbody>
       </table>
     </div>
+    <div id="cx-gstock">${stockTableHtml()}</div>
     <div class="cx-gfoot">
       <span id="cx-gtotal">${t.pos ? `${nf(t.pos)} поз. · <b>${nf(t.qty)}</b> шт` : 'Ничего не заполнено'}</span>
       <button class="btn ghost" data-act="grid-clear" ${t.pos ? '' : 'disabled'}>Очистить</button>
@@ -538,7 +567,7 @@ function cartHtml() {
 function statusPill(status) {
   const s = status || '—';
   const kind = ['у технолога', 'у конструктора', 'у снабженца', 'ждёт кроя'].includes(s) ? 'orange'
-    : s === 'принят' || s === 'упакован' ? 'green'
+    : s === 'принят' || s === 'упакован' || s === 'на складе' ? 'green'
       : s === 'отклонён' ? 'red'
         : s === 'новый' ? 'blue' : 'grey';
   return `<span class="cx-pill ${kind}">${esc(s)}</span>`;
@@ -621,12 +650,62 @@ function openOrder(numStr) {
             <tbody>${rows}</tbody>
           </table>
         </div>
+        ${ST.права.зарплата ? '<div id="cx-cost"></div>' : ''}
         <div class="cx-total" style="margin:14px -20px -20px">
           <span class="t">Всего</span><span class="v">${nf(o.штук)}</span><span class="u">шт</span>
         </div>
       </div>
     </div>`;
   modal.hidden = false;
+  if (ST.права.зарплата) loadOrderCost(o.номер);
+}
+
+function costLine(name, detail, sum) {
+  return `<tr>
+    <td><div class="cx-cell-main">${esc(name)}</div>${detail ? `<div class="cx-cell-sub">${esc(detail)}</div>` : ''}</td>
+    <td class="num">${sum == null ? '—' : nf(sum)}</td>
+  </tr>`;
+}
+
+function costHtml(d) {
+  const rows = [];
+  (d.ткань.строки || []).forEach((r) => {
+    rows.push(costLine('Ткань: ' + r.вид + (r.цвет ? ' · ' + r.цвет : ''),
+      r.нет_веса ? 'вес не вписан' : nf(r.кг) + ' кг' + (r.цена_кг != null ? ' × ' + nf(r.цена_кг) : ' · нет цены'),
+      r.сумма));
+  });
+  (d.материалы.строки || []).forEach((r) => {
+    rows.push(costLine('Материал: ' + r.материал + (r.цвет ? ' · ' + r.цвет : ''),
+      nf(r.количество) + ' ' + (r.ед || '') + (r.цена != null ? ' × ' + nf(r.цена) : ' · нет цены'),
+      r.сумма));
+  });
+  const w = d.работа || {};
+  rows.push(costLine('Работа', w.использован === 'факт' ? 'факт по выдачам' : 'план по маршруту',
+    w.использован === 'факт' ? w.факт : w.план));
+  if (d.накладные && d.накладные.сумма) {
+    rows.push(costLine('Склад и общие', nf(d.накладные.сом_шт) + ' сом/шт', d.накладные.сумма));
+  }
+  const note = d.неполная
+    ? '<div class="cx-notice">Не все цены известны — сумма занижена. Заполните лист «Поставки сырья» и цены поступлений.</div>'
+    : '';
+  return `
+    <div class="cx-field" style="margin-top:14px"><label>Себестоимость, сом</label></div>
+    <div class="cx-scroll"><table class="cx-table"><tbody>${rows.join('')}</tbody></table></div>
+    <div class="cx-total" style="margin:0 -20px">
+      <span class="t">Итого</span><span class="v">${nf(d.итого)}</span><span class="u">${d.за_шт != null ? nf(d.за_шт) + ' сом/шт' : ''}</span>
+    </div>
+    ${note}`;
+}
+
+async function loadOrderCost(num) {
+  const box = document.getElementById('cx-cost');
+  if (!box) return;
+  try {
+    const d = await api(`${API}/orders/${encodeURIComponent(num)}/cost`);
+    if (document.getElementById('cx-cost')) box.innerHTML = costHtml(d);
+  } catch (e) {
+    box.innerHTML = `<div class="cx-notice">${esc(e.message || 'Не удалось посчитать себестоимость')}</div>`;
+  }
 }
 
 function closeModal() {
@@ -642,9 +721,9 @@ function tabsHtml(totalOrders) {
   // карты заказа идут по этапам отдельно: считаем карты, а не заказы
   const inStatus = (s) => ST.заказы.reduce((n, o) => n + Object.values(o.карты || {}).filter((x) => x === s).length, 0);
   if (ST.права.карта) { const n = ST.заказы.filter((o) => Object.values(o.карты || {}).includes('у конструктора')).length; tabs.push(['design', 'Конструктор' + (n ? ' ' + n : '')]); }
-  if (ST.права.снабжение) { const n = inStatus('у снабженца'); tabs.push(['supply', 'Снабжение' + (n ? ' ' + n : '')]); }
+  if (ST.права.снабжение) { const n = inStatus('у снабженца'); tabs.push(['supply', 'Снабжение' + (n ? ' ' + n : '')], ['nom', 'Номенклатура']); }
   if (ST.права.принимать) {
-    const n = (ST.tech.очередь || []).length;
+    const n = (ST.tech.очередь || []).length + (ST.tech.крой || []).filter((g) => g.статус === 'ждёт').length;
     tabs.push(['tech', 'Приёмка' + (n ? ' ' + n : '')]);
   }
   if (ST.права.кроить) {
@@ -654,10 +733,6 @@ function tabsHtml(totalOrders) {
   if (ST.права.работать) {
     const n = (ST.work.мои || []).length;
     tabs.push(['work', 'Работа' + (n ? ' ' + n : '')]);
-  }
-  if (ST.права.упаковывать) {
-    const n = (ST.pack.партии || []).filter((p) => p.остаток > 0).length;
-    tabs.push(['pack', 'Упаковка' + (n ? ' ' + n : '')]);
   }
   if (ST.права.зарплата || ST.права.работать) tabs.push(['payroll', 'Зарплата']);
   if (ST.права.зарплата) tabs.push(['sum', 'Сводка']);
@@ -673,10 +748,64 @@ function tabsHtml(totalOrders) {
   const byRight = ['staff'];
   const shown = only ? tabs.filter(([id]) => only.includes(id) || byRight.includes(id)) : tabs.slice();
   tabs.length = 0; tabs.push(...shown);
+  // Джарвису — вкладки цеха, которые видит сотрудник, и магазин
+  // и вкладки внутри (Снабжение → Рулоны, Сотрудники и роли → Роли…) — только у видимых вкладок
+  const subs = {
+    supply: [['orders', 'Карты'], ['moves', 'Склад сырья'], ['rolls', 'Рулоны']],
+    nom: [['goods', 'Товары'], ['mats', 'Сырьё'], ['bom', 'Спецификации'], ['cps', 'Контрагенты']],
+    staff: [['people', 'Сотрудники'], ['roles', 'Роли'], ...(ST.права.права ? [['log', 'Журнал']] : [])],
+  };
+  window.ASSIST_SECTIONS = tabs.flatMap(([id, label]) => {
+    const name = label.replace(/\s+\d+$/, '');
+    return [{ id: 'cex-' + id, label: name, href: '/cex/?view=' + id },
+      ...(subs[id] || []).map(([s, l]) => ({ id: `cex-${id}-${s}`, label: `${name} → ${l}`, href: `/cex/?view=${id}&sub=${s}` }))];
+  }).concat([{ id: 'shop', label: 'Магазин', href: '/#/shop' }]);
+  if (window.assistMount && !window.__jvMounted) { window.__jvMounted = true; window.assistMount(); }
   if (tabs.length < 2) return '';
   const active = ST.view === 'success' ? 'new' : ST.view;
   return `<div class="cx-tabs">${tabs.map(([id, label]) =>
     `<button class="cx-tab ${active === id ? 'on' : ''}" data-act="tab" data-tab="${id}">${label}</button>`).join('')}</div>`;
+}
+
+// приёмка после кроя: каждая карта кроя — принять (с принятым количеством) или вернуть закройщику
+function cutReviewHtml() {
+  const list = ST.tech.крой || [];
+  const wait = list.filter((g) => g.статус === 'ждёт');
+  const back = list.filter((g) => g.статус === 'возврат');
+  if (!list.length) return '<div class="cx-card"><div class="cx-empty"><b>Нечего принимать</b>Раскроенные карты появятся здесь сразу после кроя</div></div>';
+  const card = (g) => `<div class="cx-card" style="margin-bottom:12px">
+    <div class="cx-card-h"><h3>Партия №${esc(g.партия)} · карта кроя ${esc(g.карта || '—')}</h3>
+      <span class="cx-hint">${esc(g.категория)} ${esc(g.модель)} · заказ №${esc(g.заказ)} · ${esc(g.закройщик)} · ${esc(g.дата)} · ${nf(g.штук)} шт</span></div>
+    <div class="cx-card-b">
+      <div class="cx-scroll"><table class="cx-table"><thead><tr><th>Раздел</th><th>Цвет</th><th>Размер</th><th class="num">Раскроено</th><th class="num">Принято</th></tr></thead>
+      <tbody>${g.строки.map((r) => `<tr><td>${esc(g.партия)}/${esc(r.настил)}</td><td>${esc(r.цвет)}</td><td>${esc(r.размер)}</td><td class="num">${nf(r.факт)}</td>
+        <td style="width:96px"><input class="input cx-mini" type="number" min="0" value="${esc(r.факт)}" data-rv="${esc(g.партия)}|${esc(g.карта)}" data-row="${esc(r.настил)}|${esc(r.цвет)}|${esc(r.размер)}"></td></tr>`).join('')}</tbody></table></div>
+      <div class="cx-field" style="margin-top:10px"><label>Несоответствия / что исправить</label>
+        <input class="input" data-rv-note="${esc(g.партия)}|${esc(g.карта)}" placeholder="например: 44 — 2 шт брак кроя"></div>
+      <div class="cx-btn-row" style="margin-top:10px">
+        <button class="btn ghost" data-act="rv-return" data-k="${esc(g.партия)}|${esc(g.карта)}">Вернуть закройщику</button>
+        <button class="btn primary" data-act="rv-accept" data-k="${esc(g.партия)}|${esc(g.карта)}" style="margin-left:auto">Принять — в распределение</button>
+      </div>
+    </div></div>`;
+  return `${wait.map(card).join('') || '<div class="cx-card"><div class="cx-empty"><b>Нечего принимать</b>Раскроенные карты появятся здесь сразу после кроя</div></div>'}
+    ${back.length ? `<div class="cx-hint" style="margin:10px 0 6px">Возвращены закройщику: ${back.map((g) => `№${esc(g.партия)} карта ${esc(g.карта)} — «${esc(g.замечание)}»`).join('; ')}</div>` : ''}`;
+}
+
+async function reviewCut(key, decision) {
+  const [партия, карта] = key.split('|');
+  const note = (document.querySelector(`[data-rv-note="${CSS.escape(key)}"]`) || {}).value || '';
+  const строки = [...document.querySelectorAll(`[data-rv="${CSS.escape(key)}"]`)].map((i) => {
+    const [настил, цвет, размер] = i.dataset.row.split('|');
+    return { настил, цвет, размер, принято: Math.max(0, Math.round(num(i.value))) };
+  });
+  if (decision === 'вернуть' && !note.trim()) return toast('Напишите, что исправить закройщику', 'err');
+  if (decision === 'принять' && !confirm(`Принять партию №${партия}, карту кроя ${карта}? Принятое уйдёт в распределение.`)) return;
+  try {
+    const res = await api(`${API}/tech/cut`, { method: 'POST', body: JSON.stringify({ партия, карта, решение: decision, строки, замечание: note }) });
+    await loadTech();
+    render();
+    toast(decision === 'принять' ? `Принято${res.расхождений ? ` · расхождений ${res.расхождений}` : ''} — партия в распределении` : 'Возвращено закройщику', 'ok');
+  } catch (err) { toast(err.message, 'err'); }
 }
 
 function techHtml() {
@@ -711,14 +840,10 @@ function techHtml() {
   return `
     <div class="cx-hero compact">
       <div><h1>Приёмка</h1>
-        <div class="cx-sub">Заказы ждут решения: проверить сырьё и загрузку, принять или отклонить</div></div>
+        <div class="cx-sub">После кроя: проверьте раскроенное по цветам и размерам, впишите принятое и несоответствия. В распределение уходит только принятое</div></div>
     </div>
-    <div class="cx-notice">
-      Свободных швей: <b>${nf(st.свободно)}</b> из ${nf(st.швей)} · проверьте сырьё и загрузку, затем примите заказ или отклоните.
-    </div>
-
-    ${q.length ? `<div class="cx-queue">${cards}</div>` : `
-      <div class="cx-card"><div class="cx-empty"><b>Очередь пуста</b>Новые заказы появятся здесь сразу после оформления</div></div>`}
+    ${cutReviewHtml()}
+    ${q.length ? `<h3 style="margin:18px 0 8px">Заказы, переданные до нового порядка</h3><div class="cx-queue">${cards}</div>` : ''}
 
     ${rej.length ? `
       <div class="cx-card" style="margin-top:14px">
@@ -1334,217 +1459,6 @@ async function cancelWork(id) {
   } catch (err) { toast(err.message, 'err'); }
 }
 
-// -------------------------------------------------------- упаковка (модуль 5)
-function packHtml() {
-  if (ST.pack.партия) return packPartyHtml();
-  const list = (ST.pack.партии || []);
-  const waiting = list.filter((p) => p.остаток > 0);
-  const done = list.filter((p) => p.остаток <= 0);
-
-  const card = (p) => `
-    <div class="cx-qitem" data-act="open-pack" data-num="${esc(p.номер)}">
-      <div class="cx-qmain">
-        <div class="cx-qtitle">Партия №${esc(p.номер)} <span class="cx-pill ${p.остаток > 0 ? 'orange' : 'green'}">${esc(p.статус)}</span></div>
-        <div class="cx-hint">${esc(p.клиент)} · ${esc(p.категория)} ${esc(p.модель)} · факт ${nf(p.факт)} шт · коробок ${nf(p.коробки.length)}</div>
-      </div>
-      <div class="cx-qright">
-        <div class="cx-qsum">${nf(p.готово_к_упаковке || 0)}<span>готово к упаковке · всего осталось ${nf(p.остаток)}</span></div>
-        <button class="btn primary" data-act="open-pack" data-num="${esc(p.номер)}">${p.готово_к_упаковке > 0 ? 'Упаковать' : 'Открыть'}</button>
-      </div>
-    </div>`;
-
-  return `
-    <div class="cx-hero compact">
-      <div><h1>Упаковка</h1>
-        <div class="cx-sub">Упаковываем по настилам, не дожидаясь всей партии: доступно то, что прошло весь маршрут</div></div>
-    </div>
-    ${waiting.length ? `<div class="cx-queue">${waiting.map(card).join('')}</div>` : `
-      <div class="cx-card"><div class="cx-empty"><b>Нечего упаковывать</b>Партии появятся, когда швеи закроют последний этап</div></div>`}
-    ${done.length ? `
-      <div class="cx-card" style="margin-top:14px">
-        <div class="cx-card-h"><h3>Упаковано</h3><span class="cx-hint">${nf(done.length)}</span></div>
-        <div class="cx-card-b" style="padding-bottom:0">
-          <div class="cx-scroll" style="margin:0 -18px">
-            <table class="cx-table">
-              <thead><tr><th>Партия</th><th>Клиент</th><th>Модель</th><th class="num">Шт</th><th class="num">Коробок</th><th></th></tr></thead>
-              <tbody>${done.map((p) => `<tr>
-                <td>№${esc(p.номер)}</td><td>${esc(p.клиент)}</td><td>${esc(p.модель)}</td>
-                <td class="num">${nf(p.упаковано)}</td><td class="num">${nf(p.коробки.length)}</td>
-                <td style="text-align:right"><button class="btn" data-act="open-pack" data-num="${esc(p.номер)}">Открыть</button></td>
-              </tr>`).join('')}</tbody>
-            </table>
-          </div>
-        </div>
-      </div>` : ''}`;
-}
-
-function packPartyHtml() {
-  const p = (ST.pack.партии || []).find((x) => x.номер === ST.pack.партия);
-  if (!p) return `<div class="cx-card"><div class="cx-empty"><b>Партия не найдена</b>Обновите страницу</div></div>`;
-
-  const rows = p.строки.map((r) => `
-    <tr>
-      <td>${esc(r.цвет)}</td><td>${esc(r.размер)}</td>
-      <td class="num">${nf(r.факт)}</td><td class="num">${nf(r.упаковано)}</td>
-      <td class="num ${r.остаток ? '' : 'cx-muted'}">${nf(r.остаток)}</td>
-    </tr>`).join('');
-
-  const boxes = (p.коробки || []).map((b) => `
-    <div class="cx-box-row">
-      <div><b>Коробка ${esc(b)}</b><div class="cx-hint">партия ${esc(p.номер)}</div></div>
-      <button class="btn" data-act="print-box" data-num="${esc(p.номер)}" data-box="${esc(b)}">Печатать этикетки</button>
-    </div>`).join('');
-
-  return `
-    <div class="cx-backline"><button class="btn ghost" data-act="pack-back">← Все партии</button></div>
-    <div class="cx-hero compact">
-      <div>
-        <h1>Партия №${esc(p.номер)}</h1>
-        <div class="cx-sub">${esc(p.клиент)} · ${esc(p.категория)} ${esc(p.модель)} · ${statusPill(p.статус)}</div>
-      </div>
-      <div class="cx-hero-actions">
-        <a class="btn" style="text-decoration:none" href="/cex/items?партия=${encodeURIComponent(p.номер)}" target="_blank">Этикетки изделий</a>
-        <button class="btn primary" data-act="new-pack" ${p.готово_к_упаковке > 0 ? '' : 'disabled'}>Упаковать в коробку</button>
-      </div>
-    </div>
-
-    <div class="cx-kpis">
-      <div class="cx-kpi"><div class="k">Готово к упаковке</div><div class="v">${nf(p.готово_к_упаковке || 0)}</div><div class="m">шт из готовых настилов · раскроено ${nf(p.факт)}</div></div>
-      <div class="cx-kpi"><div class="k">Упаковано</div><div class="v">${nf(p.упаковано)}</div><div class="m">в ${nf(p.коробки.length)} коробках</div></div>
-      <div class="cx-kpi"><div class="k">Осталось</div><div class="v">${nf(p.остаток)}</div><div class="m">шт упаковать</div></div>
-    </div>
-
-    <div class="cx-grid">
-      <div>
-        <div class="cx-card">
-          <div class="cx-card-h"><h3>Что упаковываем</h3><span class="cx-hint">${nf(p.строки.length)} строк</span></div>
-          <div class="cx-card-b" style="padding-bottom:8px"><div class="cx-nchips">${(p.настилы || []).map((n) => `<span class="cx-pill ${n.готов ? 'green' : 'grey'}">настил ${esc(p.номер)}/${esc(n.настил)} · ${nf(n.шт)} шт · ${n.готов ? 'готов' : 'в цехе'}</span>`).join(' ')}</div></div>
-          <div class="cx-card-b" style="padding-bottom:0">
-            <div class="cx-scroll" style="margin:0 -18px">
-              <table class="cx-table">
-                <thead><tr><th>Цвет</th><th>Размер</th><th class="num">Готово</th><th class="num">Упаковано</th><th class="num">Можно упаковать</th></tr></thead>
-                <tbody>${rows}</tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div class="cx-side">
-        <div class="cx-card">
-          <div class="cx-card-h"><h3>Коробки</h3><span class="cx-hint">${nf(p.коробки.length)}</span></div>
-          <div class="cx-card-b">
-            ${boxes || '<div class="cx-empty" style="padding:14px"><b>Пока пусто</b>Соберите первую коробку</div>'}
-          </div>
-        </div>
-      </div>
-    </div>`;
-}
-
-function openPackModal() {
-  const p = (ST.pack.партии || []).find((x) => x.номер === ST.pack.партия);
-  if (!p) return;
-  const rows = p.строки.filter((r) => r.остаток > 0).map((r) => `
-    <tr>
-      <td>${esc(r.цвет)}</td><td>${esc(r.размер)}</td>
-      <td class="num">${nf(r.остаток)}</td>
-      <td style="width:96px"><input class="input cx-mini" type="number" min="0" max="${r.остаток}"
-        value="${r.остаток}" data-pack data-color="${esc(r.цвет)}" data-size="${esc(r.размер)}"></td>
-    </tr>`).join('');
-
-  const modal = $('#cx-modal');
-  modal.innerHTML = `
-    <div class="cx-modal-box wide">
-      <div class="cx-modal-h">
-        <h3>Коробка · партия ${esc(p.номер)}</h3>
-        <button class="btn cx-close" data-act="close-modal">Закрыть</button>
-      </div>
-      <div class="cx-modal-b">
-        <div class="cx-field" style="max-width:200px">
-          <label>Номер коробки</label>
-          <input class="input" id="cx-box" value="${esc(p.коробка_следующая)}">
-        </div>
-        <div class="cx-scroll" style="margin-top:14px">
-          <table class="cx-table">
-            <thead><tr><th>Цвет</th><th>Размер</th><th class="num">Остаток</th><th>В коробку</th></tr></thead>
-            <tbody>${rows}</tbody>
-          </table>
-        </div>
-        <div class="cx-cut-total" style="margin-top:10px">
-          В коробке: <b id="cx-pack-qty">0</b> шт · этикеток: <b id="cx-pack-lbl">0</b>
-        </div>
-        <div class="cx-btn-row" style="margin-top:12px">
-          <button class="btn primary" data-act="save-pack">Собрать коробку</button>
-        </div>
-      </div>
-    </div>`;
-  modal.hidden = false;
-  recalcPack();
-  document.querySelectorAll('[data-pack]').forEach((el) => el.addEventListener('input', recalcPack));
-}
-
-function recalcPack() {
-  let qty = 0, labels = 0;
-  document.querySelectorAll('[data-pack]').forEach((el) => {
-    let v = _intSafe(el.value);
-    const max = _intSafe(el.max);
-    if (v > max) v = max;
-    if (v < 0) v = 0;
-    qty += v;
-    if (v > 0) labels += 1;
-  });
-  const q = $('#cx-pack-qty'), l = $('#cx-pack-lbl');
-  if (q) q.textContent = nf(qty);
-  if (l) l.textContent = nf(labels);
-}
-
-async function savePack() {
-  const p = (ST.pack.партии || []).find((x) => x.номер === ST.pack.партия);
-  if (!p) return;
-  const позиции = [];
-  document.querySelectorAll('[data-pack]').forEach((el) => {
-    const qty = _intSafe(el.value);
-    if (qty > 0) позиции.push({ цвет: el.dataset.color, размер: el.dataset.size, количество: qty });
-  });
-  if (!позиции.length) return toast('Укажите, что кладём в коробку', 'err');
-  try {
-    const res = await api(`${API}/pack`, {
-      method: 'POST',
-      body: JSON.stringify({ партия: p.номер, коробка: ($('#cx-box') || {}).value || '', позиции }),
-    });
-    await loadPack();
-    const num = p.номер, box = res.коробка;
-    closeModal();
-    render();
-    showPrintModal(num, box, res);
-  } catch (err) { toast(err.message, 'err'); }
-}
-
-function showPrintModal(num, box, res) {
-  const modal = $('#cx-modal');
-  modal.innerHTML = `
-    <div class="cx-modal-box">
-      <div class="cx-modal-h"><h3>Коробка ${esc(box)} собрана</h3>
-        <button class="btn cx-close" data-act="close-modal">Закрыть</button></div>
-      <div class="cx-modal-b" style="text-align:center; padding-bottom:24px">
-        <div class="cx-success" style="padding:18px 0 6px">
-          <div class="mark">✓</div>
-          <h2>${nf(res.штук)} шт · ${nf(res.этикеток)} этикеток</h2>
-          <p>Партия №${esc(num)} · коробка ${esc(box)}</p>
-        </div>
-        <div class="cx-btn-row" style="justify-content:center">
-          <button class="btn primary" data-act="print-box" data-num="${esc(num)}" data-box="${esc(box)}">Печатать этикетки</button>
-          <button class="btn" data-act="close-modal">Готово</button>
-        </div>
-      </div>
-    </div>`;
-  modal.hidden = false;
-}
-
-function printLabels(num, box) {
-  const url = `/cex/labels?партия=${encodeURIComponent(num)}&коробка=${encodeURIComponent(box)}&print=1`;
-  window.open(url, '_blank');
-}
-
 // -------------------------------------------------------- зарплата (модуль 6)
 function money(v) {
   return Number(v || 0).toLocaleString('ru-RU', { maximumFractionDigits: 0 });
@@ -1877,7 +1791,7 @@ document.addEventListener('click', async (ev) => {
     if (ST.view === 'tech') {
       try { await loadTech(); } catch (err) { toast(err.message, 'err'); }
     }
-    if (ST.view === 'design' || ST.view === 'supply') {
+    if (ST.view === 'design' || ST.view === 'supply' || ST.view === 'nom') {
       FL.num = '';  // у конструктора и снабженца свой открытый заказ
       try { await (ST.view === 'design' ? loadDesign() : loadSupply()); } catch (err) { toast(err.message, 'err'); }
     }
@@ -1886,9 +1800,6 @@ document.addEventListener('click', async (ev) => {
     }
     if (ST.view === 'work') {
       try { await loadWork(); } catch (err) { toast(err.message, 'err'); }
-    }
-    if (ST.view === 'pack') {
-      try { await loadPack(); } catch (err) { toast(err.message, 'err'); }
     }
     if (ST.view === 'payroll') {
       try { await loadPayroll(); } catch (err) { toast(err.message, 'err'); }
@@ -1917,6 +1828,8 @@ document.addEventListener('click', async (ev) => {
   if (act === 'submit') { await submitOrder(); return; }
   if (act === 'open') { openOrder(el.dataset.num); return; }
   if (act === 'open-tech') { openTech(el.dataset.num); return; }
+  if (act === 'rv-accept') { el.disabled = true; await reviewCut(el.dataset.k, 'принять'); el.disabled = false; return; }
+  if (act === 'rv-return') { el.disabled = true; await reviewCut(el.dataset.k, 'вернуть'); el.disabled = false; return; }
   if (act === 'cut-new-party') { await createParty(el.dataset.num, el.dataset.card, el); return; }
   if (act === 'refresh-sum') {
     try { await loadSummary(); render(); toast('Сводка обновлена', 'ok'); }
@@ -1927,11 +1840,6 @@ document.addEventListener('click', async (ev) => {
   if (act === 'edit-card') { ev.stopPropagation(); openCard(el.dataset.login); return; }
   if (act === 'save-card') { await saveCard(el.dataset.login); return; }
   if (act === 'close-payroll') { await closePayroll(); return; }
-  if (act === 'open-pack') { ST.pack.партия = el.dataset.num; render(); return; }
-  if (act === 'pack-back') { ST.pack.партия = null; render(); return; }
-  if (act === 'new-pack') { openPackModal(); return; }
-  if (act === 'save-pack') { await savePack(); return; }
-  if (act === 'print-box') { printLabels(el.dataset.num, el.dataset.box); return; }
   if (act === 'work-take') {
     openTakeModal(el.dataset.stage, el.dataset.num, Number(el.dataset.max), el.dataset.nas); return;
   }
@@ -1959,11 +1867,10 @@ document.addEventListener('click', async (ev) => {
     try {
       await refreshOrders();
       if (ST.view === 'work') await loadWork();
-      if (ST.view === 'pack') await loadPack();
       if (ST.view === 'cut') await loadCut();
       if (ST.view === 'tech') await loadTech();
       if (ST.view === 'design') await loadDesign();
-      if (ST.view === 'supply') await loadSupply();
+      if (ST.view === 'supply' || ST.view === 'nom') await loadSupply();
       render();
       toast('Обновлено из Excel', 'ok');
     } catch (err) { toast(err.message, 'err'); }
@@ -2006,6 +1913,10 @@ document.addEventListener('input', (ev) => {
     const v = Math.max(0, Math.round(num(g.value)));
     if (v > 0) ST.grid[g.dataset.grid] = v; else delete ST.grid[g.dataset.grid];
     gridRefresh(g.dataset.grid.split('|')[0]);
+    const stk = document.querySelector(`[data-stk="${CSS.escape(g.dataset.grid)}"]`);  // прогноз — сразу при вводе
+    if (stk) stk.outerHTML = stockLine(g.dataset.grid);
+    const tbl = $('#cx-gstock');
+    if (tbl) tbl.innerHTML = stockTableHtml();
     return;
   }
   if (ev.target.id === 'cx-gfilter') {

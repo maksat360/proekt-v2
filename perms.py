@@ -38,11 +38,26 @@ ROLE_LABELS = {
 }
 LOCKED_ROLE = "admin"
 
+# процессы — группы ролей на экране «Роли»; швейный = производственные роли (операции маршрута)
+PROCESSES = {"заказ": "Заказной процесс", "склад": "Складской процесс",
+             "швейный": "Швейный процесс", "управление": "Управление"}
+ROLE_PROCESS = {"manager": "заказ", "designer": "заказ", "supply": "заказ", "cutter": "заказ",
+                "technologist": "заказ", "storekeeper": "склад", "packer": "швейный",  # упаковка — часть пошива
+                "admin": "управление", "accountant": "управление", "client": "управление"}
+# свои роли «из коробки»: код → (название, процесс, права по умолчанию). Удалённые больше не появляются.
+CUSTOM_DEFAULTS = {
+    "wh_receiver": ("Приёмщик", "склад", {"wh.view", "wh.write"}),
+    "wh_picker": ("Сборщик", "склад", {"wh.view", "orders.view", "wb.manage"}),
+    "wh_kitter": ("Комплектовщик", "склад", {"wh.view", "orders.view", "wh.write"}),
+}
+# меню портала смотрит на служебные роли: своей роли — пункты по её процессу (права всё равно проверяются)
+PROCESS_PORTAL_ROLE = {"склад": "storekeeper", "заказ": "designer", "управление": "accountant"}
+
 _A, _M, _T = "admin", "manager", "technologist"
 _STAFF = {"admin", "manager", "technologist", "accountant", "storekeeper", "cutter", "packer",
           "designer", "supply"}
 # производственная роль по умолчанию: вход в цех и работа на своей операции; остальное — настройкой
-PROD_DEFAULT = {"cex.view", "cex.work"}
+PROD_DEFAULT = {"cex.view", "cex.work", "orders.create"}
 
 # код, группа, название, роли по умолчанию
 CATALOG: list[tuple[str, str, str, set[str]]] = [
@@ -68,7 +83,6 @@ CATALOG: list[tuple[str, str, str, set[str]]] = [
     ("cex.work", "Цех", "Работа на своих производственных ролях (брать и сдавать)", {_A, _M, _T}),
     ("cex.work.all", "Цех", "Видеть работу всего цеха", {_A, _M, _T}),
     ("cex.boss", "Цех", "Возвращать и сдавать чужую работу, брать несколько работ", {_A, _M}),
-    ("cex.pack", "Цех", "Упаковка", {_A, _M, "packer"}),
     ("cex.pay", "Цех", "Зарплата цеха: начисление и карточки оплаты", {_A, _M, "accountant"}),
     # склад, магазин, WB
     ("wh.view", "Склад и магазин", "Просмотр склада", {_A, _M, "storekeeper", "accountant", _T}),
@@ -78,7 +92,9 @@ CATALOG: list[tuple[str, str, str, set[str]]] = [
     ("shop.price", "Склад и магазин", "Изменение цен", {_A, _M}),
     ("wb.manage", "Склад и магазин", "Заказы Wildberries и кабинеты", {_A, _M, "storekeeper"}),
     ("orders.view", "Склад и магазин", "Заказы клиентов: просмотр и сборка", {_A, _M, "storekeeper"}),
-    ("orders.create", "Склад и магазин", "Создание заказов клиентов", {"client", _A, _M}),
+    ("orders.create", "Склад и магазин", "Магазин: заказ от своего имени",
+     {"client", _A, _M, _T, "storekeeper", "accountant", "cutter", "packer", "designer", "supply"}),
+    ("orders.fbo", "Склад и магазин", "Магазин: заказ FBO от имени кабинета WB", {_A, _M, "storekeeper"}),
     # портал
     ("brand.manage", "Портал", "Оформление портала и логотип", {_A, _M}),
     ("announce.create", "Портал", "Объявления", {_A, _M}),
@@ -106,8 +122,12 @@ class AccessError(ValueError):
 
 
 # ------------------------------------------------------------------ хранение
+def _default_custom() -> dict:
+    return {c: {"название": n, "процесс": pr} for c, (n, pr, _p) in CUSTOM_DEFAULTS.items()}
+
+
 def _empty() -> dict:
-    return {"роли": {}, "сотрудники": {}}
+    return {"роли": {}, "сотрудники": {}, "свои_роли": _default_custom(), "процессы": {}}
 
 
 def load() -> dict:
@@ -120,7 +140,9 @@ def load() -> dict:
         return _CACHE["data"]
     try:
         raw = json.loads(FILE.read_text(encoding="utf-8"))
-        data = {"роли": dict(raw.get("роли") or {}), "сотрудники": dict(raw.get("сотрудники") or {})}
+        data = {"роли": dict(raw.get("роли") or {}), "сотрудники": dict(raw.get("сотрудники") or {}),
+                "свои_роли": dict(raw["свои_роли"]) if isinstance(raw.get("свои_роли"), dict) else _default_custom(),
+                "процессы": dict(raw.get("процессы") or {})}
     except Exception:  # noqa: BLE001 — битый файл не должен ронять портал
         data = _empty()
     _CACHE.update(sig=sig, data=data)
@@ -133,6 +155,15 @@ def _save(data: dict) -> None:
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
     os.replace(tmp, FILE)
     _CACHE["sig"] = None
+
+
+def forget_user(login: str) -> None:
+    """Сотрудник удалён — его личные права больше не нужны."""
+    data = load()
+    if login in data["сотрудники"]:
+        new = json.loads(json.dumps(data))
+        new["сотрудники"].pop(login, None)
+        _save(new)
 
 
 def _log(actor: dict, action: str, target: str, code: str, before, after) -> None:
@@ -184,8 +215,33 @@ def production_roles() -> dict[str, str]:
         return {}
 
 
+def custom_roles(data: dict | None = None) -> dict[str, str]:
+    """Свои роли (заказной, складской процесс, управление): код → название."""
+    data = data or load()
+    return {c: str(v.get("название") or c) for c, v in data["свои_роли"].items() if c not in ROLE_LABELS}
+
+
 def all_roles() -> dict[str, str]:
-    return {**ROLE_LABELS, **production_roles()}
+    return {**ROLE_LABELS, **custom_roles(), **production_roles()}
+
+
+def role_process(code: str, data: dict | None = None) -> str:
+    data = data or load()
+    if code in data["свои_роли"]:
+        return str(data["свои_роли"][code].get("процесс") or "управление")
+    if code in ROLE_LABELS:
+        return str(data["процессы"].get(code) or ROLE_PROCESS.get(code, "управление"))
+    return "швейный"
+
+
+def portal_role(code: str, data: dict | None = None) -> str:
+    """Своя роль → служебная для меню портала; служебная — сама собой; производственная — «prod»."""
+    if code in ROLE_LABELS:
+        return code
+    data = data or load()
+    if code in data["свои_роли"]:
+        return PROCESS_PORTAL_ROLE.get(role_process(code, data), "accountant")
+    return "prod"
 
 
 def role_label(code: str) -> str:
@@ -195,6 +251,10 @@ def role_label(code: str) -> str:
 def _default(role: str, code: str, prod: dict | None = None) -> bool:
     if role in ROLE_LABELS:
         return role in DEFAULTS.get(code, set())
+    if role in CUSTOM_DEFAULTS:
+        return code in CUSTOM_DEFAULTS[role][2]
+    if role in load()["свои_роли"]:
+        return False  # новая своя роль — права выдают вручную
     return code in PROD_DEFAULT and role in (production_roles() if prod is None else prod)
 
 
@@ -387,3 +447,57 @@ def check_role_change(actor: dict, users: list[dict], target: dict, new_role: st
                 u["активен"] = 1 if new_active else 0
         future.append(u)
     guard_last_admin(future, load())
+
+
+# ------------------------------------------------------------------ свои роли и процессы
+def save_role(actor: dict, code: str, name: str, process: str) -> dict:
+    """Новая своя роль (без code) или изменение: свою — название и процесс, служебную — только процесс."""
+    if process not in PROCESSES:
+        raise ValueError("Выберите процесс")
+    if process == "швейный" and code not in ROLE_LABELS:
+        raise ValueError("Швейные роли — операции маршрута: создайте как производственную роль (с кодом и ставкой)")
+    name = str(name or "").strip()
+    data = load()
+    new = json.loads(json.dumps(data))
+    if code in ROLE_LABELS:
+        if not allowed(actor, "stages.edit"):
+            raise AccessError("Нет права изменять роли")
+        before = role_process(code, data)
+        new["процессы"][code] = process
+        _save(new)
+        _log(actor, "процесс роли", role_label(code), "", PROCESSES[before], PROCESSES[process])
+        return {"код": code, "процесс": process}
+    if code and code not in data["свои_роли"]:
+        raise ValueError("Производственную роль меняют в её карточке, процесс у неё — швейный")
+    if not allowed(actor, "stages.edit" if code else "stages.create"):
+        raise AccessError("Нет права " + ("изменять" if code else "создавать") + " роли")
+    if not name:
+        raise ValueError("Укажите название роли")
+    taken = {v.casefold(): c for c, v in all_roles().items()}
+    if taken.get(name.casefold(), code) != code:
+        raise ValueError(f"Роль «{name}» уже есть")
+    if not code:
+        import uuid
+        code = "r_" + uuid.uuid4().hex[:8]
+    before = data["свои_роли"].get(code)
+    new["свои_роли"][code] = {"название": name, "процесс": process}
+    _save(new)
+    _log(actor, "своя роль", name, "", (before or {}).get("название", ""), PROCESSES[process])
+    return {"код": code, "название": name, "процесс": process}
+
+
+def delete_role(actor: dict, code: str, people: int) -> dict:
+    """Удалить свою роль — только если она ни у кого не стоит."""
+    data = load()
+    if code not in data["свои_роли"]:
+        raise ValueError("Удалить можно только свою роль (служебные и производственные удаляются иначе)")
+    if not allowed(actor, "stages.delete"):
+        raise AccessError("Нет права удалять роли")
+    if people:
+        raise ValueError(f"Роль стоит у сотрудников ({people}) — сначала снимите её")
+    new = json.loads(json.dumps(data))
+    name = new["свои_роли"].pop(code).get("название", code)
+    new["роли"].pop(code, None)
+    _save(new)
+    _log(actor, "удалена роль", name, "", name, "")
+    return {"удалена": name}

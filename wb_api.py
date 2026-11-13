@@ -118,12 +118,15 @@ def all_orders(token: str, max_pages: int = 6, limit: int = 1000) -> dict[str, d
     return out
 
 
-def confirm_orders(token: str, order_ids: list[int]) -> dict:
-    """Переводит заказы в сборку (статус confirm)."""
-    if not order_ids:
-        return {}
-    return _request("/api/v3/orders/status", token, method="POST",
-                    payload={"orders": [{"id": int(i), "status": "confirm"} for i in order_ids]})
+def order_statuses(token: str, order_ids: list) -> dict[str, dict]:
+    """Статусы сборочных заданий: id → {supplierStatus, wbStatus} (до 1000 за запрос)."""
+    out: dict[str, dict] = {}
+    ids = [int(i) for i in order_ids if str(i).isdigit()]
+    for k in range(0, len(ids), 1000):
+        data = _request("/api/v3/orders/status", token, method="POST", payload={"orders": ids[k:k + 1000]})
+        for o in data.get("orders") or []:
+            out[str(o.get("id"))] = o
+    return out
 
 
 def ping(token: str) -> dict:

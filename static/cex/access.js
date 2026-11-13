@@ -5,18 +5,23 @@
    Разрешения (что человеку доступно в системе) настраиваются отдельно от ролей.
    Кнопки скрываются по разрешениям, но решает всегда сервер. Работает поверх cex.js. */
 
-const AC = { data: null, person: null, role: null, q: '', sub: 'people', newRole: false };
+const AC = { data: null, person: null, role: null, q: '', sub: 'people', newRole: false, newProc: 'заказ' };
 
 async function loadAccess() {
   AC.data = await api(`${API}/access`);
   const people = AC.data.люди || [];
   if (!people.find((p) => p.логин === AC.person)) AC.person = (people[0] || {}).логин || null;
-  const roles = AC.data.роли || [];
+  const roles = acRolesShown();
   if (!roles.find((r) => r.код === AC.role)) AC.role = (roles.find((r) => r.вид === 'производственная') || roles[0] || {}).код || null;
 }
 
 function acCan(code) { return !!((AC.data && AC.data.мои_права) || {})[code]; }
 function acPerson(login) { return ((AC.data && AC.data.люди) || []).find((p) => p.логин === login); }
+// «Упаковка» (этап УПАК) и «Упаковщик» — одна роль: этап в списках не показываем, его цена — в карточке Упаковщика
+function acRolesShown() {
+  const all = (AC.data && AC.data.роли) || [];
+  return all.some((r) => r.код === 'packer') ? all.filter((r) => r.код !== 'УПАК') : all;
+}
 function acRole(code) { return ((AC.data && AC.data.роли) || []).find((r) => r.код === code); }
 function acRoleName(r) { return ((AC.data && AC.data.роли_названия) || {})[r] || r; }
 function acLocked() { return AC.data.закрытая_роль; }
@@ -51,11 +56,12 @@ function accessHtml() {
   const subs = [['people', 'Сотрудники'], ['roles', 'Роли']];
   if (AC.data.журнал) subs.push(['log', 'Журнал']);
   const add = AC.sub === 'people' && acCan('staff.add') ? '<button class="btn primary" data-act="ac-new-person">+ Сотрудник</button>'
-    : (AC.sub === 'roles' && acCan('stages.create') ? '<button class="btn primary" data-act="ac-role-new">+ Производственная роль</button>' : '');
+    : (AC.sub === 'roles' && acCan('stages.create') ? '<button class="btn primary" data-act="ac-role-new">+ Роль</button>' : '');
   const body = AC.sub === 'roles' ? acRolesHtml() : (AC.sub === 'log' ? acLogHtml() : acPeopleHtml());
   return `<div class="cx-hero compact"><div><h1>Сотрудники и роли</h1>
       <div class="cx-sub">Роль — что человек делает (Технолог, Оверлок, Карман…). Разрешения — что ему доступно в системе. Одному человеку можно дать несколько ролей.</div></div>
-      <div class="cx-hero-actions">${add}<button class="btn" data-act="ac-refresh">Обновить</button></div></div>
+      <div class="cx-hero-actions">${add}${AC.sub === 'people' && acCan('staff.edit')
+        ? '<a class="btn" href="/api/cex/access/logins.xlsx" download title="ФИО, логин, пароль, роль — Excel. Храните файл в надёжном месте">Скачать логины и пароли</a>' : ''}<button class="btn" data-act="ac-refresh">Обновить</button></div></div>
     <div class="cx-tabs">${subs.map(([id, l]) => `<button class="cx-tab ${AC.sub === id ? 'on' : ''}" data-act="ac-sub" data-sub="${id}">${l}</button>`).join('')}</div>
     ${body}`;
 }
@@ -79,7 +85,7 @@ function acPeopleHtml() {
 }
 
 function acRoleChips(p, can) {
-  const group = (kind) => (AC.data.роли || []).filter((r) => r.вид === kind && r.код !== acLocked() && r.код !== 'client')
+  const group = (kind) => acRolesShown().filter((r) => acKind(r) === kind && r.код !== acLocked() && r.код !== 'client')
     .filter((r) => !r.отключён || p.роли.includes(r.код))
     .map((r) => {
       const on = p.роли.includes(r.код);
@@ -102,7 +108,7 @@ function acCardHtml(p) {
   const adminLocked = p.роль === acLocked() && (ST.user || {}).роль !== acLocked();
   const canEdit = acCan('staff.edit') && !me && !adminLocked;
   const canRoles = acCan('stages.assign') && !me && !adminLocked;
-  const mains = (AC.data.роли || []).filter((r) => !r.отключён || r.код === p.роль);
+  const mains = acRolesShown().filter((r) => !r.отключён || r.код === p.роль);
   return `
     <div class="cx-card">
       <div class="cx-card-h"><h3>${esc(p.ФИО)}</h3>
@@ -115,6 +121,11 @@ function acCardHtml(p) {
           <div class="cx-field"><label>ФИО</label><input class="input" id="ac-fio" value="${esc(p.ФИО)}" ${canEdit ? '' : 'disabled'}></div>
           <div class="cx-field"><label>Основная роль</label><select class="input" id="ac-role" ${canRoles ? '' : 'disabled'}>
             ${mains.map((r) => `<option value="${esc(r.код)}" ${r.код === p.роль ? 'selected' : ''}>${esc(r.название)}</option>`).join('')}</select></div>
+          ${'пароль' in p ? `<div class="cx-field"><label>Действующий пароль</label>${p.пароль
+            ? `<div class="cx-btn-row" style="gap:6px;flex-wrap:nowrap"><input class="input" id="ac-cur-pass" type="password" readonly value="${esc(p.пароль)}" data-nodirty>
+              <button class="btn ghost" data-act="ac-pass-show" aria-label="Показать пароль">👁</button>
+              <button class="btn ghost" data-act="ac-pass-copy">Копировать</button></div>`
+            : '<div class="cx-hint">старый, зашифрован — задайте новый, тогда он будет виден</div>'}</div>` : ''}
           <div class="cx-field"><label>Новый пароль</label><input class="input" id="ac-pass" type="password" autocomplete="new-password" placeholder="не менять" ${canEdit ? '' : 'disabled'}></div>
         </div>
         ${me ? '<div class="cx-hint">Свои роли, пароль и разрешения здесь менять нельзя — это делает другой администратор.</div>' : ''}
@@ -123,6 +134,8 @@ function acCardHtml(p) {
           ${canEdit || canRoles ? `<button class="btn primary" data-act="ac-save-person" data-login="${esc(p.логин)}">Сохранить</button>` : ''}
           ${!me && !adminLocked && (p.активен ? acCan('staff.delete') : acCan('staff.edit'))
             ? `<button class="btn ghost ${p.активен ? 'danger' : ''}" data-act="ac-toggle-active" data-login="${esc(p.логин)}" data-on="${p.активен ? 0 : 1}">${p.активен ? 'Отключить' : 'Включить снова'}</button>` : ''}
+          ${!me && !adminLocked && acCan('staff.delete')
+            ? `<button class="btn ghost danger" data-act="ac-delete-person" data-login="${esc(p.логин)}">Удалить</button>` : ''}
         </div>
       </div>
     </div>
@@ -164,8 +177,8 @@ function acPersonPerms(p, locked) {
 }
 
 function acNewPersonModal() {
-  const roles = (AC.data.роли || []).filter((r) => !r.отключён);
-  const opt = (kind) => roles.filter((r) => r.вид === kind).map((r) => `<option value="${esc(r.код)}">${esc(r.название)}</option>`).join('');
+  const roles = acRolesShown().filter((r) => !r.отключён);
+  const opt = (kind) => roles.filter((r) => acKind(r) === kind).map((r) => `<option value="${esc(r.код)}">${esc(r.название)}</option>`).join('');
   const modal = $('#cx-modal');
   modal.innerHTML = `<div class="cx-modal-box">
     <div class="cx-modal-h"><h3>Новый сотрудник</h3><button class="btn cx-close" data-act="close-modal">Закрыть</button></div>
@@ -186,26 +199,36 @@ function acNewPersonModal() {
 }
 
 // ------------------------------------------------------------ роли
+// роль швейного процесса (Упаковщик) — производственная, хоть за ней и стоят свои экраны
+function acKind(r) { return r.процесс === 'швейный' ? 'производственная' : r.вид; }
+
 function acRolesHtml() {
-  const roles = AC.data.роли || [];
+  const roles = acRolesShown();
   const cur = acRole(AC.role) || roles[0];
   if (!cur) return '<div class="cx-card"><div class="cx-empty"><b>Ролей нет</b></div></div>';
-  const chips = (kind) => roles.filter((r) => r.вид === kind).map((r) => `<button class="rt-chip ${r.код === cur.код ? 'on' : ''}" data-act="ac-role" data-role="${esc(r.код)}">
+  const chips = (kind) => roles.filter((r) => acKind(r) === kind).map((r) => `<button class="rt-chip ${r.код === cur.код ? 'on' : ''}" data-act="ac-role" data-role="${esc(r.код)}">
     ${esc(r.название)}${r.отключён ? ' · отключена' : ''} <span>${nf(r.люди.length)}</span></button>`).join('');
-  const form = AC.newRole ? `<div class="cx-card"><div class="cx-card-h"><h3>Новая производственная роль</h3></div><div class="cx-card-b">
+  const procs = AC.data.процессы || {};
+  const sew = AC.newProc === 'швейный';
+  const form = AC.newRole ? `<div class="cx-card"><div class="cx-card-h"><h3>Новая роль</h3></div><div class="cx-card-b">
     <div class="cx-formgrid ac-form">
-      <div class="cx-field"><label>Название</label><input class="input" id="ac-nr-name" placeholder="например, Петля"></div>
-      <div class="cx-field"><label>Код</label><input class="input" id="ac-nr-code" placeholder="ПЕТЛЯ" maxlength="12"></div>
-      <div class="cx-field"><label>Ставка, сом/шт</label><input class="input" id="ac-nr-rate" type="number" min="0" step="0.5" value="0"></div>
+      <div class="cx-field"><label>Название</label><input class="input" id="ac-nr-name" placeholder="например, Сборщик или Петля"></div>
+      <div class="cx-field"><label>Процесс</label><select class="input" id="ac-nr-proc">${Object.entries(procs).map(([k, l]) =>
+        `<option value="${esc(k)}" ${AC.newProc === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></div>
+      <div class="cx-field ac-sew" ${sew ? '' : 'hidden'}><label>Код</label><input class="input" id="ac-nr-code" placeholder="ПЕТЛЯ" maxlength="12"></div>
+      <div class="cx-field ac-sew" ${sew ? '' : 'hidden'}><label>Ставка, сом/шт</label><input class="input" id="ac-nr-rate" type="number" min="0" step="0.5" value="0"></div>
     </div>
-    <div class="cx-hint">Код — коротко заглавными, по нему роль хранится в Excel и в маршрутах. Потом выдайте роль людям и добавьте её в маршрут.</div>
+    <div class="cx-hint ac-sew" ${sew ? '' : 'hidden'}>Швейная роль — операция маршрута: код коротко заглавными, по нему роль хранится в Excel и в маршрутах. Потом выдайте роль людям и добавьте её в маршрут.</div>
+    <div class="cx-hint ac-nosew" ${sew ? 'hidden' : ''}>После создания отметьте ниже её разрешения — новая роль без прав ничего не видит. Потом выдайте её людям.</div>
     <div class="cx-btn-row" style="margin-top:12px"><button class="btn primary" data-act="ac-role-create">Создать</button>
       <button class="btn ghost" data-act="ac-role-cancel">Отмена</button></div></div></div>` : '';
+  const byProc = (k) => roles.filter((r) => r.процесс === k).map((r) => `<button class="rt-chip ${r.код === cur.код ? 'on' : ''}" data-act="ac-role" data-role="${esc(r.код)}">
+    ${esc(r.название)}${r.отключён ? ' · отключена' : ''} <span>${nf(r.люди.length)}</span></button>`).join('');
+  const hints = { заказ: 'оформление заказа, конструктор, снабжение, крой', склад: 'приёмка, хранение, сборка и комплектация',
+    швейный: 'операции маршрута', управление: 'руководство, бухгалтерия, клиенты' };
   return `${form}
-    <div class="ac-group-h">Производственные роли — операции маршрута</div>
-    <div class="ac-rolechips">${chips('производственная') || '<span class="cx-hint">Пока нет</span>'}</div>
-    <div class="ac-group-h">Служебные роли</div>
-    <div class="ac-rolechips">${chips('служебная')}</div>
+    ${Object.entries(procs).map(([k, l]) => `<div class="ac-group-h">${esc(l)} <span class="cx-hint">— ${esc(hints[k] || '')}</span></div>
+    <div class="ac-rolechips">${byProc(k) || '<span class="cx-hint">Пока нет</span>'}</div>`).join('')}
     <div class="ac-split">
       <div>${acRoleSettings(cur)}${acRolePerms(cur)}</div>
       <div>${acRolePeople(cur)}</div>
@@ -214,8 +237,26 @@ function acRolesHtml() {
 
 function acRoleSettings(r) {
   if (r.вид !== 'производственная') {
-    return `<div class="cx-card"><div class="cx-card-h"><h3>${esc(r.название)}</h3><span class="cx-pill grey">служебная</span></div>
-      <div class="cx-card-b"><div class="cx-hint">За служебной ролью стоят свои экраны, поэтому её нельзя удалить или переименовать. Её разрешения настраиваются ниже.</div></div></div>`;
+    const procs = AC.data.процессы || {};
+    const can = acCan('stages.edit') && r.код !== acLocked();
+    const own = !!r.своя;
+    const procSel = `<select class="input" id="ac-rp-proc" ${can ? '' : 'disabled'}>${Object.entries(procs).filter(([k]) => !own || k !== 'швейный')
+      .map(([k, l]) => `<option value="${esc(k)}" ${r.процесс === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
+    return `<div class="cx-card"><div class="cx-card-h"><h3>${esc(r.название)}</h3><span class="cx-pill ${own ? 'blue' : 'grey'}">${own ? 'своя' : (acKind(r) === 'производственная' ? 'швейная' : 'служебная')}</span></div>
+      <div class="cx-card-b">
+        <div class="cx-formgrid ac-form">
+          ${own ? `<div class="cx-field"><label>Название</label><input class="input" id="ac-rp-name" value="${esc(r.название)}" ${can ? '' : 'disabled'}></div>` : ''}
+          <div class="cx-field"><label>Процесс</label>${procSel}</div>
+        </div>
+
+        <div class="cx-btn-row" style="margin-top:10px">
+          ${can ? `<button class="btn primary" data-act="ac-rp-save" data-code="${esc(r.код)}">Сохранить</button>` : ''}
+          ${own && acCan('stages.delete') ? `<button class="btn ghost danger" data-act="ac-rp-del" data-code="${esc(r.код)}" ${r.люди.length ? 'disabled' : ''}>Удалить</button>` : ''}
+        </div>
+        <div class="cx-hint" style="margin-top:6px">${own
+          ? (r.люди.length ? `Роль стоит у сотрудников (${nf(r.люди.length)}) — чтобы удалить, сначала снимите её.` : 'Что роль видит и может — разрешения ниже.')
+          : 'За этой ролью стоят свои экраны, поэтому её нельзя удалить или переименовать; процесс и разрешения — можно.'}</div>
+      </div></div>${r.код === 'packer' ? acPackRate() : ''}`;
   }
   const can = acCan('stages.edit');
   return `<div class="cx-card"><div class="cx-card-h"><h3>${esc(r.название)}</h3>
@@ -226,6 +267,7 @@ function acRoleSettings(r) {
         <div class="cx-field"><label>Ставка, сом/шт</label><input class="input" id="ac-r-rate" type="number" min="0" step="0.5" value="${esc(r.ставка)}" ${can ? '' : 'disabled'}></div>
         <div class="cx-field"><label>Порядок</label><input class="input" id="ac-r-order" type="number" value="${esc(r.порядок)}" ${can ? '' : 'disabled'}></div>
       </div>
+      ${acModelRates(r, can)}
       <div class="cx-btn-row" style="margin-top:10px">
         ${can ? `<button class="btn primary" data-act="ac-role-save" data-code="${esc(r.код)}">Сохранить</button>
           <button class="btn ghost" data-act="ac-role-toggle" data-code="${esc(r.код)}" data-off="${r.отключён ? 0 : 1}">${r.отключён ? 'Включить' : 'Отключить'}</button>` : ''}
@@ -233,6 +275,40 @@ function acRoleSettings(r) {
       </div>
       ${r.используется ? `<div class="cx-hint" style="margin-top:6px">Используется (${esc(r.используется)}) — удалить нельзя, чтобы не потерять историю. Можно отключить: начатые партии её пройдут, но новым людям и в новые маршруты её не добавить.</div>` : ''}
     </div></div>`;
+}
+
+// Упаковщик работает на этапе «Упаковка» (УПАК): цена за штуку — ставка этого этапа, правится прямо здесь
+function acPackRate() {
+  const p = acRole('packer');
+  if (!p || !p.этап) return '';
+  const pack = { ...p, код: p.этап, название: p.этап_название };
+  const can = acCan('stages.edit');
+  return `<div class="cx-card" style="margin-top:14px"><div class="cx-card-h"><h3>Цена за упаковку</h3></div>
+    <div class="cx-card-b">
+      <input type="hidden" id="ac-r-name" value="${esc(pack.название)}">
+      <input type="hidden" id="ac-r-order" value="${esc(pack.порядок)}">
+      <div class="cx-formgrid ac-form">
+        <div class="cx-field"><label>Цена, сом/шт</label><input class="input" id="ac-r-rate" type="number" min="0" step="0.5" value="${esc(pack.ставка)}" ${can ? '' : 'disabled'}></div>
+      </div>
+      ${acModelRates(pack, can)}
+      ${can ? `<div class="cx-btn-row" style="margin-top:10px"><button class="btn primary" data-act="ac-role-save" data-code="${esc(pack.код)}">Сохранить цену</button></div>` : ''}
+      <div class="cx-hint" style="margin-top:6px">Деньги считаются по штукам: цена × сколько упаковщик упаковал.</div>
+    </div></div>`;
+}
+
+// цена за штуку этой роли по моделям; пусто — платится общая ставка роли
+function acModelRates(r, can) {
+  const models = (ST.refs || {}).модели || [];
+  if (!models.length) return '';
+  const own = r.по_моделям || {};
+  const set = models.filter((m) => own[m.модель] != null).length;
+  return `<details class="ac-group" style="margin-top:10px" ${set ? 'open' : ''}>
+    <summary class="ac-group-h">Цена по моделям <span class="cx-hint">своя у ${nf(set)} из ${nf(models.length)} · пусто — ${nf(r.ставка)} сом/шт</span></summary>
+    <table class="cx-table"><tbody>${models.map((m) => `<tr>
+      <td>${esc(m.модель)}<div class="cx-hint">${esc(m.название)}</div></td>
+      <td style="width:130px"><input class="input" type="number" min="0" step="0.5" data-ac-mrate="${esc(m.модель)}"
+        value="${own[m.модель] != null ? esc(own[m.модель]) : ''}" placeholder="${esc(r.ставка)}" ${can ? '' : 'disabled'}></td></tr>`).join('')}
+    </tbody></table></details>`;
 }
 
 function acRolePerms(r) {
@@ -333,11 +409,27 @@ document.addEventListener('input', (ev) => {
   if (t && t.id === 'ac-nr-code') t.dataset.touched = '1';
 });
 
+// процесс новой роли: швейной нужны код и ставка — показываем поля без перерисовки (введённое не теряется)
+document.addEventListener('change', (ev) => {
+  const t = ev.target;
+  if (!t || t.id !== 'ac-nr-proc') return;
+  AC.newProc = t.value;
+  const sew = t.value === 'швейный';
+  document.querySelectorAll('.ac-sew').forEach((e) => { e.hidden = !sew; });
+  document.querySelectorAll('.ac-nosew').forEach((e) => { e.hidden = sew; });
+});
+
 document.addEventListener('click', async (ev) => {
   const el = ev.target.closest('[data-act]');
   if (!el || !el.dataset.act.startsWith('ac-')) return;
   const act = el.dataset.act;
   try {
+    if (act === 'ac-pass-show') { const i = $('#ac-cur-pass'); i.type = i.type === 'password' ? 'text' : 'password'; }
+    if (act === 'ac-pass-copy') {
+      const i = $('#ac-cur-pass'); const was = i.type;
+      i.type = 'text'; i.select(); document.execCommand('copy'); i.type = was; i.blur();  // по http в Wi-Fi clipboard API недоступен
+      toast('Пароль скопирован', 'ok');
+    }
     if (act === 'ac-refresh') { await loadAccess(); render(); toast('Обновлено', 'ok'); }
     if (act === 'ac-sub') { AC.sub = el.dataset.sub; render(); }
     if (act === 'ac-person') {
@@ -367,20 +459,43 @@ document.addEventListener('click', async (ev) => {
       if (!confirm(on ? `Включить ${p.ФИО}? Он снова сможет войти.` : `Отключить ${p.ФИО}? Он не сможет войти. Данные останутся.`)) return;
       await acPost('/account', { логин: p.логин, активен: on }, on ? 'Включён' : 'Отключён');
     }
+    if (act === 'ac-delete-person') {
+      const p = acPerson(el.dataset.login);
+      if (!confirm(`Удалить ${p.ФИО} (${p.логин}) совсем?\n\nОн пропадёт из списка и не сможет войти. Вернуть можно только создав заново.\nСделанная им работа и зарплата за прошлое останутся в журналах.`)) return;
+      await acPost('/account/delete', { логин: p.логин }, 'Сотрудник удалён');
+      AC.person = null;
+    }
     if (act === 'ac-user-reset') {
       await acPost('/user', { логин: el.dataset.login, право: el.dataset.code, значение: null }, 'Как у ролей');
     }
-    if (act === 'ac-role-new') { AC.newRole = true; AC.sub = 'roles'; render(); $('#ac-nr-name').focus(); }
+    if (act === 'ac-role-new') { AC.newRole = true; AC.newProc = AC.newProc || 'заказ'; AC.sub = 'roles'; render(); $('#ac-nr-name').focus(); }
     if (act === 'ac-role-cancel') { AC.newRole = false; render(); }
     if (act === 'ac-role-create') {
-      const body = { название: $('#ac-nr-name').value.trim(), код: $('#ac-nr-code').value.trim().toUpperCase(),
-        ставка: $('#ac-nr-rate').value };
-      await acPost('/stage', body, `Роль «${body.название}» создана`);
-      AC.newRole = false; AC.role = body.код; render();
+      const proc = $('#ac-nr-proc').value;
+      if (proc === 'швейный') {
+        const body = { название: $('#ac-nr-name').value.trim(), код: $('#ac-nr-code').value.trim().toUpperCase(),
+          ставка: $('#ac-nr-rate').value };
+        await acPost('/stage', body, `Роль «${body.название}» создана`);
+        AC.newRole = false; AC.role = body.код; render();
+      } else {
+        const name = $('#ac-nr-name').value.trim();
+        const res = await acPost('/role/save', { название: name, процесс: proc }, `Роль «${name}» создана`);
+        AC.newRole = false; AC.role = res.код; render();
+      }
+    }
+    if (act === 'ac-rp-save') {
+      const name = $('#ac-rp-name');
+      await acPost('/role/save', { код: el.dataset.code, название: name ? name.value.trim() : '', процесс: $('#ac-rp-proc').value }, 'Роль сохранена');
+    }
+    if (act === 'ac-rp-del') {
+      const r = acRole(el.dataset.code);
+      if (!confirm(`Удалить роль «${r.название}»?`)) return;
+      await acPost('/role/delete', { код: el.dataset.code }, `Роль «${r.название}» удалена`);
     }
     if (act === 'ac-role-save') {
       await acPost('/stage', { код: el.dataset.code, название: $('#ac-r-name').value.trim(),
-        ставка: $('#ac-r-rate').value, порядок: $('#ac-r-order').value }, 'Роль сохранена');
+        ставка: $('#ac-r-rate').value, порядок: $('#ac-r-order').value,
+        по_моделям: Object.fromEntries([...document.querySelectorAll('[data-ac-mrate]')].map((i) => [i.dataset.acMrate, i.value.trim()])) }, 'Роль сохранена');
     }
     if (act === 'ac-role-toggle') {
       const r = acRole(el.dataset.code);

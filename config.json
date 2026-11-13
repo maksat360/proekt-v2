@@ -1,6 +1,6 @@
 {
  "backend": "excel",
- "shadow": false,
+ "shadow": true,
  "note": "backend: excel | sql. shadow: true — зеркалить операции склада в SQL. Включать только осознанно.",
  "visible": [
   "wh",
@@ -9,5 +9,7 @@
   "cex"
  ],
  "client_visible": [],
- "excel_flush_minutes": 3
+ "excel_flush_minutes": 3,
+ "db": "postgres",
+ "pg_dsn": "dbname=portal"
 }

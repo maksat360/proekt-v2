@@ -296,6 +296,13 @@ select.input {
   border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--ink); -moz-appearance: textfield; }
 .cx-gin::-webkit-outer-spin-button, .cx-gin::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .cx-gin:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
+/* склад под клеткой заказа: сейчас → прогноз (цвет — сколько есть сейчас) */
+.cx-gstk { margin-top: 3px; font-size: 10.5px; line-height: 1.2; color: var(--ink-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cx-gstk.ok { color: var(--green, #2e9b5d); }
+.cx-gstk.low { color: var(--orange, #d9822b); }
+.cx-gstk.zero { color: var(--red, #e5534b); }
+.cx-gstk b { color: var(--ink); }
+.cx-gstock-card { margin: 12px 0 0; }
 .cx-gin:not(:placeholder-shown) { border-color: var(--blue); background: var(--blue-soft); font-weight: 600; }
 .cx-gsum { color: var(--ink-2); font-weight: 600; min-width: 40px; font-variant-numeric: tabular-nums; }
 .cx-gfoot { display: flex; gap: 10px; align-items: center; padding: 14px 18px; border-top: 1px solid var(--line); flex-wrap: wrap; }
@@ -575,10 +582,46 @@ body.ux-dirty .ux-badge { opacity: 1; transform: none; }
   .ux-badge { margin-left: 6px; font-size: 0; padding: 6px; gap: 0; }  /* на телефоне — только точка */
 }
 @media (prefers-reduced-motion: reduce) {
-  .cx-main.cx-enter > *, .cx-queue > .cx-qitem, .cx-toast:not([hidden]), .ux-sheet, .ux-sheet-wrap { animation: none !important; }
+  .cx-main.cx-enter > *, .cx-queue > .cx-qitem { animation: none !important; }
+  /* окна и тосты — короткое проявление без сдвига: видно, что открылось, но ничего не «едет» */
+  .cx-toast:not([hidden]), .ux-sheet, .ux-sheet-wrap, .cx-modal-box { animation: uxFade .2s ease both !important; }
   .ux-badge, .cx-tab { transition: none; }
+}
+/* меньше прозрачности: размытие с заданной силой (не через переменные) — тоже убираем */
+@media (prefers-reduced-transparency: reduce) {
+  .cx-top, .cx-modal, .cx-acc-menu, .ux-sheet-wrap { -webkit-backdrop-filter: none; backdrop-filter: none; }
+  .cx-top { background: var(--glass-strong, #fff); }
 }
 
 /* номенклатура: выбранная позиция */
 .fl-nomrow:hover td { background: var(--fill); }
 .fl-nomrow.on td { background: var(--blue-soft); }
+
+/* конструктор: размеры в карте включаются переключателями */
+.fl-sztable td { padding: 3px; }
+.fl-sz { position: relative; width: 100%; min-width: 40px; height: 34px; border-radius: 9px; cursor: pointer; font: inherit;
+  font-weight: 700; border: 1px dashed var(--line); background: transparent; color: var(--ink-3); transition: background .15s, border-color .15s, transform .12s; }
+.fl-sz:active { transform: scale(.94); }
+.fl-sz.on { border: 1px solid transparent; background: var(--blue); color: #fff; }
+.fl-sz i { position: absolute; right: 4px; bottom: 2px; font-style: normal; font-size: 9.5px; font-weight: 500; opacity: .75; }
+.fl-szrow { border: 0; background: none; color: inherit; font: inherit; font-weight: 600; cursor: pointer; padding: 0; text-align: left; }
+.fl-szrow:hover { color: var(--blue); }
+/* контрагенты: заголовок группы в таблице */
+.fl-cpgroup td { background: var(--fill); padding-top: 10px; }
+/* роли: поля швейной роли прячутся по процессу */
+.ac-sew[hidden], .ac-nosew[hidden] { display: none !important; }
+
+/* телефон: верхняя панель и кнопки раздела не вылезают за экран */
+@media (max-width: 640px) {
+  .cx-top { gap: 6px; padding: 6px 8px 6px 6px; }
+  .cx-back { padding: 6px 8px; font-size: 12.5px; }
+  .cx-user { min-width: 0; gap: 6px; }
+  .cx-asrole { min-width: 0; flex: 1 1 auto; }
+  .cx-asrole select { width: 100%; max-width: 140px; min-width: 0; text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }
+  .cx-user .v2acc-anchor { flex: none; }
+  .cx-top > a.cx-back[href="/#/shop"] { display: none; }  /* магазин — через «Портал», место для роли */
+  .cx-user .v2acc-name { display: none; }
+  .cx-hero-actions { margin-left: 0; flex-wrap: wrap; width: 100%; }
+  .cx-hero-actions .btn { flex: 1 1 auto; justify-content: center; }
+  .cx-main { overflow-x: hidden; }
+}

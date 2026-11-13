@@ -181,13 +181,14 @@ class DesignerEdgeTests(DesignerBase):
         with self.assertRaisesRegex(ValueError, "нет ни одной строки"):
             self.save(позиции=[])
 
-    def test_zero_allowed_in_draft_but_not_sent(self):
-        self.assertEqual(self.save(позиции=[row(1, "48", 0)])["штук"], 0)  # черновик с нулём можно
-        with self.assertRaisesRegex(ValueError, "0 штук"):
-            self.save(готово=True, позиции=[row(1, "48", 0)])
-        with self.assertRaisesRegex(ValueError, "В карте 2 0 штук"):  # одна пустая карта не уходит
-            self.save(передать=[2], позиции=[row(1, "48", 5), row(2, "50", 0)])
-        self.assertEqual(self.order()["статус"], cex_api.DESIGN)
+    def test_zero_allowed_card_is_sizes_not_quantity(self):
+        # количество в карте примерное: факт впишет закройщик — карту с включёнными размерами можно передать
+        self.assertEqual(self.save(позиции=[row(1, "48", 0)])["штук"], 0)
+        with self.assertRaisesRegex(ValueError, "Карты 3 нет"):  # без включённых размеров карты нет
+            self.save(передать=[3], позиции=[row(1, "48", 5), row(2, "50", 0)])
+        res = self.save(передать=[2], позиции=[row(1, "48", 5), row(2, "50", 0)])
+        self.assertEqual(res["передано"], ["2"])
+        self.assertEqual(self.order()["карты"], {"1": cex_api.DESIGN, "2": cex_api.SUPPLYING})
 
     def test_negative_and_broken_rows(self):
         with self.assertRaisesRegex(ValueError, "отрицательным"):

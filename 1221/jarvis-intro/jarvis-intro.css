@@ -1,0 +1,203 @@
+/* ============================================================
+   JARVIS Intro — стартовая анимация для сайта
+   Все движения: только transform и opacity (GPU, без layout).
+   ============================================================ */
+
+:root {
+  --ji-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ji-bg: #04070d;
+  --ji-accent: #67e8f9;
+  --ji-accent-dim: rgba(103, 232, 249, .35);
+  --ji-accent-faint: rgba(103, 232, 249, .12);
+}
+
+.jarvis-intro {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(60% 60% at 50% 42%, rgba(34, 211, 238, .07), transparent 70%),
+    var(--ji-bg);
+  overflow: hidden;
+  opacity: 1;
+  transition: opacity 420ms var(--ji-ease-out);
+  cursor: pointer;
+}
+.jarvis-intro.is-leaving {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Тонкая сетка фона */
+.jarvis-intro::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  background-image:
+    linear-gradient(var(--ji-accent-faint) 1px, transparent 1px),
+    linear-gradient(90deg, var(--ji-accent-faint) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(70% 70% at 50% 50%, #000 30%, transparent 100%);
+  opacity: 0;
+  animation: ji-grid-in 500ms var(--ji-ease-out) 60ms forwards;
+}
+@keyframes ji-grid-in {
+  to { opacity: .5; }
+}
+
+.jarvis-stage {
+  position: relative;
+  width: min(74vmin, 520px);
+  height: min(74vmin, 520px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ---------- HUD-кольца ---------- */
+.ji-ring {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  animation: ji-ring-in 400ms var(--ji-ease-out) forwards;
+}
+.ji-ring svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  animation: ji-spin linear infinite;
+}
+.ji-ring--outer   { animation-delay: 220ms; }
+.ji-ring--outer svg { animation-duration: 14s; }
+.ji-ring--middle  { inset: 9%; animation-delay: 340ms; }
+.ji-ring--middle svg { animation-duration: 9s; animation-direction: reverse; }
+.ji-ring--inner   { inset: 19%; animation-delay: 460ms; }
+.ji-ring--inner svg { animation-duration: 6s; }
+
+@keyframes ji-ring-in {
+  from { opacity: 0; transform: scale(.97); }
+  to   { opacity: 1; transform: scale(1); }
+}
+@keyframes ji-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ---------- Логотип ---------- */
+.ji-logo {
+  width: 56%;
+  opacity: 0;
+  transform: scale(.96);
+  filter: drop-shadow(0 0 18px rgba(103, 232, 249, .55));
+  animation: ji-logo-in 520ms var(--ji-ease-out) 500ms forwards;
+}
+@keyframes ji-logo-in {
+  to { opacity: 1; transform: scale(1); }
+}
+
+/* Скан-линия, один раз проходящая по логотипу */
+.ji-scan {
+  position: absolute;
+  left: 14%;
+  right: 14%;
+  height: 2px;
+  top: 18%;
+  background: linear-gradient(90deg, transparent, var(--ji-accent), transparent);
+  box-shadow: 0 0 14px var(--ji-accent-dim);
+  opacity: 0;
+  animation: ji-scan 900ms var(--ji-ease-out) 620ms forwards;
+}
+@keyframes ji-scan {
+  0%   { opacity: 0; transform: translateY(0); }
+  12%  { opacity: 1; }
+  85%  { opacity: 1; }
+  100% { opacity: 0; transform: translateY(min(46vmin, 330px)); }
+}
+
+/* ---------- Подпись ---------- */
+.ji-tag {
+  position: absolute;
+  bottom: 4%;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-family: "JetBrains Mono", "SF Mono", Consolas, monospace;
+  font-size: clamp(11px, 1.6vmin, 14px);
+  letter-spacing: .42em;
+  text-transform: uppercase;
+  color: var(--ji-accent);
+  opacity: 0;
+  animation: ji-tag-in 360ms var(--ji-ease-out) 1500ms forwards;
+}
+@keyframes ji-tag-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: .9; transform: translateY(0); }
+}
+
+/* ---------- Бут-лог ---------- */
+.ji-boot {
+  position: absolute;
+  left: clamp(16px, 4vw, 48px);
+  bottom: clamp(16px, 4vh, 44px);
+  font-family: "JetBrains Mono", "SF Mono", Consolas, monospace;
+  font-size: clamp(10px, 1.4vmin, 13px);
+  line-height: 1.9;
+  color: var(--ji-accent-dim);
+  pointer-events: none;
+}
+.ji-boot-line {
+  opacity: 0;
+  transform: translateY(4px);
+  animation: ji-boot-line 260ms var(--ji-ease-out) forwards;
+}
+.ji-boot-line .ok { color: var(--ji-accent); }
+@keyframes ji-boot-line {
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Уголки-скобки по краям экрана */
+.ji-corner {
+  position: absolute;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--ji-accent-dim);
+  opacity: 0;
+  animation: ji-corner-in 300ms var(--ji-ease-out) 120ms forwards;
+}
+.ji-corner--tl { top: 20px; left: 20px; border-right: 0; border-bottom: 0; }
+.ji-corner--tr { top: 20px; right: 20px; border-left: 0; border-bottom: 0; }
+.ji-corner--bl { bottom: 20px; left: 20px; border-right: 0; border-top: 0; }
+.ji-corner--br { bottom: 20px; right: 20px; border-left: 0; border-top: 0; }
+@keyframes ji-corner-in {
+  to { opacity: .8; }
+}
+
+/* Подсказка «клик — пропустить» */
+.ji-skip {
+  position: absolute;
+  right: clamp(16px, 4vw, 48px);
+  bottom: clamp(16px, 4vh, 44px);
+  font-family: "JetBrains Mono", "SF Mono", Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: .18em;
+  color: rgba(103, 232, 249, .3);
+}
+
+/* ---------- Reduced motion: без вращения, скан-линии и сдвигов ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .jarvis-intro { transition-duration: 200ms; }
+  .ji-ring svg { animation: none; }
+  .ji-ring,
+  .ji-ring--outer,
+  .ji-ring--middle,
+  .ji-ring--inner { animation-duration: 200ms; animation-delay: 0ms; }
+  @keyframes ji-ring-in { from { opacity: 0; } to { opacity: 1; } }
+  .ji-logo { animation-duration: 200ms; animation-delay: 0ms; transform: none; }
+  @keyframes ji-logo-in { to { opacity: 1; } }
+  .ji-scan { display: none; }
+  .ji-boot-line { animation-duration: 150ms; transform: none; }
+  .ji-tag { animation-duration: 200ms; animation-delay: 300ms; }
+  @keyframes ji-tag-in { to { opacity: .9; } }
+}

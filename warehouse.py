@@ -29,7 +29,7 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from cex_store import BOOK_LOCK  # общий с цехом замок записи рабочей книги
+from cex_store import BOOK_LOCK, guard as cex_guard  # общий с цехом замок записи; проверка «открыт в Excel»
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
@@ -116,34 +116,38 @@ def _norm(v) -> str:
     return " ".join(str(v or "").lower().replace("ё", "е").split())
 
 
-def article_index() -> dict:
-    """Индекс сопоставления FBS: (артикул продавца + размер) → наше наименование.
+def _size(v) -> str:
+    """Размер для сравнения: «42.» = «42», «0» у WB = без размера (постель)."""
+    s = _norm(v).rstrip(".").strip()
+    return "" if s == "0" else s
 
-    В книге «главный»: колонка B — артикул FBS, колонка C — размер,
-    колонка L — полное наименование товара.
-    """
+
+BARCODE_COL = 20  # «главный», колонка T — баркоды WB (через «; », если их несколько)
+
+
+def _barcode_text(v) -> list[str]:
+    if isinstance(v, float) and v.is_integer():  # баркод, введённый как число
+        v = int(v)
+    return [b.strip() for b in str(v or "").replace(",", ";").split(";") if b.strip()]
+
+
+def article_index() -> dict:
+    """Лист «главный»: B — артикул, C — размер, L — наименование, T — баркоды WB.
+    pairs: (артикул, размер) → наименование; barcodes: баркод → наименование."""
     key = _signature(source_path())
     if _ART_CACHE["key"] == key and _ART_CACHE["data"] is not None:
         return _ART_CACHE["data"]
-    data = {"by_full": {}, "by_prefix_size": {}, "by_prefix": {}}
+    data = {"pairs": {}, "barcodes": {}}
     wb = load_workbook(source_path(), data_only=True, read_only=True)
     try:
-        ws = wb["главный"]
-        for row in list(ws.iter_rows(values_only=True))[4:]:
-            if not row or len(row) < 12:
+        for row in list(wb["главный"].iter_rows(values_only=True))[4:]:
+            if not row or len(row) < 12 or not _clean(row[11]):
                 continue
-            art = _norm(row[1])
-            size = _norm(row[2])
             name = _clean(row[11])
-            if not art or not name:
-                continue
-            data["by_full"].setdefault(art, name)
-            data["by_full"].setdefault(_norm(name), name)
-            if art.endswith("/"):
-                data["by_prefix_size"].setdefault((art, size), name)
-            data["by_prefix"].setdefault(art, name)
-            # вариант «артикул уже содержит размер»
-            data["by_full"].setdefault(_norm(art + size), name)
+            if _norm(row[1]):
+                data["pairs"].setdefault((_norm(row[1]), _size(row[2])), name)
+            for bc in _barcode_text(row[BARCODE_COL - 1] if len(row) >= BARCODE_COL else None):
+                data["barcodes"].setdefault(bc, name)
     finally:
         wb.close()
     _ART_CACHE["key"] = key
@@ -151,28 +155,162 @@ def article_index() -> dict:
     return data
 
 
-def resolve_by_article(article: str, size: str = "") -> str | None:
-    """Артикул продавца + размер → наше наименование (или None)."""
-    idx = article_index()
-    art = _norm(article)
-    sz = _norm(size)
-    if not art:
+def resolve_by_barcode(barcode: str) -> str | None:
+    """Только по баркоду из колонки T листа «главный»."""
+    return article_index()["barcodes"].get(str(barcode or "").strip())
+
+
+def import_barcodes(path: str | Path) -> dict:
+    """Выгрузка WB «Общие характеристики» (B — артикул продавца, L — баркод, M — размер) →
+    баркоды в колонку T «главного», в строку с тем же артикулом (B) и размером (C)."""
+    src = load_workbook(path, data_only=True, read_only=True)
+    try:
+        rows = list(src["Товары"].iter_rows(values_only=True))[4:]
+    finally:
+        src.close()
+    want: dict[tuple[str, str], list[str]] = {}
+    for r in rows:
+        if r and len(r) > 12 and _clean(r[1]) and _clean(r[11]):
+            want.setdefault((_norm(r[1]), _size(r[12])), []).append(_clean(r[11]))
+    p = source_path()
+    with BOOK_LOCK:
+        cex_guard(p)
+        _backup(p)
+        wb = load_workbook(p, keep_vba=True)
+        ws = wb["главный"]
+        ws.cell(row=4, column=BARCODE_COL, value="баркод WB")
+        used, rows_done = set(), 0
+        for r in range(5, ws.max_row + 1):
+            k = (_norm(ws.cell(r, 2).value), _size(ws.cell(r, 3).value))
+            if not k[0] or k not in want:
+                continue
+            have = _barcode_text(ws.cell(r, BARCODE_COL).value)
+            merged = have + [b for b in want[k] if b not in have]
+            ws.cell(r, BARCODE_COL, value="; ".join(merged))
+            used.add(k)
+            rows_done += 1
+        _save_atomic(wb, p)
+    _ART_CACHE["key"] = None
+    miss = sorted((k, v) for k, v in want.items() if k not in used)
+    return {"баркодов": sum(len(v) for v in want.values()), "строк_заполнено": rows_done,
+            "нет_в_главном": [(a, s, ", ".join(b)) for (a, s), b in miss]}
+
+
+# --- сопоставление с выгрузкой WB, где артикул — просто модель («477»), а цвет — отдельная колонка (ЖСК)
+def _nn(v) -> str:
+    return re.sub(r"\s+", " ", str(v or "").strip().lower().replace("ё", "е").replace("-", " "))
+
+
+def _colors(v) -> frozenset:
+    """«белый;синий» = «синий, белый» = «Синий, белый» — порядок и разделитель не важны."""
+    return frozenset(x.strip() for x in re.split(r"[;,]", _nn(v)) if x.strip())
+
+
+def name_key(name: str):
+    """«Брюки/477/мята-пыльная/42» → ("", "477", {мята пыльная}, "42"); постель — со своей категорией."""
+    p = str(name or "").split("/")
+    if len(p) < 4:
         return None
-    hit = idx["by_full"].get(art)
-    if hit:
-        return hit
-    if sz:
-        hit = idx["by_prefix_size"].get((art, sz))
-        if hit:
-            return hit
-    # размер в конце артикула: «Брюки/477/мята-пыльная/64»
-    if "/" in art:
-        prefix, last = art.rsplit("/", 1)
-        prefix_slash = prefix + "/"
-        hit = idx["by_prefix_size"].get((prefix_slash, last))
-        if hit:
-            return hit
-    return None
+    if _nn(p[0]) == "постель":  # у навычки та же модель — её не путаем с комплектом
+        return _bed_key(p[1], p[3])
+    return ("", _nn(p[1]), _colors(p[2]), _nn(_size(p[3])).replace(",", "."))
+
+
+def wb_key(article, color, size, wb_category):
+    """Строка выгрузки WB → тот же ключ. У постельного WB размера нет: «1,5 сп шахмат» → 1.5 сп, иначе 1 сп."""
+    if _nn(wb_category).startswith("постельное"):
+        return _bed_key(article, "")
+    return ("", _nn(article), _colors(color), _nn(_size(size)))
+
+
+def _bed_key(model, size) -> tuple:
+    """Постель: рисунок + размер. «1,5 СП ШАХМАТ» → («шахмат», «1.5 сп»), без приставки — 1 сп.
+    Цвет не сравниваем: он задан рисунком, а в карточках WB у полуторок стоит «черный;белый» для всех."""
+    m = re.match(r"^(\d+(?:[.,]\d+)?)\s*сп\s+(.+)$", _nn(model))
+    bed = m.group(2) if m else _nn(model)
+    sz = (m.group(1).replace(",", ".") + " сп") if m else (_nn(size).replace(",", ".") or "1 сп")
+    return ("постель", bed, frozenset(), sz)
+
+
+def wb_rows(path) -> list[dict]:
+    """Лист «Товары» выгрузки WB: B артикул, E категория, H фото, K цвет, L баркоды, M размер."""
+    src = load_workbook(path, data_only=True, read_only=True)
+    try:
+        rows = list(src["Товары"].iter_rows(values_only=True))[3:]
+    finally:
+        src.close()
+    out = []
+    for r in rows:
+        if r and len(r) > 12 and _clean(r[1]) and _clean(r[11]) and _clean(r[1]) != "Артикул продавца":
+            out.append({"ключ": wb_key(r[1], r[10], r[12], r[4]), "баркоды": _barcode_text(r[11]),
+                        "фото": str(r[7] or "").split(";")[0].strip(), "wb": f"{r[1]} / {r[10]} / {r[12] or '—'}"})
+    return out
+
+
+def alias_keys(key: tuple, aliases: dict | None) -> list[tuple]:
+    """Ключ строки WB с учётом соответствий цветов: {(модель, «цвета WB»): [цвета «главного»]}."""
+    cat, model, colors, size = key
+    for (m, c), to in (aliases or {}).items():
+        if _nn(m) == model and _colors(c) == colors:
+            return [(cat, model, _colors(x), size) for x in to]
+    return [key]
+
+
+def aliases_from_template(path) -> dict:
+    """Заполненный шаблон «Сопоставление цветов»: модель, цвет WB, цвет «главного» (несколько — через «+»)."""
+    wb = load_workbook(path, data_only=True, read_only=True)
+    try:
+        out = {}
+        for r in list(wb.worksheets[0].iter_rows(values_only=True))[1:]:
+            if r and len(r) >= 4 and _clean(r[0]) and _clean(r[1]) and _clean(r[3]) \
+                    and _nn(r[3]) not in ("нет", "нету", "-", "—", "пусто"):  # «нету» — цвета в «главном» нет
+                out[(_clean(r[0]), _clean(r[1]))] = [x.strip() for x in _clean(r[3]).split("+") if x.strip()]
+        return out
+    finally:
+        wb.close()
+
+
+def import_barcodes_by_model(path, dry: bool = False, aliases: dict | None = None) -> dict:
+    """Баркоды WB → колонка T «главного» там, где одновременно совпали модель, цвет(а) и размер.
+    Уже записанные баркоды (другого кабинета) сохраняются, новые дописываются через «; ».
+    aliases — цвет WB, названный в «главном» иначе: {(модель, «цвета WB»): [цвета в «главном»]}.
+    Несколько цветов — комплект: его баркод получают все строки (поиск по баркоду найдёт первую)."""
+    want: dict = {}
+    labels: dict = {}
+    for r in wb_rows(path):
+        for k in alias_keys(r["ключ"], aliases):
+            want.setdefault(k, []).extend(b for b in r["баркоды"] if b not in want.get(k, []))
+            labels[k] = r["wb"]
+    p = source_path()
+    with BOOK_LOCK:
+        if not dry:
+            cex_guard(p)
+            _backup(p)
+        wb = load_workbook(p, keep_vba=not dry, read_only=dry, data_only=dry)
+        try:
+            ws = wb["главный"]
+            used, rows_done, added = set(), 0, 0
+            for r, row in enumerate(ws.iter_rows(min_row=5, values_only=True), start=5) if dry else \
+                    ((r, [ws.cell(r, c).value for c in range(1, BARCODE_COL + 1)]) for r in range(5, ws.max_row + 1)):
+                k = name_key(row[11] if len(row) > 11 else "")
+                if not k or k not in want:
+                    continue
+                have = _barcode_text(row[BARCODE_COL - 1] if len(row) >= BARCODE_COL else None)
+                new = [b for b in want[k] if b not in have]
+                used.add(k)
+                rows_done += 1
+                added += len(new)
+                if new and not dry:
+                    ws.cell(r, BARCODE_COL, value="; ".join(have + new))
+            if not dry:
+                ws.cell(row=4, column=BARCODE_COL, value="баркод WB")
+                _save_atomic(wb, p)
+        finally:
+            if dry:
+                wb.close()
+    _ART_CACHE["key"] = None
+    return {"строк_в_выгрузке": len(want), "строк_совпало": rows_done, "баркодов_добавлено": added,
+            "не_найдено": sorted(labels[k] for k in want if k not in used)}
 
 
 def _clean(v) -> str:
@@ -411,8 +549,18 @@ def _fbs_shipped() -> dict:
         return {}
 
 
+def _sql_fact() -> dict | None:
+    try:
+        import fbs_stock
+        return fbs_stock.fact_by_name()
+    except Exception:
+        return None
+
+
 def stock_items() -> list[dict]:
-    key = (_stock_key(), tuple(sorted(_fbs_shipped().items())))
+    sql_fact = _sql_fact()
+    key = (_stock_key(), tuple(sorted(_fbs_shipped().items())),
+           tuple(sorted(sql_fact.items())) if sql_fact is not None else None)
     if _STOCK["key"] == key:
         return _STOCK["items"]
     data = load_master()
@@ -425,13 +573,22 @@ def stock_items() -> list[dict]:
     for r in led.get("приход", []):
         bought[_clean(r.get("наименование"))] += _num(r.get("количество"))
     out = []
-    for it in data["items"]:
+    items = list(data["items"])
+    known = {it["наименование"] for it in items}
+    for name in sorted(set(sql_fact or {}) - known):  # товары, заведённые в цехе (нет в «главном»)
+        parts = [x.strip() for x in name.split("/")] + ["", "", "", ""]
+        items.append({"наименование": name, "категория": parts[0], "модель": parts[1], "цвет": parts[2],
+                      "размер": parts[3], "фк": 0.0, "приобретено": 0.0, "неликвид": 0.0, "размещено": 0.0})
+    for it in items:
         name = it["наименование"]
         # «до KB»: куплено − размещено − неликвид (по листам) + ещё не выгруженные операции
         pend = (it.get("приобретено", 0.0) - it.get("размещено", 0.0) - it.get("неликвид", 0.0)
                 + bought.get(name, 0.0) - placed.get(name, 0.0))
         fbs = _fbs_shipped().get(name, 0.0)
-        fact = it["фк"] + placed.get(name, 0.0) - shipped.get(name, 0.0) - fbs
+        if sql_fact is not None:  # PostgreSQL — источник истины (операции зеркалятся туда)
+            fact = sql_fact.get(name, 0.0)
+        else:
+            fact = it["фк"] + placed.get(name, 0.0) - shipped.get(name, 0.0) - fbs
         out.append({
             **it,
             "остаток": round(fact, 2),
@@ -545,10 +702,16 @@ def receive(supplier: str, name: str, qty: float, defect: float, batch: str) -> 
     return {"остаток": round(item["остаток"], 2), "ожидает": round(item.get("ожидает", 0) + qty, 2)}
 
 
-def receive_multi(supplier: str, batch: str, defect: float, rows: list[dict]) -> dict:
-    """Приход сразу по нескольким размерам: [{наименование, количество}, ...]."""
+NO_ADDRESS = "без адреса"  # коробка для товара, принятого сразу на склад
+
+
+def receive_multi(supplier: str, batch: str, defect: float, rows: list[dict],
+                  direct: bool = False) -> dict:
+    """Приход сразу по нескольким размерам: [{наименование, количество}, ...].
+    direct — сразу на склад: размещаем в «без адреса», товар сразу в факте (пока нет адресного хранения)."""
     ok = 0
     total = 0.0
+    placed = []
     with _LOCK:
         led = _ledger()
         for row in rows:
@@ -565,6 +728,13 @@ def receive_multi(supplier: str, batch: str, defect: float, rows: list[dict]) ->
                 "наименование": item["наименование"], "количество": qty,
                 "поставщик": supplier, "неликвид": defect, "партия": batch,
             })
+            if direct:
+                led.setdefault("адрес", []).append({
+                    "key": _op_key(),
+                    "дата": datetime.now().strftime("%d.%m.%Y %H:%M"), "коробка": NO_ADDRESS,
+                    "наименование": item["наименование"], "количество": qty,
+                })
+                placed.append((item["наименование"], qty))
             ok += 1
             total += qty
         _save_ledger(led)
@@ -573,7 +743,9 @@ def receive_multi(supplier: str, batch: str, defect: float, rows: list[dict]) ->
     flush_async()
     _shadow("приход", {"поставщик": supplier, "партия": batch, "неликвид": defect,
                        "позиции": rows})
-    return {"строк": ok, "штук": total}
+    for name, qty in placed:
+        _shadow("адрес", {"коробка": NO_ADDRESS, "наименование": name, "количество": qty})
+    return {"строк": ok, "штук": total, "сразу_на_склад": bool(direct)}
 
 
 def place(box: str, name: str, qty: float) -> dict:
@@ -606,10 +778,12 @@ def place(box: str, name: str, qty: float) -> dict:
 
 
 def ship(target: str, name: str, qty: float, order: str = "", who: str = "",
-         check: str = "Nice✅") -> dict:
+         check: str = "Nice✅", any_target: bool = False) -> dict:
+    """any_target: заказ сотрудника или FBO — листа «паставка …» нет, списание идёт в PostgreSQL,
+    в книгу Excel такая отгрузка не пишется (выгрузка пропускает получателей без листа)."""
     sheets = load_master().get("ship_sheets") or {k.upper(): v for k, v in SHIP_SHEET.items()}
     target = _clean(target).upper()
-    if target not in sheets:
+    if target not in sheets and not any_target:
         raise ValueError(f"Нет листа отгрузки для «{target}» (нужен лист «паставка {target}»)")
     item = resolve_product(name)
     if not item:
@@ -1060,7 +1234,9 @@ def available_for_order() -> dict:
     return {name: max(0.0, qty - reserved.get(name, 0.0)) for name, qty in stock.items()}
 
 
-def create_order(client: str, items: list[dict]) -> dict:
+def create_order(client: str, items: list[dict], author: str = "", kind: str = "свой",
+                 cabinet: str = "") -> dict:
+    """kind: «свой» — от своего имени, «FBO» — от имени кабинета WB (client = «FBO · ККМ»)."""
     clean = []
     for it in items:
         name = _clean(it.get("наименование"))
@@ -1083,6 +1259,9 @@ def create_order(client: str, items: list[dict]) -> dict:
             "id": oid,
             "дата": datetime.now().strftime("%d.%m.%Y %H:%M"),
             "клиент": client,
+            "автор": author or client,
+            "тип": kind,
+            "кабинет": cabinet,
             "статус": "новый",
             "позиции": clean,
         })
@@ -1091,9 +1270,12 @@ def create_order(client: str, items: list[dict]) -> dict:
     return {"id": oid, "позиций": len(clean)}
 
 
-def orders(client: str | None = None, status: str | None = None) -> list[dict]:
+def orders(client: str | None = None, status: str | None = None,
+           author: str | None = None) -> list[dict]:
     led = _ledger()
     rows = list(led.get("orders", []))
+    if author:  # старые заказы без «автор» — по клиенту
+        rows = [o for o in rows if (o.get("автор") or o.get("клиент")) == author]
     if client:
         rows = [o for o in rows if o.get("клиент") == client]
     if status:
@@ -1168,7 +1350,9 @@ def order_ship(order_id: int, name: str, qty: float, who: str = "",
     left = _num(item.get("количество")) - _num(item.get("отгружено"))
     if qty <= 0 or qty > left:
         raise ValueError(f"Осталось собрать {left:g} шт")
-    res = ship(order.get("клиент"), name, qty, str(order_id), who, check)
+    # заказ сотрудника («свой») и FBO списываются без листа отгрузки; заказы ЖСК/ККМ/Алтын — как раньше
+    res = ship(order.get("клиент"), name, qty, str(order_id), who, check,
+               any_target=order.get("тип") in ("свой", "FBO"))
     with _LOCK:
         led2 = _ledger()
         for o in led2.get("orders", []):
@@ -1424,3 +1608,159 @@ def negatives() -> list[dict]:
             })
     out.sort(key=lambda x: -x["пересорт"])
     return out
+
+
+def add_products(category: str, model: str, colors: list[str], sizes: list[str]) -> int:
+    """Завести позиции склада «Категория/модель/цвет/размер» в PostgreSQL. Возвращает, сколько новых."""
+    import sys
+    if str(BASE / "sql") not in sys.path:
+        sys.path.insert(0, str(BASE / "sql"))
+    import db as sqldb  # noqa: WPS433
+    import hashlib
+    con = sqldb.connect()
+    added = 0
+    try:
+        for color in colors:
+            for size in sizes:
+                name = f"{category}/{model}/{color}/{size}"
+                pid = hashlib.sha1(("product|" + name).encode()).hexdigest()[:20]
+                cur = con.execute(
+                    """INSERT INTO products(id, name, category, model, color, size, source_sheet, created_at)
+                       VALUES (?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
+                    (pid, name, category, model, color, str(size), "цех", sqldb.now()))
+                added += max(getattr(cur, "rowcount", 0) or 0, 0)  # соединение в autocommit
+    finally:
+        con.close()
+    try:
+        import fbs_stock
+        fbs_stock._FACT["ts"] = 0.0  # остатки перечитаются — новые позиции сразу видны в «Приходе»
+    except Exception:  # noqa: BLE001
+        pass
+    return added
+
+
+# ---------- Принятое: приёмки через портал (PostgreSQL, source='shadow') ----------
+# shortcut: история из книги (source='excel') не показывается — там задвоенные строки; показать после переимпорта
+ALL_SUPPLIERS = "*"
+
+
+def _receipt_rows(day: str = "") -> list:
+    import sys
+    if str(BASE / "sql") not in sys.path:
+        sys.path.insert(0, str(BASE / "sql"))
+    import db as sqldb  # noqa: WPS433
+    con = sqldb.connect()
+    try:
+        sql = """SELECT pu.ts, pu.supplier, pu.batch, pu.qty, p.name
+                 FROM purchases pu LEFT JOIN products p ON p.id = pu.product_id
+                 WHERE pu.source = 'shadow'"""
+        args: tuple = ()
+        if day:
+            sql += " AND pu.ts LIKE ?"
+            args = (day + "%",)
+        return con.execute(sql + " ORDER BY pu.ts", args).fetchall()
+    finally:
+        con.close()
+
+
+def receipts() -> list[dict]:
+    """Приёмки по партиям (партия за несколько дней — одна строка), свежие сверху."""
+    out: dict[tuple[str, str], dict] = {}
+    for r in _receipt_rows():  # строки идут по времени — последняя дата в конце списка
+        key = (str(r["supplier"] or ""), str(r["batch"] or ""))
+        g = out.setdefault(key, {"поставщик": key[0], "партия": key[1], "даты": [], "штук": 0.0})
+        g["штук"] += float(r["qty"] or 0)
+        day = str(r["ts"])[:10]
+        if day not in g["даты"]:
+            g["даты"].append(day)
+    return sorted(out.values(), key=lambda g: (g["даты"][-1], g["партия"]), reverse=True)
+
+
+def receipt_lines(day: str = "", supplier: str = ALL_SUPPLIERS, batch: str = ALL_SUPPLIERS) -> list[dict]:
+    return [{"время": str(r["ts"])[:16], "поставщик": r["supplier"] or "", "партия": r["batch"] or "",
+             "товар": r["name"] or "", "кол-во": float(r["qty"] or 0)}
+            for r in _receipt_rows(day)
+            if (supplier == ALL_SUPPLIERS or (r["supplier"] or "") == supplier)
+            and (batch == ALL_SUPPLIERS or (r["batch"] or "") == batch)]
+
+
+def receipt_xlsx(day: str = "", supplier: str = ALL_SUPPLIERS, batch: str = ALL_SUPPLIERS) -> bytes:
+    import io
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+    lines = receipt_lines(day, supplier, batch)
+    if not lines:
+        raise ValueError("приёмок не найдено")
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Принято"
+    ws.append([f"Принято на склад{' ' + day if day else ''} · {'все поставщики' if supplier == ALL_SUPPLIERS else supplier or 'без поставщика'}"
+               f"{'' if batch == ALL_SUPPLIERS else ' · партия ' + (batch or '—')}"])
+    ws["A1"].font = Font(bold=True, size=13)
+    ws.append(["Время", "Поставщик", "Партия", "Товар", "Кол-во"])
+    for x in lines:
+        ws.append([x["время"], x["поставщик"], x["партия"], x["товар"], x["кол-во"]])
+    ws.append(["Итого", "", "", "", sum(x["кол-во"] for x in lines)])
+    for c in ws[2] + ws[ws.max_row]:
+        c.font = Font(bold=True)
+    for col, w in zip("ABCDE", (17, 20, 10, 34, 8)):
+        ws.column_dimensions[col].width = w
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def full_xlsx() -> bytes:
+    """Весь склад одной книгой: остатки + приход, размещение и отгрузки из PostgreSQL."""
+    import io
+    import sys
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+    if str(BASE / "sql") not in sys.path:
+        sys.path.insert(0, str(BASE / "sql"))
+    import db as sqldb  # noqa: WPS433
+    wb = Workbook()
+
+    def sheet(title, headers, rows, widths):
+        ws = wb.create_sheet(title)
+        ws.append(headers)
+        for c in ws[1]:
+            c.font = Font(bold=True)
+        for r in rows:
+            ws.append(list(r))
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = ws.dimensions
+        for i, w in enumerate(widths):
+            ws.column_dimensions[chr(65 + i)].width = w
+
+    items = stock_items()
+    sheet("Остатки", ["Наименование", "Категория", "Модель", "Цвет", "Размер", "Остаток", "Ждёт размещения",
+                      "Приход", "Отгружено", "из них FBS", "Адрес"],
+          ([i["наименование"], i["категория"], i["модель"], i["цвет"], i["размер"], i["остаток"], i["ожидает"],
+            i["приход"], i["отгружено"], i["фbs"], i["адрес"]] for i in items),
+          (34, 14, 10, 20, 8, 10, 12, 10, 10, 10, 16))
+    con = sqldb.connect()
+    try:
+        q = lambda sql: con.execute(sql).fetchall()
+        sheet("Приход", ["Дата", "Поставщик", "Партия", "Наименование", "Кол-во", "Неликвид", "Откуда"],
+              ([r["ts"], r["supplier"], r["batch"], r["name"], r["qty"], r["defect"],
+                "портал" if r["source"] == "shadow" else "книга Excel"] for r in q(
+                  """SELECT pu.ts, pu.supplier, pu.batch, p.name, pu.qty, pu.defect, pu.source
+                     FROM purchases pu LEFT JOIN products p ON p.id = pu.product_id ORDER BY pu.ts""")),
+              (19, 18, 8, 34, 8, 9, 12))
+        sheet("Размещение", ["Дата", "Коробка", "Наименование", "Кол-во"],
+              ([r["ts"], r["location_code"], r["name"], r["qty"]] for r in q(
+                  """SELECT pl.ts, pl.location_code, p.name, pl.qty
+                     FROM placements pl LEFT JOIN products p ON p.id = pl.product_id ORDER BY pl.ts""")),
+              (19, 14, 34, 8))
+        sheet("Отгрузки", ["Дата", "Получатель", "Наименование", "Кол-во", "Кто", "Откуда"],
+              ([r["ts"], r["target"], r["name"], r["qty"], r["user"], r["source_sheet"]] for r in q(
+                  """SELECT s.ts, s.target, p.name, s.qty, s.user, s.source_sheet
+                     FROM shipments s LEFT JOIN products p ON p.id = s.product_id ORDER BY s.ts""")),
+              (19, 14, 34, 8, 14, 18))
+    finally:
+        con.close()
+    wb.remove(wb.active)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()

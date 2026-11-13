@@ -9,7 +9,7 @@ from pathlib import Path
 from openpyxl import load_workbook
 
 BASE = Path(__file__).resolve().parent.parent
-SHIP_SHEETS = ("паставка ЖСК", "паставка ККМ", "паставка ААТ",
+SHIP_SHEETS = ("паставка ЖСК", "паставка ККМ", "паставка ААТ", "паставка Алтын",
                "паставка4", "паставка5", "паставка6")
 SHOP_SHEET = "магазин"
 

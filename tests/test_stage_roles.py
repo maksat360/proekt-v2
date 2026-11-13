@@ -47,6 +47,59 @@ class StageRolesTests(unittest.TestCase):
         perms._save({"роли": {}, "сотрудники": {"keeper": {"cex.work": False}}})
         self.assertFalse(cex_api._can_work(KEEPER))  # личный запрет начальника сильнее
 
+    def test_packer_works_on_pack_stage(self):
+        packer = {"логин": "pack", "роль": "packer"}
+        self.assertIn(cex_api.PACK_STAGE, cex_api.roles_of(packer))
+        self.assertTrue(cex_api._can_work(packer))
+
+    def test_pack_stage_is_packer_role(self):
+        roles = {r["код"]: r for r in cex_api.access_state(ADMIN)["роли"]}
+        self.assertNotIn(cex_api.PACK_STAGE, roles)  # «Упаковка» отдельной ролью не показывается
+        self.assertEqual(roles["packer"]["этап"], cex_api.PACK_STAGE)
+        self.assertIn("ставка", roles["packer"])
+
+    def test_delete_account(self):
+        import types
+        users = [dict(ADMIN), {"логин": "anna", "фио": "Анна", "роль": "ОВЕРЛ"}]
+        table = {"users": [dict(u) for u in users]}
+        fake = types.SimpleNamespace(read_table=lambda n: [dict(r) for r in table[n]],
+                                     write_table=lambda n, rows: table.__setitem__(n, rows))
+        old_users, old_srv = cex_api._all_users, sys.modules.get("server")
+        cex_api._all_users = lambda: users
+        sys.modules["server"] = fake
+        try:
+            self.st.sheets[cex_api.STAFF[0]] = [{"логин": "anna", "роли": "КАРМАН"}, {"логин": "boss"}]
+            perms._save({"роли": {}, "сотрудники": {"anna": {"cex.work": False}}})
+            self.assertEqual(cex_api.delete_account(ADMIN, {"логин": "anna"})["удалён"], True)
+            self.assertEqual([r["логин"] for r in table["users"]], ["boss"])
+            self.assertEqual([r["логин"] for r in self.st.sheets[cex_api.STAFF[0]]], ["boss"])
+            self.assertNotIn("anna", perms.load()["сотрудники"])
+            with self.assertRaises(perms.AccessError):  # себя удалить нельзя
+                cex_api.delete_account(ADMIN, {"логин": "boss"})
+        finally:
+            cex_api._all_users = old_users
+            if old_srv is None:
+                sys.modules.pop("server", None)
+            else:
+                sys.modules["server"] = old_srv
+
+    def test_logins_excel(self):
+        import io
+        from openpyxl import load_workbook
+        users = [dict(ADMIN, пароль="secret"), {"логин": "anna", "фио": "Анна", "роль": "ОВЕРЛ", "пароль": "1111"},
+                 {"логин": "old", "фио": "Старый", "роль": "ОВЕРЛ", "пароль": "a" * 64}]
+        old_users = cex_api._all_users
+        cex_api._all_users = lambda: users
+        try:
+            rows = list(load_workbook(io.BytesIO(cex_api.logins_xlsx(ADMIN))).active.iter_rows(values_only=True))
+            got = {r[1]: r[2] for r in rows[1:]}
+            self.assertEqual((got["anna"], got["boss"]), ("1111", "secret"))
+            self.assertIn("зашифрован", got["old"])
+            with self.assertRaises(PermissionError):  # швея логины не выгружает
+                cex_api.logins_xlsx({"логин": "anna", "роль": "ОВЕРЛ"})
+        finally:
+            cex_api._all_users = old_users
+
     def test_disabled_stage_kept_but_not_added(self):
         route = [{"код": "ОВЕРЛ", "после": "РАСКР"}, {"код": "КАРМАН", "после": "РАСКР"}]
         cex_api.save_route(ADMIN, {"шаблон": "Основной", "этапы": route})
@@ -59,6 +112,26 @@ class StageRolesTests(unittest.TestCase):
             cex_api.save_route(ADMIN, {"шаблон": "Новый", "этапы": route})
         cex_api.toggle_stage(ADMIN, {"код": "КАРМАН", "отключён": False})
         cex_api.save_route(ADMIN, {"шаблон": "Новый", "этапы": route})
+
+
+class FinishedRouteTests(unittest.TestCase):
+    """Маршрут ГП (приёмка → поставка): на выбор только роли складского процесса."""
+    setUp = StageRolesTests.setUp
+    tearDown = StageRolesTests.tearDown
+
+    def test_fin_palette_is_warehouse_roles(self):
+        fin, sew = set(cex_api._wh_ops()), set(cex_api._ops())  # палитры маршрута ГП и швейного
+        self.assertTrue({"storekeeper", "wh_receiver", "wh_picker", "wh_kitter"} <= fin)
+        self.assertFalse(fin & {"ОВЕРЛ", "КАРМАН", "packer"}, "швейных операций и упаковщика в маршруте ГП нет")
+        self.assertFalse(sew & {"storekeeper", "wh_picker"}, "складских ролей в швейном маршруте нет")
+
+    def test_fin_route_saves_with_warehouse_roles(self):
+        cex_api.save_route(ADMIN, {"вид": "гп", "шаблон": cex_api.MAIN_ROUTE, "этапы": [
+            {"код": "wh_receiver", "после": []}, {"код": "wh_picker", "после": ["wh_receiver"]}]})
+        rows = cex_api.route_templates("гп")[cex_api.MAIN_ROUTE]
+        st = cex_api._editor_stages(rows, cex_api._route_ops())
+        self.assertEqual([(x["код"], x["название"], x["после"]) for x in st],
+                         [("wh_receiver", "Приёмщик", []), ("wh_picker", "Сборщик", ["wh_receiver"])])
 
 
 if __name__ == "__main__":

@@ -149,6 +149,7 @@ async function renderLogin() {
 
   $('#login-form').addEventListener('submit', async (e) => {
     e.preventDefault();
+    if (window.assistUnlock) window.assistUnlock();  // Safari: звук приветствия разрешён только по нажатию «Войти»
     const fd = new FormData(e.target);
     try {
       const res = await fetch('/api/login', {
@@ -188,12 +189,12 @@ const NAV = [
   { id: 'tasks', label: 'Мои задачи', icon: 'tasks', roles: ['prod', 'technologist'] },
   { id: 'batches', label: 'Партии', icon: 'batches', roles: ['admin', 'manager', 'technologist', 'storekeeper', 'accountant', 'prod'] },
   { id: 'cex', label: 'Цех', icon: 'tasks', roles: ['admin', 'manager', 'technologist', 'cutter', 'packer', 'prod', 'accountant', 'storekeeper', 'designer', 'supply'], href: '/cex/' },
-  { id: 'orders', label: 'Мои заказы', icon: 'receipt', roles: ['client'] },
+  { id: 'orders', label: 'Мои заказы', icon: 'receipt', roles: ['*'], cap: 'orders.create' },
   { id: 'fbs', label: 'Заказы WB', icon: 'receipt', roles: ['admin', 'manager', 'storekeeper'] },
-  { id: 'wh', label: 'Склад', icon: 'wh', roles: ['admin', 'manager', 'storekeeper', 'accountant', 'technologist', 'prod'] },
+  { id: 'wh', label: 'Склад', icon: 'wh', roles: ['admin', 'manager', 'storekeeper', 'accountant', 'technologist', 'prod'], cap: 'wh.view' },
   { id: 'materials', label: 'Материалы', icon: 'materials', roles: ['admin', 'manager', 'storekeeper', 'accountant', 'technologist'] },
   { id: 'finished', label: 'Готовая продукция', icon: 'finished', roles: ['admin', 'manager', 'storekeeper', 'accountant'] },
-  { id: 'shop', label: 'Магазин', icon: 'bag', roles: ['admin', 'manager', 'storekeeper', 'accountant', 'technologist', 'prod', 'client'] },
+  { id: 'shop', label: 'Магазин', icon: 'bag', roles: ['*'] },
   { id: 'sales', label: 'Продажи', icon: 'receipt', roles: ['admin', 'manager', 'storekeeper', 'accountant'] },
   { id: 'payroll', label: 'Зарплата', icon: 'payroll', roles: ['admin', 'manager', 'accountant', 'prod', 'technologist'] },
   { id: 'analytics', label: 'Аналитика', icon: 'analytics', roles: ['admin', 'manager', 'accountant'] },
@@ -289,21 +290,34 @@ function bindNeedNet() {
 function visibleNav(role) {
   // все роли человека добавляют свои разделы; производственные (Оверлок, Карман…) — это «prod»
   const mine = (STATE.me && STATE.me.роль === role && STATE.me.роли_портала) || [role];
-  const all = NAV.filter((n) => n.roles.some((r) => mine.includes(r)));
+  const all = NAV.filter((n) => (n.roles.includes('*') || n.roles.some((r) => mine.includes(r)))
+    && (!n.cap || (STATE.caps || {})[n.cap] || role === 'client'));
   const allowed = role === 'client' ? (STATE.clientVisible || []) : (STATE.visible || null);
   if (!Array.isArray(allowed) || !allowed.length) {
-    return role === 'client' ? [] : all;
+    return all;  // клиенту без настройки — магазин и свои заказы
   }
-  return all.filter((n) => allowed.includes(n.id));
+  return all.filter((n) => allowed.includes(n.id) || n.id === 'orders');  // свои заказы — всем, кто может заказывать
 }
 
 function renderShell() {
   const role = STATE.me.роль;
   const cexOnly = ['cutter', 'packer', 'prod', 'designer', 'supply'];
-  if ((STATE.me.роли_портала || [role]).every((r) => cexOnly.includes(r))) { location.replace('/cex/'); return; }
+  const shopRoute = /^#\/(shop|orders)/.test(location.hash);  // из цеха в магазин — не уводим обратно
+  // «‹ Портал» из цеха (/?portal=1) — человек сам пришёл в портал: до конца сеанса вкладки не уводим в цех
+  let toPortal = false;
+  try {
+    if (new URLSearchParams(location.search).has('portal')) sessionStorage.setItem('v2-portal', '1');
+    toPortal = sessionStorage.getItem('v2-portal') === '1';
+  } catch (e) { /* без хранилища — как раньше */ }
+  if (!shopRoute && !toPortal && (STATE.me.роли_портала || [role]).every((r) => cexOnly.includes(r))) { location.replace('/cex/'); return; }
   let nav = visibleNav(role);
   const canWh = !!(STATE.caps && STATE.caps['wh.view']);
   if (MODE.sklad && canWh) nav = nav.filter((n) => n.id === 'wh');
+  // Джарвису — только то меню, что видит сотрудник
+  // и вкладки внутри этих разделов (Склад → Приход, Поставка…) — только у видимых разделов
+  const subs = { wh: WH_TABS.map(([id, l]) => ({ id: 'wh-' + id, label: 'Склад → ' + l, href: id === 'stock' ? '#/wh' : '#/wh/' + id })) };
+  window.ASSIST_SECTIONS = nav.flatMap((n) => [{ id: n.id, label: n.label, href: n.href || '#/' + n.id }, ...(subs[n.id] || [])]);
+  if (window.assistMount) window.assistMount();
   if (!nav.length) {
     $('#app').innerHTML = `<div class="login-wrap"><div class="login-card" style="text-align:center">
       <div class="need-net" style="padding:26px 18px 8px">
@@ -360,7 +374,9 @@ function renderShell() {
 }
 
 async function logout() {
+  if (window.assistBye) await window.assistBye();  // Джарвис прощается, пока сессия ещё жива
   try { await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' }); } catch (e) {}
+  try { sessionStorage.removeItem('v2-portal'); } catch (e) {}  // следующий человек на этом устройстве — снова сразу в цех
   STATE.me = null;
   STATE.caps = null;
   WH.meta = null;
@@ -1302,6 +1318,7 @@ const SHOP = {
   data: null,
   ф: { категория: '', модель: '', цвет: '', размер: '', q: '', только: true },
   корзина: new Map(),
+  выбор: {},  // карточка (категория|модель|цвет) → id выбранного размера
   лимит: 48,
 };
 
@@ -1360,70 +1377,213 @@ function isLight(hex) {
   return (r * 299 + g * 587 + b * 114) / 1000 > 190;
 }
 
-function shopFiltered() {
+// Витрина как на Wildberries: карточка = модель в одном цвете, размеры — кнопками внутри
+const shopColor = (it) => String(it['цвет']).split(',')[0].trim();
+const sizeSort = (a, b) => String(a['размер']).localeCompare(String(b['размер']), 'ru', { numeric: true });
+
+function shopFiltered() {  // карточки: [{key, items:[размеры]}]
   const items = (SHOP.data ? SHOP.data.data : []) || [];
   const f = SHOP.ф;
   const q = f.q.trim().toLowerCase();
-  return items.filter((it) => {
-    if (f.категория && it['категория'] !== f.категория) return false;
-    if (f.модель && it['модель'] !== f.модель) return false;
-    if (f.цвет && String(it['цвет']).split(',')[0].trim() !== f.цвет) return false;
-    if (f.размер && String(it['размер']) !== f.размер) return false;
-    if (f.только && num(it['количество']) <= 0) return false;
+  const groups = new Map();
+  items.forEach((it) => {
+    if (f.категория && it['категория'] !== f.категория) return;
+    if (f.модель && it['модель'] !== f.модель) return;
+    if (f.цвет && shopColor(it) !== f.цвет) return;
     if (q) {
       const hay = (it['наименование'] + ' ' + it['модель'] + ' ' + it['цвет'] + ' ' + it['артикул']).toLowerCase();
-      if (!hay.includes(q)) return false;
+      if (!hay.includes(q)) return;
     }
+    const key = [it['категория'], it['модель'], shopColor(it)].join('|');
+    if (!groups.has(key)) groups.set(key, { key, items: [] });
+    groups.get(key).items.push(it);
+  });
+  return [...groups.values()].filter((g) => {
+    g.items.sort(sizeSort);
+    if (f.размер && !g.items.some((it) => String(it['размер']) === f.размер)) return false;
+    if (f.только && !g.items.some((it) => stockOf(it) > 0)) return false;
     return true;
   });
 }
 
 function shopGrid() {
-  const items = shopFiltered();
-  if (!items.length) {
+  const groups = shopFiltered();
+  if (!groups.length) {
     return '<div class="empty">Ничего не нашлось — снимите фильтры</div>';
   }
-  const shown = items.slice(0, SHOP.лимит);
+  const shown = groups.slice(0, SHOP.лимит);
   return `<div class="products">${shown.map(productCard).join('')}</div>
-    ${items.length > shown.length ? `<div style="text-align:center;margin-top:16px">
-      <button class="btn" data-shop="more">Показать ещё ${items.length - shown.length}</button></div>` : ''}`;
+    ${groups.length > shown.length ? `<div style="text-align:center;margin-top:16px">
+      <button class="btn" data-shop="more">Показать ещё ${groups.length - shown.length}</button></div>` : ''}`;
 }
 
-function productCard(it) {
-  const stock = num(it['количество']);
-  const avail = (it['доступно'] !== undefined && it['доступно'] !== null) ? num(it['доступно']) : stock;
+// фото карточки: ссылки через «;». Одна ссылка WB (…/images/big/1.webp) — пробуем соседние 2…10:
+// у WB все фото карточки лежат рядом; несуществующие миниатюры сами скрываются
+function shopPhotos(items) {
+  const raw = String((items.find((x) => String(x['фото'] || '').trim()) || {})['фото'] || '');
+  const list = raw.split(';').map((u) => u.trim()).filter(Boolean);
+  const m = list.length === 1 && list[0].match(/^(.*\/images\/(?:big|c516x688|tm)\/)1\.(webp|jpg)$/);
+  return { list, all: m ? Array.from({ length: 10 }, (_, i) => `${m[1]}${i + 1}.${m[2]}`) : list, auto: !!m };
+}
+const shopTitle = (it) => String(it['название'] || '').trim() || `${it['категория']} ${it['модель'] || ''}`;
+function shopGroup(key) {
+  const items = ((SHOP.data && SHOP.data.data) || []).filter((it) => [it['категория'], it['модель'], shopColor(it)].join('|') === key);
+  return items.length ? { key, items: items.sort(sizeSort) } : null;
+}
+
+function openShopCard(key) {
+  const g = shopGroup(key);
+  if (!g) return;
+  const it = g.items[0];
+  const ph = shopPhotos(g.items);
+  const canEdit = STATE.caps['shop.price'];
+  const color = colorOf(shopColor(it));
+  const main = ph.all[0];
+  modal({
+    title: shopTitle(it), wide: true, noSubmit: true,
+    body: `<div class="shop-card">
+      <div class="sc-gallery">
+        <div class="sc-main" style="background:linear-gradient(160deg, ${color}22, #fff 78%)">${main
+          ? `<img id="sc-main" src="${esc(main)}" alt="">` : productArt(it['иконка'], color)}</div>
+        ${ph.all.length > 1 ? `<div class="sc-thumbs">${ph.all.map((u, i) => `<img class="${i ? '' : 'on'}" src="${esc(u)}" data-sc-thumb alt="" loading="lazy">`).join('')}</div>` : ''}
+      </div>
+      <div class="sc-info">
+        <div class="hint">${esc(it['категория'])} · модель ${esc(it['модель'])} · ${esc(shopColor(it))} · арт. ${esc(it['артикул'])}</div>
+        ${String(it['описание'] || '').trim() ? `<p style="white-space:pre-line">${esc(it['описание'])}</p>` : ''}
+        <table class="table" style="margin-top:8px"><thead><tr><th>Размер</th><th class="num">В наличии</th><th class="num">Цена</th><th></th></tr></thead>
+          <tbody>${g.items.map((x) => `<tr><td><b>${esc(x['размер'])}</b></td>
+            <td class="num">${stockOf(x) > 0 ? nf(stockOf(x)) + ' шт' : '<span class="muted">нет</span>'}</td>
+            <td class="num">${money(num(x['цена']))}</td>
+            <td>${stockOf(x) > 0 ? `<button type="button" class="btn sm" data-sc-add="${x['id']}">В корзину</button>` : ''}</td></tr>`).join('')}</tbody></table>
+        ${canEdit ? `<div class="btn-row" style="margin-top:12px"><button type="button" class="btn primary" data-sc-edit="${esc(key)}">Изменить карточку</button></div>` : ''}
+      </div></div>`,
+  });
+  const root = $('#modal-root');
+  // миниатюры WB 2…10, которых нет у карточки, убираем после ошибки загрузки
+  $$('[data-sc-thumb]', root).forEach((img) => img.addEventListener('error', () => { img.style.display = 'none'; }));
+  root.querySelector('.modal').addEventListener('click', (e) => {
+    const t = e.target.closest('[data-sc-thumb]');
+    if (t) { $('#sc-main').src = t.src; $$('[data-sc-thumb]', root).forEach((x) => x.classList.toggle('on', x === t)); }
+    const ed = e.target.closest('[data-sc-edit]');
+    if (ed) editShopCard(ed.dataset.scEdit);
+    const add = e.target.closest('[data-sc-add]');
+    if (add) {
+      const id = String(add.dataset.scAdd);
+      const item = g.items.find((x) => String(x['id']) === id);
+      const cur = SHOP.корзина.get(id) || 0;
+      if (cur >= stockOf(item)) { toast(`Больше нет: доступно ${nf(stockOf(item))} шт`, 'err'); return; }
+      SHOP.корзина.set(id, cur + 1);
+      refreshShopGrid();
+      toast(`В корзине: ${item['размер']} · ${cur + 1} шт`);
+    }
+  });
+}
+
+function editShopCard(key) {
+  const g = shopGroup(key);
+  if (!g) return;
+  const it = g.items[0];
+  const ph = shopPhotos(g.items);
+  modal({
+    title: 'Карточка · ' + shopTitle(it), wide: true, submit: 'Сохранить карточку',
+    body: `
+      <div class="field"><label>Название на витрине</label>
+        <input class="input" name="название" maxlength="120" value="${esc(it['название'] || '')}" placeholder="${esc(it['категория'] + ' ' + (it['модель'] || ''))}"></div>
+      <div class="field"><label>Описание</label>
+        <textarea class="input" name="описание" rows="3" maxlength="2000" placeholder="ткань, посадка, уход…">${esc(it['описание'] || '')}</textarea></div>
+      <div class="field"><label>Фото — по одной ссылке в строке, первое — главное</label>
+        <textarea class="input" name="фото" id="sc-photos" rows="4" style="font-size:12px">${esc(ph.list.join('\n'))}</textarea>
+        <div class="btn-row" style="margin-top:6px"><label class="btn sm">Загрузить своё фото
+          <input type="file" accept="image/jpeg,image/png,image/webp" id="sc-upload" hidden multiple></label>
+          <span class="hint">${ph.auto ? 'Остальные фото WB этой карточки подтягиваются сами' : ''}</span></div></div>
+      <div class="field"><label>Цена для всех размеров, сом</label>
+        <div class="btn-row"><input class="input" type="number" min="0" step="10" id="sc-all" style="max-width:140px" placeholder="напр. 1800">
+          <button type="button" class="btn sm" id="sc-all-apply">Поставить всем</button></div></div>
+      <div class="size-grid">${g.items.map((x) => `<label class="size-cell"><span>${esc(x['размер'])}</span>
+        <input class="input" type="number" min="0" step="10" name="цена_${x['id']}" value="${num(x['цена'])}"></label>`).join('')}</div>`,
+    onSubmit: async (data) => {
+      const prices = {};
+      g.items.forEach((x) => { prices[x['id']] = data['цена_' + x['id']]; });
+      const photos = String(data['фото'] || '').split(/[\n;]/).map((u) => u.trim()).filter(Boolean);
+      await api('/api/shop/card', { method: 'POST', body: JSON.stringify({
+        ids: g.items.map((x) => x['id']), 'название': data['название'], 'описание': data['описание'], 'фото': photos, 'цены': prices }) });
+      g.items.forEach((x) => {
+        Object.assign(x, { 'название': data['название'].trim(), 'описание': data['описание'].trim(), 'фото': photos.join(';') });
+        if (String(prices[x['id']]).trim() !== '') x['цена'] = num(prices[x['id']]);
+      });
+      toast('Карточка сохранена');
+      refreshShopGrid();
+    },
+  });
+  $('#sc-all-apply').onclick = () => {
+    const v = $('#sc-all').value;
+    if (v !== '') g.items.forEach((x) => { const inp = $(`[name="цена_${x['id']}"]`); if (inp) inp.value = v; });
+  };
+  $('#sc-upload').onchange = async (e) => {
+    for (const f of e.target.files) {
+      if (f.size > 5e6) { toast(`${f.name}: больше 5 МБ`, 'err'); continue; }
+      const dataUrl = await new Promise((ok) => { const r = new FileReader(); r.onload = () => ok(r.result); r.readAsDataURL(f); });
+      try {
+        const res = await api('/api/shop/photo', { method: 'POST', body: JSON.stringify({ 'данные': dataUrl, ext: f.name.split('.').pop() }) });
+        const ta = $('#sc-photos');
+        ta.value = (ta.value.trim() ? ta.value.trim() + '\n' : '') + res.url;
+        toast('Фото загружено — не забудьте сохранить');
+      } catch (err) { toast(err.message, 'err'); }
+    }
+  };
+}
+
+function productCard(g) {
+  const items = g.items;
+  // выбранный размер: что выбрал покупатель → размер из фильтра → первый в наличии
+  const want = SHOP.выбор[g.key];
+  const it = items.find((x) => String(x['id']) === want)
+    || (SHOP.ф.размер && items.find((x) => String(x['размер']) === SHOP.ф.размер))
+    || items.find((x) => stockOf(x) > 0) || items[0];
+  const avail = stockOf(it);
   const price = num(it['цена']);
-  const color = colorOf(String(it['цвет']).split(',')[0]);
-  const photo = String(it['фото'] || '').trim();
+  const color = colorOf(shopColor(it));
+  const photo = shopPhotos(items).list[0] || '';
   const media = photo
-    ? `<img class="photo" src="${esc(photo)}" alt="${esc(it['наименование'])}" loading="lazy">`
+    ? `<img class="photo" src="${esc(photo)}" alt="${esc(it['категория'] + ' ' + it['модель'])}" loading="lazy">`
     : productArt(it['иконка'], color);
   const inCart = SHOP.корзина.get(String(it['id'])) || 0;
+  const anyStock = items.some((x) => stockOf(x) > 0);
+  const sizes = items.map((x) => {
+    const n = stockOf(x);
+    const c = SHOP.корзина.get(String(x['id'])) || 0;
+    return `<button type="button" class="szbtn ${x === it ? 'on' : ''} ${n > 0 ? '' : 'none'}" data-shop="size"
+      data-key="${esc(g.key)}" data-id="${x['id']}" title="${n > 0 ? nf(n) + ' шт' : 'нет в наличии'}">${esc(x['размер'])}${c ? `<i>${c}</i>` : ''}</button>`;
+  }).join('');
   return `
-    <div class="product ${stock <= 0 ? 'out' : ''}">
-      <div class="ph" style="background:linear-gradient(160deg, ${color}22, #ffffff 78%)">
+    <div class="product ${anyStock ? '' : 'out'}">
+      <div class="ph" data-shop="card" data-key="${esc(g.key)}" style="cursor:pointer;background:linear-gradient(160deg, ${color}22, #ffffff 78%)" title="Открыть карточку">
         ${media}
         <span class="pill grey cat">${esc(it['категория'])}</span>
-        ${STATE.caps['shop.price'] ? `<button class="price-edit" data-shop="price" data-id="${it['id']}" title="Изменить цену">₽</button>` : ''}
+        ${STATE.caps['shop.price'] ? `<button class="price-edit" data-shop="price" data-id="${it['id']}" title="Изменить цену размера ${esc(it['размер'])}">₽</button>` : ''}
       </div>
       <div class="pbody">
-        <div class="pname">${esc(it['категория'])} ${esc(it['модель'] || '')} · ${esc(it['размер'])}</div>
-        <div class="pmeta">${esc(String(it['цвет']).split(',')[0])} · арт. ${esc(it['артикул'])}</div>
+        <div class="pname" data-shop="card" data-key="${esc(g.key)}" style="cursor:pointer">${esc(shopTitle(it))}</div>
+        <div class="pmeta">${esc(shopColor(it))} · арт. ${esc(it['артикул'])}</div>
+        <div class="szrow" aria-label="Размеры">${sizes}</div>
         <div class="prow">
           <b>${money(price)}</b>
           ${(STATE.caps['wh.view'] && num(it['склад']) < 0)
             ? `<span class="stock zero" style="color:#d12e2e" title="По складу минус — как в столбце ф.к">минус ${nf(-num(it['склад']))} шт</span>`
-            : `<span class="stock ${avail > 0 ? '' : 'zero'}">${avail > 0 ? nf(avail) + ' шт' : 'нет в наличии'}</span>`}
+            : `<span class="stock ${avail > 0 ? '' : 'zero'}">${avail > 0 ? `${esc(it['размер'])}: ${nf(avail)} шт` : 'нет в наличии'}</span>`}
         </div>
         ${avail > 0
-          ? `<button class="btn primary sm" data-shop="add" data-id="${it['id']}">В корзину${inCart ? ' · ' + inCart : ''}</button>`
-          : '<button class="btn sm" disabled>Всё заказано</button>'}
+          ? `<button class="btn primary sm" data-shop="add" data-id="${it['id']}">В корзину · ${esc(it['размер'])}${inCart ? ' · ' + inCart : ''}</button>`
+          : '<button class="btn sm" disabled>Размера нет</button>'}
       </div>
     </div>`;
 }
 
 PAGES.shop = async () => {
   const res = await api('/api/shop');
+  if ((STATE.caps || {})['orders.fbo'] && !SHOP.cabinets) {
+    try { SHOP.cabinets = ((await api('/api/wb/cabinets')).data || []).filter((c) => c.active !== 0); } catch (e) { SHOP.cabinets = []; }
+  }
   SHOP.data = res;
   SHOP.лимит = 48;
   const t = res['итоги'];
@@ -1700,6 +1860,12 @@ function bindShop() {
       refreshShopGrid();
       return;
     }
+    const size = e.target.closest('[data-shop="size"]');
+    if (size) {
+      SHOP.выбор[size.dataset.key] = String(size.dataset.id);
+      refreshShopGrid();
+      return;
+    }
     const add = e.target.closest('[data-shop="add"]');
     if (add) {
       const id = String(add.dataset.id);
@@ -1715,7 +1881,9 @@ function bindShop() {
       return;
     }
     const price = e.target.closest('[data-shop="price"]');
-    if (price) openPrice(price.dataset.id);
+    if (price) { openPrice(price.dataset.id); return; }
+    const card = e.target.closest('[data-shop="card"]');
+    if (card) openShopCard(card.dataset.key);
   });
 
   const q = $('#shop-q');
@@ -1750,7 +1918,7 @@ function refreshShopGrid() {
   if (!grid) return;
   grid.innerHTML = shopGrid();
   const count = $('#shop-count');
-  if (count) count.textContent = shopFiltered().length + ' поз.';
+  if (count) count.textContent = shopFiltered().length + ' карт.';
   updateCartFab();
 }
 
@@ -1790,18 +1958,25 @@ function updateCartFab() {
 function openCart() {
   const lines = cartLines();
   if (!lines.length) return;
-  const isClient = STATE.me.роль === 'client';
+  const caps = STATE.caps || {};
+  const canSell = !!caps['shop.sell'] && STATE.me.роль !== 'client';
+  const modes = [
+    ...(canSell ? [['sale', 'Продажа']] : []),
+    ...(caps['orders.create'] || STATE.me.роль === 'client' ? [['own', 'Заказ от своего имени']] : []),
+    ...(caps['orders.fbo'] ? (SHOP.cabinets || []).map((c) => [`fbo:${c.id}`, `FBO · ${c.name}`]) : []),
+  ];
+  const isClient = !canSell;
   modal({
     title: 'Корзина',
-    submit: isClient ? 'Отправить заказ' : 'Оформить продажу',
+    submit: canSell ? 'Оформить' : 'Отправить заказ',
     wide: true,
     body: `
       <div style="display:grid;gap:10px" id="cart-lines">
         ${lines.map((l) => `
           <div class="cartline" data-line="${l.it['id']}">
             <div class="cl-art" style="background:linear-gradient(160deg, ${colorOf(String(l.it['цвет']).split(',')[0])}33, #fff)">
-              ${String(l.it['фото'] || '').trim()
-                ? `<img class="photo" src="${esc(l.it['фото'])}" alt="">`
+              ${shopPhotos([l.it]).list[0]
+                ? `<img class="photo" src="${esc(shopPhotos([l.it]).list[0])}" alt="">`
                 : productArt(l.it['иконка'], colorOf(String(l.it['цвет']).split(',')[0]))}
             </div>
             <div class="cl-body">
@@ -1820,20 +1995,25 @@ function openCart() {
       </div>
       <div class="sep"></div>
       <div class="kv" style="font-size:15px"><span>Итого</span><b id="cart-modal-sum">${money(cartTotal())}</b></div>
-      ${isClient ? '' : `<div class="field"><label>Покупатель</label>
-        <input class="input" name="покупатель" placeholder="розница или имя клиента"></div>`}`,
+      ${modes.length > 1 ? `<div class="field"><label>Что оформить</label><select class="input" name="режим" id="cart-mode">
+        ${modes.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('')}</select></div>` : ''}
+      ${canSell ? `<div class="field" id="cart-buyer"><label>Покупатель</label>
+        <input class="input" name="покупатель" placeholder="розница или имя клиента"></div>` : ''}`,
     onSubmit: async () => {
       const lines = cartLines();
       if (!lines.length) throw new Error('Корзина пуста');
-      if (STATE.me.роль === 'client') {
+      const mode = ($('#cart-mode') || {}).value || (modes[0] || ['own'])[0];
+      if (mode !== 'sale') {
         const over = lines.find((l) => l.qty > stockOf(l.it));
         if (over) {
           throw new Error(`${over.it['наименование']}: доступно ${nf(stockOf(over.it))} шт`);
         }
         const позиции = lines.map((l) => ({ 'наименование': l.it['наименование'], 'количество': l.qty }));
-        const res = await api('/api/orders', { method: 'POST', body: JSON.stringify({ позиции }) });
+        const fbo = mode.startsWith('fbo:');
+        const res = await api('/api/orders', { method: 'POST', body: JSON.stringify({
+          позиции, тип: fbo ? 'FBO' : 'свой', кабинет: fbo ? mode.slice(4) : '' }) });
         SHOP.корзина.clear();
-        toast('Заказ №' + res['id'] + ' отправлен на склад', 'ok');
+        toast(`Заказ №${res['id']}${fbo ? ' FBO' : ''} отправлен на склад`, 'ok');
         await go('orders');
         return;
       }
@@ -1906,7 +2086,7 @@ function openPrice(id) {
 }
 
 PAGES.orders = async () => {
-  const res = await api('/api/orders');
+  const res = await api('/api/orders?мои=1');
   const rows = res.data || [];
   return `
     <div class="hero"><div><h1>Мои заказы</h1>
@@ -1914,7 +2094,7 @@ PAGES.orders = async () => {
       <div class="actions"><a class="btn primary" href="#/shop">В каталог</a></div></div>
     ${rows.length ? rows.map((o) => `
       <div class="card">
-        <div class="card-h"><h3>№${o['id']} · ${esc(o['дата'])}</h3><div class="spacer"></div>
+        <div class="card-h"><h3>№${o['id']} · ${esc(o['дата'])}</h3>${o['тип'] === 'FBO' ? ` ${pill('FBO · ' + (o['кабинет'] || ''), 'blue')}` : ''}<div class="spacer"></div>
           ${pill(o['статус'], o['статус'] === 'собран' ? 'green' : (o['статус'] === 'отменён' ? 'red' : 'orange'))}
           ${(o['статус'] || 'новый') === 'новый' ? `<button class="btn tiny" data-ocancel="${o['id']}">Отменить</button>` : ''}</div>
         <div class="card-b">
@@ -1929,31 +2109,139 @@ PAGES.orders = async () => {
 
 PAGES.fbs = async () => {
   const status = FBSPAGE.status || '';
-  const res = await api('/api/wb/orders' + (status ? '?статус=' + encodeURIComponent(status) : ''));
+  const cab = FBSPAGE.cab || '';
+  const qs = [status && 'статус=' + encodeURIComponent(status), cab && 'кабинет=' + encodeURIComponent(cab)].filter(Boolean);
+  const res = await api('/api/wb/orders' + (qs.length ? '?' + qs.join('&') : ''));
   const rows = res.data || [];
   const counts = res['счётчики'] || { всего: 0, по_статусам: {} };
+  const cabs = res['кабинеты'] || [];
+  const byCab = counts['по_кабинетам'] || {};
+  FBSPAGE.names = Object.fromEntries(cabs.map((c) => [c.id, c.name]));
   const st = counts['по_статусам'] || {};
-  const statuses = [['', 'Все'], ['new', 'Новые'], ['processing', 'В обработке'],
+  // как вкладки в кабинете WB; «Собирается»/«Собран» — свой этап склада внутри «На сборке»
+  const statuses = [['', 'Все'], ['new', 'Новые'], ['processing', 'На сборке'],
                     ['picking', 'Собирается'], ['picked', 'Собран'],
-                    ['shipped', 'Отправлен'], ['done', 'Завершён']];
+                    ['shipped', 'В доставке'], ['done', 'Завершённые'], ['cancelled', 'Отменённые']];
   const canManage = STATE.caps && STATE.caps['wb.manage'];
 
   return `
     <div class="hero">
       <div><h1>Заказы Wildberries</h1>
-        <div class="sub">FBS · ${nf(counts['всего'])} заказов · новые ${nf(st['new'] || 0)}</div>
+        <div class="sub">FBS${cab ? ' · ' + esc(FBSPAGE.names[cab] || cab) : ''} · ${nf(counts['всего'])} заказов · новые ${nf(st['new'] || 0)}</div>
         <div class="hint">Заказы берутся из раздела «Новые» кабинета WB, сопоставление — по артикулу продавца</div></div>
       <div class="actions">
         ${canManage ? '<button class="btn primary" data-fbs="sync">Обновить из WB</button>' : ''}
       </div>
     </div>
     <div class="card"><div class="card-b" style="padding-top:12px">
+      <div class="tabs" style="margin:0 0 8px;flex-wrap:wrap" aria-label="Кабинет">
+        <button class="tab ${cab ? '' : 'on'}" data-fbs="cab" data-v="">Все кабинеты</button>
+        ${cabs.map((c) => `<button class="tab ${cab === c.id ? 'on' : ''}" data-fbs="cab" data-v="${esc(c.id)}">${esc(c.name)}${(byCab[c.id] || {}).новых ? ' · ' + byCab[c.id].новых + ' нов.' : ''}</button>`).join('')}
+      </div>
       <div class="tabs" style="margin:0;flex-wrap:wrap">
         ${statuses.map(([v, l]) => `<button class="tab ${status === v ? 'on' : ''}" data-fbs="filter" data-v="${v}">${l}${st[v] ? ' · ' + st[v] : ''}</button>`).join('')}
       </div>
     </div></div>
-    <div id="fbs-list">${fbsListHtml(rows, canManage)}</div>`;
+    <div id="fbs-list">${fbsListHtml(rows, canManage)}</div>
+    ${fbsSuppliesHtml(res['поставки'] || [])}`;
 };
+
+function rerenderRoute() {
+  const [r, p] = (location.hash.replace(/^#\//, '') || 'dash').split('/');
+  return go(r, p);
+}
+
+// правка поставки: что на самом деле ушло (замена) — на сайте или через Excel
+async function supplyEdit(day, cab) {
+  const res = await api('/api/wb/supply?дата=' + day + '&кабинет=' + encodeURIComponent(cab));
+  const lines = res.data || [];
+  modal({
+    title: `Поставка ${day} · ${lines[0] ? lines[0]['кабинет'] : cab}`,
+    wide: true,
+    body: `<div class="hint" style="margin-bottom:8px">Если отправили другой товар — впишите его в «Отправлено». Остатки пересчитаются.</div>
+      <datalist id="sup-goods">${(res['товары'] || []).map((n) => `<option value="${esc(n)}">`).join('')}</datalist>
+      <div class="tablescroll"><table class="resp">
+        <thead><tr><th>Заказ WB</th><th>Задание</th><th>Заказано (WB)</th><th>Отправлено</th></tr></thead>
+        <tbody>${lines.map((x) => `<tr>
+          <td data-l="Заказ">${esc(x['заказ'])}</td>
+          <td data-l="Задание">${esc(x['задание'])}</td>
+          <td data-l="Заказано" class="muted">${esc(x['заказано'])}</td>
+          <td data-l="Отправлено"><input class="input" list="sup-goods" data-task="${esc(x['задание'])}"
+              data-was="${esc(x['отправлено'])}" value="${esc(x['отправлено'])}" style="min-width:240px"></td>
+        </tr>`).join('')}</tbody>
+      </table></div>`,
+    onSubmit: async () => {
+      const ch = {};
+      $$('[data-task]', $('#mf')).forEach((i) => { if (i.value.trim() && i.value.trim() !== i.dataset.was) ch[i.dataset.task] = i.value.trim(); });
+      if (!Object.keys(ch).length) return;
+      const r = await api('/api/wb/supply/edit', { method: 'POST', body: JSON.stringify({ изменения: ch }) });
+      supplyResult(r);
+    },
+  });
+}
+
+function supplyResult(r) {
+  const bad = r['ошибки'] || [];
+  toast(`Изменено: ${r['изменено']}` + (bad.length ? ` · ошибки: ${bad.map((e) => e['задание'] + ' — ' + e['ошибка']).join('; ')}` : ''), bad.length ? 'err' : 'ok');
+  rerenderRoute();
+}
+
+document.addEventListener('click', (e) => {
+  const rv = e.target.closest('[data-rcptview]');
+  if (rv) {
+    const d = rv.dataset.rcptview, s = rv.dataset.sup, bt = rv.dataset.batch;
+    api('/api/wh/receipt?дата=' + encodeURIComponent(d) + '&поставщик=' + encodeURIComponent(s) + '&партия=' + encodeURIComponent(bt)).then((res) => {
+      const rows = res.data || [];
+      modal({ title: `Принято · партия ${bt || '—'} · ${s || '—'}`, wide: true, noSubmit: true, body: `<div class="tablescroll"><table class="resp">
+        <thead><tr><th>Время</th><th>Партия</th><th>Товар</th><th class="num">Кол-во</th></tr></thead>
+        <tbody>${rows.map((x) => `<tr><td data-l="Время">${esc(x['время'].slice(8, 10) + '.' + x['время'].slice(5, 7) + ' ' + x['время'].slice(11))}</td><td data-l="Партия">${esc(x['партия'] || '—')}</td>
+          <td data-l="Товар">${esc(x['товар'])}</td><td data-l="Кол-во" class="num">${nf(x['кол-во'])}</td></tr>`).join('')}
+        <tr><td colspan="3"><b>Итого</b></td><td class="num"><b>${nf(rows.reduce((a, x) => a + x['кол-во'], 0))}</b></td></tr></tbody></table></div>` });
+    }).catch((err) => toast(err.message, 'err'));
+  }
+  const b = e.target.closest('[data-supedit]');
+  if (b) supplyEdit(b.dataset.supedit, b.dataset.cab).catch((err) => toast(err.message, 'err'));
+});
+document.addEventListener('change', async (e) => {
+  const inp = e.target.closest('[data-supimport]');
+  if (!inp || !inp.files[0]) return;
+  try {
+    const dataUrl = await new Promise((ok, fail) => {
+      const fr = new FileReader();
+      fr.onload = () => ok(String(fr.result));
+      fr.onerror = () => fail(new Error('Не удалось прочитать файл'));
+      fr.readAsDataURL(inp.files[0]);
+    });
+    supplyResult(await api('/api/wb/supply/import', { method: 'POST', body: JSON.stringify({ данные: dataUrl }) }));
+  } catch (err) { toast(err.message, 'err'); }
+  inp.value = '';
+});
+
+// поставки = подтверждённые сборки по дню и кабинету; у каждой — Excel
+function fbsSuppliesHtml(list, title = 'Поставки') {
+  if (!list.length) return '';
+  const days = [...new Set(list.map((g) => g['дата']))];
+  const href = (d, c) => '/api/wb/supply.xlsx?дата=' + d + (c ? '&кабинет=' + encodeURIComponent(c) : '');
+  return `<div class="card"><div class="card-h"><h3>${title}</h3><div class="spacer"></div>
+      <span class="muted">отправлено через FBS · Excel по дате и кабинету</span>
+      ${STATE.caps && STATE.caps['wb.manage'] ? `<label class="btn tiny" title="Исправленный Excel поставки: колонка «Отправлено»">Загрузить Excel
+        <input type="file" accept=".xlsx" data-supimport hidden></label>` : ''}</div>
+    <div class="card-b tight tablescroll"><table class="resp">
+      <thead><tr><th>Дата</th><th>Кабинет</th><th class="num">Штук</th><th></th></tr></thead>
+      <tbody>${days.map((d) => {
+        const g = list.filter((x) => x['дата'] === d);
+        return g.map((x) => `<tr>
+          <td data-l="Дата"><b>${esc(d)}</b></td>
+          <td data-l="Кабинет"><span class="pill grey">${esc(x['название'] || (FBSPAGE.names || {})[x['кабинет']] || x['кабинет'])}</span></td>
+          <td data-l="Штук" class="num">${nf(x['штук'])} ${pill('завершена', 'green')}</td>
+          <td><a class="btn tiny" href="${href(d, x['кабинет'])}" download>Excel</a>
+            ${STATE.caps && STATE.caps['wb.manage'] ? `<button class="btn tiny" data-supedit="${esc(d)}" data-cab="${esc(x['кабинет'])}">Изменить</button>` : ''}</td>
+        </tr>`).join('') + (g.length > 1 ? `<tr><td data-l="Дата">${esc(d)}</td><td data-l="Кабинет" class="muted">все кабинеты</td>
+          <td data-l="Штук" class="num">${nf(g.reduce((a, x) => a + x['штук'], 0))}</td>
+          <td><a class="btn tiny" href="${href(d, '')}" download>Excel</a></td></tr>` : '');
+      }).join('')}</tbody>
+    </table></div></div>`;
+}
 
 function fbsListHtml(rows, canManage) {
   if (!rows.length) {
@@ -1972,7 +2260,7 @@ function fbsListHtml(rows, canManage) {
         ${canManage ? `<td><input type="checkbox" class="fbs-check" value="${esc(o['id'])}"
             ${o['status'] === 'new' ? '' : 'disabled'}></td>` : ''}
         <td data-l="Заказ"><b>${esc(o['external_id'])}</b>${o['items'] > 1 ? ' · ' + o['items'] + ' поз.' : ''}</td>
-        <td data-l="Кабинет"><span class="pill grey">${esc(o['cabinet_id'])}</span></td>
+        <td data-l="Кабинет"><span class="pill grey">${esc((FBSPAGE.names || {})[o['cabinet_id']] || o['cabinet_id'])}</span></td>
         <td data-l="Товар">${(o['items_detail'] || []).map((i) =>
             `${esc(i['title'] || '')}${i['product_id'] ? '' : ' <span class="pill orange">нет в каталоге</span>'}`).join('<br>')}</td>
         <td data-l="Цена" class="num">${o['amount'] ? money(o['amount']) : '—'}</td>
@@ -2370,7 +2658,7 @@ window.addEventListener('online', () => { SYNC.online = true; syncPaint(); syncN
 window.addEventListener('offline', () => { SYNC.online = false; syncPaint(); });
 
 // ------------------------------------------------------------------ склад
-const FBSPAGE = { status: '' };
+const FBSPAGE = { status: '', cab: '', names: {} };
 
 const WH = { meta: null, tab: 'stock', ф: { cat: '', model: '', color: '', size: '', only: true }, stock: [] };
 const WH_TABS = [['stock', 'Главная'], ['in', 'Приход'], ['addr', 'Адрес'], ['out', 'Поставка'], ['log', 'Журнал']];
@@ -2403,11 +2691,17 @@ PAGES.wh = async (param) => {
     <div class="hero">
       <div><h1>Склад</h1>
         <div class="sub">${nf(meta['позиций'])} позиций · ${nf(meta['штук'])} шт на складе · источник: ${esc(meta['источник'] || '')}</div></div>
-      <div class="actions"><span class="pill grey">${esc(STATE.me.цех)}</span></div>
+      <div class="actions"><a class="btn sm" href="/api/wh/full.xlsx" download title="Остатки, приход, размещение и отгрузки — одной книгой">Скачать весь склад</a>
+        <span class="pill grey">${esc(STATE.me.цех)}</span></div>
     </div>
     ${whTabs(tab)}`;
-  if (tab === 'in') return head + whIn(meta);
-  if (tab === 'addr') return head + whAddr(meta);
+  if (tab === 'in') {
+    try { WH.fromCex = (await api('/api/wh/from_cex')).data || []; } catch (e) { WH.fromCex = []; }
+    let receipts = [];
+    try { receipts = (await api('/api/wh/receipts')).data || []; } catch (e) { receipts = []; }
+    return head + whIn(meta) + whReceiptsHtml(receipts);
+  }
+  if (tab === 'addr') return head + await whAddrPage(meta);
   if (tab === 'out') return head + await whOut(meta);
   if (tab === 'log') return head + await whLog();
   return head + await whStock(meta);
@@ -2506,10 +2800,20 @@ function whIn(meta) {
       <div class="card-h"><h3>Приход на склад</h3><div class="spacer"></div><span class="hint">${esc(today)}</span></div>
       <div class="card-b">`;
 
+  // упаковано в цехе, ждёт приёмщика: «Принять» подставит партию, модель, цвет и размеры
+  const cex = WH.fromCex || [];
+  const cexCard = cex.length && !st.cex ? `
+    <div class="card"><div class="card-h"><h3>Из цеха · ждут приёмки</h3><div class="spacer"></div><span class="pill blue">${nf(cex.length)}</span></div>
+      <div class="card-b"><table class="table"><tbody>${cex.map((c, i) => `<tr>
+        <td><b>${esc(c['категория'])}/${esc(c['модель'])}/${esc(c['цвет'])}</b><div class="hint">партия ${esc(c['партия'])}${c['заказ'] ? ` · заказ №${esc(c['заказ'])}` : ''} · коробки ${esc(c['коробки'].join(', '))}</div>
+          <div class="hint">${Object.entries(c['размеры']).map(([z, q]) => `${esc(z)}: ${nf(q)}`).join(' · ')}</div></td>
+        <td class="num"><b>${nf(c['штук'])}</b> шт</td>
+        <td><button class="btn primary sm" data-wh-cex="${i}">Принять</button></td></tr>`).join('')}</tbody></table></div></div>` : '';
+
   if (!st.cat || !st.model || !st.color) {
     const models = st.cat ? Object.keys(meta['дерево'][st.cat] || {}) : [];
     const colors = st.cat && st.model ? Object.keys(meta['дерево'][st.cat][st.model] || {}) : [];
-    return head + `
+    return cexCard + head + `
         <div class="grid2">
           <div class="field"><label>Поставщик</label>
             <select class="input scan" id="in-supplier">
@@ -2540,11 +2844,14 @@ function whIn(meta) {
   }
 
   const sizes = ((meta['дерево'][st.cat] || {})[st.model] || {})[st.color] || [];
+  const missing = st.cex ? Object.keys(st.cex['размеры']).filter((z) => !sizes.map(String).includes(z)) : [];
   return head + `
         <div class="wh-headline">
           <b>${esc(st.cat)} · ${esc(st.model)} · ${esc(st.color)}</b>
           <button class="btn sm" data-wh="back">← изменить</button>
         </div>
+        ${st.cex ? `<div class="hint" style="margin-bottom:8px">Из цеха: партия <b>${esc(st.cex['партия'])}</b> · упаковано ${nf(st.cex['штук'])} шт. Пересчитайте и исправьте, если пришло иначе.</div>
+          ${missing.length ? `<div class="hint" style="color:var(--red)">Нет в справочнике склада: ${esc(missing.join(', '))} — добавьте на «главный»</div>` : ''}` : ''}
         <div class="size-grid">
           ${sizes.map((size) => `
             <label class="size-cell">
@@ -2553,10 +2860,38 @@ function whIn(meta) {
                      data-size="${esc(size)}" value="${st.sizes[size] || ''}" placeholder="—">
             </label>`).join('') || '<div class="empty">У этой модели нет размеров в справочнике</div>'}
         </div>
-        <div class="wh-total">Итого к приёму: <b id="in-total">0</b> шт</div>
+        <div class="wh-total">Итого к приёму: <b id="in-total">${nf(Object.values(st.sizes).reduce((a, b) => a + (num(b) || 0), 0))}</b> шт</div>
+        <label class="check" style="display:flex;gap:8px;align-items:center;margin:10px 0">
+          <input type="checkbox" id="in-direct" ${whDirect() ? 'checked' : ''}>
+          <span>Сразу на склад, без адреса <span class="muted">— товар сразу в остатке; коробку можно указать позже</span></span></label>
         <button class="btn primary big" data-wh="accept">Принять товар</button>
         <div class="hint" style="margin-top:10px">Пустые ячейки пропускаются — заполняйте только те размеры, что пришли.</div>
       </div></div>`;
+}
+
+// принятое через «Приход»: по дню и поставщику, просмотр и Excel
+function whReceiptsHtml(list) {
+  if (!list.length) return '';
+  const q = (s, b) => 'поставщик=' + encodeURIComponent(s) + '&партия=' + encodeURIComponent(b);
+  const dmy = (d) => d.slice(8, 10) + '.' + d.slice(5, 7);
+  return `<div class="card"><div class="card-h"><h3>Принято</h3><div class="spacer"></div>
+      <span class="muted">приёмки через портал · по партиям</span></div>
+    <div class="card-b tight tablescroll"><table class="resp">
+      <thead><tr><th>Партия</th><th>Поставщик</th><th>Даты</th><th class="num">Штук</th><th></th></tr></thead>
+      <tbody>${list.map((x) => `<tr>
+          <td data-l="Партия"><b>${esc(x['партия'] || '—')}</b></td>
+          <td data-l="Поставщик">${esc(x['поставщик'] || '—')}</td>
+          <td data-l="Даты">${esc(x['даты'].map(dmy).join(', '))}</td>
+          <td data-l="Штук" class="num">${nf(x['штук'])}</td>
+          <td><a class="btn tiny" href="/api/wh/receipt.xlsx?${q(x['поставщик'], x['партия'])}" download>Excel</a>
+            <button class="btn tiny" data-rcptview="" data-sup="${esc(x['поставщик'])}" data-batch="${esc(x['партия'])}">Смотреть</button></td>
+        </tr>`).join('')}</tbody>
+    </table></div></div>`;
+}
+
+// «сразу на склад» — пока в цехе нет адресного хранения; по умолчанию включено, выбор запоминаем
+function whDirect() {
+  try { return localStorage.getItem('wh.direct') !== '0'; } catch (e) { return true; }
 }
 
 // ---------- Адрес ----------
@@ -2566,8 +2901,7 @@ function whAddr(meta) {
       <div class="card-h"><h3>Адресное хранение</h3><div class="spacer"></div><span class="hint">сканер: адрес → товар → количество</span></div>
       <div class="card-b">
         <div class="field"><label>1. Адрес (коробка)</label>
-          <input class="input scan big" id="wh-box" list="wh-addresses" placeholder="сканируйте адрес" autocomplete="off">
-          <datalist id="wh-addresses">${(meta['адреса'] || []).map((a) => `<option value="${esc(a)}">`).join('')}</datalist>
+          <input class="input scan big" id="wh-box" placeholder="сканируйте адрес" autocomplete="off">
         </div>
         <div class="wh-found" id="wh-box-state"></div>
         <div style="height:0"></div>
@@ -2594,25 +2928,30 @@ async function whOut(meta) {
   let orders = [];
   try { orders = (await api('/api/orders')).data || []; }
   catch (e) { orders = (SYNC.snap && SYNC.snap.orders) || []; }
-  let fbs = null;
-  try { fbs = (await api('/api/fbs/aggregate')).data; } catch (e) { fbs = null; }
+  let fbsList = [];
+  try { fbsList = (await api('/api/fbs/aggregates')).data || []; } catch (e) { fbsList = []; }
+  let supplies = [];
+  try { supplies = (await api('/api/wb/supplies')).data || []; } catch (e) { supplies = []; }
   const open = orders.filter((o) => (o['статус'] || 'новый') === 'новый');
   const archive = orders.filter((o) => (o['статус'] || 'новый') !== 'новый');
 
   return `
-    ${fbs && fbs['позиции'] && fbs['позиции'].length ? `
+    ${fbsList.map((fbs) => {
+      const noCat = fbs['позиции'].filter((p) => !p['в_каталоге']).length;
+      return `
     <div class="card">
-      <div class="card-h"><h3>Wildberries · FBS</h3><div class="spacer"></div>
+      <div class="card-h"><h3>${esc(fbs['клиент'])}</h3><div class="spacer"></div>
         <span class="pill blue">FBS</span></div>
       <div class="card-b">
-        <div class="order-head"><b>Сборка FBS · ${fbs['позиции'].length} позиций</b>
-          <span class="pill orange">${fbs['позиции'].filter((p) => !p['в_каталоге']).length} без каталога</span></div>
+        <div class="order-head"><b>Сборка · ${fbs['позиции'].length} позиций</b>
+          ${noCat ? `<span class="pill orange">${noCat} без каталога</span>` : ''}</div>
         ${fbs['позиции'].slice(0, 5).map((p) => `<div class="order-row">
           <span>${esc(p['наименование'])}</span><b>1 шт</b></div>`).join('')}
         ${fbs['позиции'].length > 5 ? `<div class="hint">…и ещё ${fbs['позиции'].length - 5}</div>` : ''}
-        <div class="order-actions"><a class="btn primary sm" href="#/wh/pick/fbs-all">Собрать заказ</a></div>
+        <div class="order-actions"><a class="btn primary sm" href="#/wh/pick/${esc(fbs['id'])}">Собрать заказ</a></div>
       </div>
-    </div>` : ''}
+    </div>`;
+    }).join('')}
     <div class="card">
       <div class="card-h"><h3>Заказы клиентов</h3><div class="spacer"></div>
         <span class="pill ${open.length ? 'orange' : 'green'}">${open.length} к сборке</span></div>
@@ -2656,6 +2995,7 @@ async function whOut(meta) {
         </table>
       </div>
     </div>
+    ${fbsSuppliesHtml(supplies, 'Архив поставок FBS')}
     <div class="card">
       <div class="card-h"><h3>Отгружено в ${target}</h3><div class="spacer"></div><span class="hint">${rows.length} записей</span></div>
       <div class="card-b tight tablescroll">
@@ -2743,7 +3083,63 @@ async function whLog() {
 
 
 // ---------- экран сборки заказа: слева штрихкод, справа количество ----------
-const PICK = { order: null, sort: 'left', filter: '' };
+// qty/subs живут вне DOM — фильтр и сортировка не сбрасывают собранное; subs: строка → отправленная замена
+const PICK = { order: null, sort: 'left', filter: '', qty: {}, subs: {}, hide: new Set(), xfq: '' };
+const pickModel = (name) => String(name).split('/').slice(0, 2).join('/');
+
+function pickReset(order) {
+  Object.assign(PICK, { order, filter: '', qty: {}, subs: {}, hide: new Set(), xfq: '' });
+}
+
+// все строки сборки (одинаковые товары агрегата — одной строкой), без фильтров
+function pickAllRows() {
+  const o = PICK.order;
+  let positions = (o['позиции'] || []).slice();
+  if (o['агрегат']) {
+    const map = new Map();
+    positions.forEach((p) => {
+      const key = p['наименование'];
+      if (!map.has(key)) map.set(key, { ...p, 'количество': 0 });
+      map.get(key)['количество'] += 1;
+    });
+    positions = Array.from(map.values());
+  }
+  return positions.map((p) => ({
+    наименование: p['наименование'],
+    нужно: num(p['количество']),
+    собрано: num(p['отгружено']),
+    осталось: num(p['количество']) - num(p['отгружено']),
+  }));
+}
+
+// панель как автофильтр Excel: сортировка А→Я / Я→А, поиск и галочки по моделям
+function pickToolsHtml() {
+  const models = [...new Set(pickAllRows().map((r) => pickModel(r.наименование)))]
+    .sort((a, b) => a.localeCompare(b, 'ru', { numeric: true }));
+  const q = PICK.xfq.trim().toLowerCase();
+  const hidden = PICK.hide.size;
+  const sorts = [['left', 'Сначала несобранные'], ['name-asc', 'Название А → Я'], ['name-desc', 'Название Я → А'],
+    ['qty-desc', 'Количество: больше → меньше'], ['qty-asc', 'Количество: меньше → больше']];
+  return `<div class="pick-tools">
+      <input class="input" id="pick-filter" placeholder="Фильтр по товару" value="${esc(PICK.filter)}">
+      <details class="pick-xf" id="pick-xf">
+        <summary class="btn">Фильтр ▾${hidden ? ` <span class="pill orange">скрыто моделей: ${hidden}</span>` : ''}</summary>
+        <div class="pick-xf-pop">
+          <button class="btn sm" data-xf="sort" data-v="name-asc">⬆ Сортировка от А до Я</button>
+          <button class="btn sm" data-xf="sort" data-v="name-desc">⬇ Сортировка от Я до А</button>
+          <select class="input" id="pick-sort">${sorts.map(([v, l]) => `<option value="${v}" ${PICK.sort === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+          <input class="input" id="pick-xf-q" placeholder="Поиск модели" value="${esc(PICK.xfq)}">
+          <div class="pick-xf-list">
+            <label><input type="checkbox" data-xf="all" ${hidden ? '' : 'checked'}> <b>(Выделить всё)</b></label>
+            ${models.filter((m) => !q || m.toLowerCase().includes(q)).map((m) => `<label>
+              <input type="checkbox" data-xf="model" data-v="${esc(m)}" ${PICK.hide.has(m) ? '' : 'checked'}> ${esc(m)}</label>`).join('')
+              || '<div class="hint">Нет совпадений</div>'}
+          </div>
+          ${hidden ? '<button class="btn sm" data-xf="clear">Снять фильтр</button>' : ''}
+        </div>
+      </details>
+    </div>`;
+}
 
 function pickSortRows(rows) {
   const r = rows.slice();
@@ -2756,27 +3152,10 @@ function pickSortRows(rows) {
 }
 
 function pickRowsHtml() {
-  const o = PICK.order;
-  let positions = (o['позиции'] || []).slice();
-  if (o['агрегат']) {
-    // одинаковые товары собираем в одну строку с общим количеством
-    const map = new Map();
-    positions.forEach((p) => {
-      const key = p['наименование'];
-      if (!map.has(key)) map.set(key, { ...p, 'количество': 0 });
-      map.get(key)['количество'] += 1;
-    });
-    positions = Array.from(map.values());
-  }
-  const rows = pickSortRows(positions.map((p) => ({
-    наименование: p['наименование'],
-    нужно: num(p['количество']),
-    собрано: num(p['отгружено']),
-    осталось: num(p['количество']) - num(p['отгружено']),
-    qty: '',
-  })));
+  const rows = pickSortRows(pickAllRows());
   const f = PICK.filter.trim().toLowerCase();
-  const shown = rows.filter((r) => !f || r.наименование.toLowerCase().includes(f));
+  const shown = rows.filter((r) => (!f || r.наименование.toLowerCase().includes(f))
+    && !PICK.hide.has(pickModel(r.наименование)));
   if (!shown.length) return '<div class="empty">Ничего не найдено</div>';
   return shown.map((r, i) => `
     <div class="pick-row ${r.осталось <= 0 ? 'done' : ''}" data-name="${esc(r.наименование)}">
@@ -2784,30 +3163,31 @@ function pickRowsHtml() {
              spellcheck="false" ${i === 0 ? 'autofocus' : ''}>
       <div class="pick-name">${esc(r.наименование)}</div>
       <input class="input pick-qty" type="number" min="0" inputmode="numeric"
-             max="${r.осталось}" placeholder="0" ${r.осталось <= 0 ? 'disabled' : ''}>
+             max="${r.осталось}" placeholder="0" value="${esc(PICK.qty[r.наименование] || '')}" ${r.осталось <= 0 ? 'disabled' : ''}>
       <div class="pick-meta">${r.осталось > 0 ? 'осталось ' + nf(r.осталось) : 'собрано'}</div>
     </div>`).join('');
 }
 
 async function pickPage(orderId) {
-  if (String(orderId) === 'fbs-all') {
-    const res = await api('/api/fbs/aggregate');
+  if (String(orderId).startsWith('fbs-')) {  // сборка FBS одного кабинета (fbs-all — все сразу, старые ссылки)
+    const cab = String(orderId).slice(4);
+    const res = await api('/api/fbs/aggregate' + (cab === 'all' ? '' : '?кабинет=' + encodeURIComponent(cab)));
     const agg = res.data;
     if (!agg) return `<div class="card"><div class="empty">Новых позиций FBS нет</div></div>`;
-    PICK.order = agg;
-    PICK.filter = '';
+    pickReset(agg);
     return `
       <div class="hero">
-        <div><h1>Сборка FBS</h1>
+        <div><h1>Сборка FBS${agg['кабинет'] ? ' · ' + esc(agg['клиент'].split(' · ').pop()) : ''}</h1>
           <div class="sub">${agg['позиции'].length} позиций · Wildberries</div>
-          <div class="hint">Сканируйте товары подряд, внизу — одно подтверждение.</div></div>
+          <div class="hint">Сканируйте товары подряд, внизу — одно подтверждение. Не тот товар — можно отправить вместо заказанного.</div></div>
         <div class="actions"><a class="btn" href="#/wh/out">← Поставка</a></div>
       </div>
       <div class="card pick-page">
+        <div id="pick-tools-box">${pickToolsHtml()}</div>
         <div class="pick-list" id="pick-list">${pickRowsHtml()}</div>
         <div class="pick-ship-zone">
           <div class="hint" id="pick-total">Собрано: 0 шт</div>
-          <button class="btn primary" id="pick-ship">Отправить в WB</button>
+          <button class="btn primary" id="pick-ship">Подтвердить сборку</button>
         </div>
       </div>`;
   }
@@ -2818,8 +3198,7 @@ async function pickPage(orderId) {
   try { fbs = (await api('/api/fbs/aggregate')).data; } catch (e) { fbs = null; }
   const order = orders.find((o) => String(o['id']) === String(orderId));
   if (!order) return `<div class="card"><div class="empty">Заказ не найден — вернитесь в поставку</div></div>`;
-  PICK.order = order;
-  PICK.filter = '';
+  pickReset(order);
   return `
     <div class="hero">
       <div><h1>Сборка №${esc(order['external_id'] || order['id'])} · ${esc(order['клиент'])}</h1>
@@ -2827,20 +3206,11 @@ async function pickPage(orderId) {
       <div class="actions"><a class="btn" href="#/wh/out">← Поставка</a></div>
     </div>
     <div class="card pick-page">
-      <div class="pick-tools">
-        <input class="input" id="pick-filter" placeholder="Фильтр по товару">
-        <select class="input" id="pick-sort">
-          <option value="left" ${PICK.sort === 'left' ? 'selected' : ''}>Сначала несобранные</option>
-          <option value="name-asc" ${PICK.sort === 'name-asc' ? 'selected' : ''}>Название А → Я</option>
-          <option value="name-desc" ${PICK.sort === 'name-desc' ? 'selected' : ''}>Название Я → А</option>
-          <option value="qty-desc" ${PICK.sort === 'qty-desc' ? 'selected' : ''}>Количество: больше → меньше</option>
-          <option value="qty-asc" ${PICK.sort === 'qty-asc' ? 'selected' : ''}>Количество: меньше → больше</option>
-        </select>
-      </div>
+      <div id="pick-tools-box">${pickToolsHtml()}</div>
       <div class="pick-list" id="pick-list">${pickRowsHtml()}</div>
       <div class="pick-ship-zone">
         <div class="hint" id="pick-total">Собрано: 0 шт</div>
-        <button class="btn primary" id="pick-ship">${PICK.order && PICK.order['fbs'] ? 'Отправить в WB' : 'Отгрузить собранное'}</button>
+        <button class="btn primary" id="pick-ship">${PICK.order && PICK.order['fbs'] ? 'Подтвердить сборку' : 'Отгрузить собранное'}</button>
       </div>
     </div>`;
 }
@@ -2866,6 +3236,12 @@ function pickCheckQty(row) {
   const v = num(inp.value);
   const max = num(inp.max);
   if (v <= 0) { pickMark(row, '', ''); return true; }
+  const sub = PICK.subs[row.dataset.name];
+  if (sub) {
+    if (v > max) { pickMark(row, 'bad', 'Больше, чем нужно: макс ' + nf(max)); return false; }
+    pickMark(row, 'sub', '⇄ Отправляется вместо: ' + sub + ' · ' + nf(v) + ' шт');
+    return true;
+  }
   if (v > max) { pickMark(row, 'bad', 'Больше, чем нужно: макс ' + nf(max)); return false; }
   if (v === max) { pickMark(row, 'ok', '✓ ' + row.dataset.name + ' · ' + nf(max) + ' шт'); return true; }
   pickMark(row, 'partial', 'Частично: ' + nf(v) + ' из ' + nf(max));
@@ -2892,14 +3268,31 @@ async function applyScan(code, input) {
     if (input) input.classList.add('bad');
     return;
   }
-  const owner = rows.find((r) => r.dataset.name === name);
+  let owner = rows.find((r) => r.dataset.name === name);
   if (!owner) {
-    toast('«' + name.split('/').slice(1).join('/') + '» нет в этом заказе', 'err');
-    if (input) input.classList.add('bad');
-    return;
+    const short = name.split('/').slice(1).join('/');
+    const row = input && input.closest('.pick-row');
+    const rowQty = row && row.querySelector('.pick-qty');
+    // замена — только в сборке FBS: WB подтверждается по заказанной позиции, со склада списывается отсканированный
+    if (!row || !rowQty || rowQty.disabled || !(PICK.order && PICK.order['агрегат'])) {
+      toast('«' + short + '» нет в этом заказе', 'err');
+      if (input) input.classList.add('bad');
+      return;
+    }
+    toast('Не тот товар: «' + short + '» нет в заказе', 'warn');
+    if (!confirm(`Отсканирован «${name}» — его нет в заказе.\n\nОтправить его ВМЕСТО «${row.dataset.name}»?\nСо склада спишется отсканированный товар.`)) {
+      input.classList.add('bad');
+      input.select();
+      return;
+    }
+    PICK.subs[row.dataset.name] = name;
+    owner = row;
+  } else {
+    delete PICK.subs[name];  // отсканирован правильный товар — замена снимается
   }
   const qty = owner.querySelector('.pick-qty');
   qty.value = qty.max;
+  PICK.qty[owner.dataset.name] = qty.value;
   pickCheckQty(owner);
   updatePickTotal();
   if (input) input.value = '';
@@ -2925,21 +3318,21 @@ async function applyScan(code, input) {
 function updatePickTotal() {
   const list = $('#pick-list');
   if (!list) return;
-  const inputs = $$('.pick-qty', list);
-  const total = inputs.reduce((sum, inp) => sum + (num(inp.value) || 0), 0);
-  const need = inputs.reduce((sum, inp) => sum + (num(inp.max) || 0), 0);
+  const all = pickAllRows();
+  const total = all.reduce((sum, r) => sum + (num(PICK.qty[r.наименование]) || 0), 0);
+  const need = all.reduce((sum, r) => sum + Math.max(0, r.осталось), 0);
   const label = $('#pick-total');
   if (label) label.textContent = 'Собрано: ' + nf(total) + ' из ' + nf(need) + ' шт';
 }
 
 async function shipPicked() {
-  const rowsAll = $$('.pick-row', $('#pick-list'));
-  const badRow = rowsAll.find((r) => num($('.pick-qty', r).value) > num($('.pick-qty', r).max));
-  if (badRow) { toast('Количество больше нужного — проверьте подсветку', 'err'); return; }
-  const items = rowsAll.map((row) => ({
-    'наименование': row.dataset.name,
-    'количество': num($('.pick-qty', row).value),
-    'проверка': row.dataset.state === 'ok' ? 'Nice✅' : 'Ошибка❌',
+  const rowsAll = pickAllRows();
+  const got = (r) => num(PICK.qty[r.наименование]) || 0;
+  if (rowsAll.some((r) => got(r) > r.осталось)) { toast('Количество больше нужного — проверьте подсветку', 'err'); return; }
+  const items = rowsAll.map((r) => ({
+    'наименование': r.наименование,
+    'количество': got(r),
+    'проверка': got(r) === r.осталось ? 'Nice✅' : 'Ошибка❌',
   })).filter((x) => x['количество'] > 0);
   if (!items.length) { toast('Укажите количество хотя бы по одной позиции', 'err'); return; }
   const btn = $('#pick-ship');
@@ -2951,18 +3344,23 @@ async function shipPicked() {
         (byName[p['наименование']] = byName[p['наименование']] || []).push(p['item_id']);
       });
       const ids = [];
+      const subs = {};
       rowsAll.forEach((row) => {
-        const n = num($('.pick-qty', row).value);
-        const pool = byName[row.dataset.name] || [];
-        ids.push(...pool.slice(0, Math.max(0, n)));
-        pool.splice(0, Math.max(0, n));
+        const n = Math.max(0, got(row));
+        const pool = byName[row.наименование] || [];
+        const take = pool.slice(0, n);
+        ids.push(...take);
+        if (PICK.subs[row.наименование]) take.forEach((id) => { subs[id] = PICK.subs[row.наименование]; });
+        pool.splice(0, n);
       });
       if (!ids.length) { toast('Ничего не собрано', 'err'); btn.disabled = false; return; }
-      const r = await api('/api/wb/confirm-items', { method: 'POST', body: JSON.stringify({ items: ids }) });
+      const nSub = Object.keys(subs).length;
+      if (nSub && !confirm(`${nSub} шт уходят заменой (не тот товар). Отправить?`)) { btn.disabled = false; return; }
+      const r = await api('/api/wb/confirm-items', { method: 'POST', body: JSON.stringify({ items: ids, замены: subs }) });
       if (r['ошибки'] && r['ошибки'].length) {
         toast(`Ушло ${r['подтверждено']}, ошибок ${r['ошибки'].length}`, 'warn');
       } else {
-        toast(`В сборку WB ушло позиций: ${r['подтверждено']}`, 'ok');
+        toast(`Сборка подтверждена, списано со склада: ${r['подтверждено']} шт`, 'ok');
       }
       WH.meta = null;
       await go('wh', 'out');
@@ -2971,7 +3369,7 @@ async function shipPicked() {
     if (PICK.order && PICK.order['fbs']) {
       const r = await api('/api/wb/confirm', { method: 'POST', body: JSON.stringify({ ids: [PICK.order['id']] }) });
       if (r['ошибки'] && r['ошибки'].length) throw new Error(r['ошибки'][0]['ошибка']);
-      toast('Заказ ушёл в сборку WB', 'ok');
+      toast('Сборка подтверждена, товар списан со склада', 'ok');
       WH.meta = null;
       await go('wh', 'out');
       return;
@@ -2992,21 +3390,53 @@ function bindPickPage() {
   const page = $('#page');
   if (!page) return;
 
-  const sortEl = $('#pick-sort');
-  if (sortEl) sortEl.addEventListener('change', (e) => {
-    PICK.sort = e.target.value;
-    $('#pick-list').innerHTML = pickRowsHtml();
-    bindPickRows();
-  });
-  const filterEl = $('#pick-filter');
-  if (filterEl) filterEl.addEventListener('input', (e) => {
-    PICK.filter = e.target.value;
-    $('#pick-list').innerHTML = pickRowsHtml();
-    bindPickRows();
-  });
+  bindPickTools();
   const shipEl = $('#pick-ship');
   if (shipEl) shipEl.addEventListener('click', shipPicked);
   bindPickRows();
+}
+
+function pickRerender(tools) {
+  if (tools && $('#pick-tools-box')) {
+    const open = $('#pick-xf') && $('#pick-xf').open;
+    $('#pick-tools-box').innerHTML = pickToolsHtml();
+    if (open) $('#pick-xf').open = true;
+    bindPickTools();
+  }
+  $('#pick-list').innerHTML = pickRowsHtml();
+  bindPickRows();
+}
+
+function bindPickTools() {
+  const box = $('#pick-tools-box') || $('#page');
+  const sortEl = $('#pick-sort');
+  if (sortEl) sortEl.addEventListener('change', (e) => { PICK.sort = e.target.value; pickRerender(); });
+  const filterEl = $('#pick-filter');
+  if (filterEl) filterEl.addEventListener('input', (e) => {
+    PICK.filter = e.target.value;
+    const pos = filterEl.selectionStart;
+    pickRerender();
+    filterEl.focus();  // перерисовка ставит фокус на скан — возвращаем в поле фильтра
+    filterEl.setSelectionRange(pos, pos);
+  });
+  $$('[data-xf="sort"]', box).forEach((b) => b.addEventListener('click', () => { PICK.sort = b.dataset.v; pickRerender(true); }));
+  $$('[data-xf="model"]', box).forEach((c) => c.addEventListener('change', () => {
+    if (c.checked) PICK.hide.delete(c.dataset.v); else PICK.hide.add(c.dataset.v);
+    pickRerender(true);
+  }));
+  $$('[data-xf="all"]', box).forEach((c) => c.addEventListener('change', () => {
+    PICK.hide = c.checked ? new Set() : new Set(pickAllRows().map((r) => pickModel(r.наименование)));
+    pickRerender(true);
+  }));
+  $$('[data-xf="clear"]', box).forEach((b) => b.addEventListener('click', () => { PICK.hide = new Set(); pickRerender(true); }));
+  const q = $('#pick-xf-q');
+  if (q) q.addEventListener('input', () => {
+    PICK.xfq = q.value;
+    const pos = q.selectionStart;
+    pickRerender(true);
+    const q2 = $('#pick-xf-q');
+    if (q2) { q2.focus(); q2.setSelectionRange(pos, pos); }
+  });
 }
 
 function bindPickRows() {
@@ -3034,9 +3464,13 @@ function bindPickRows() {
 
   $$('.pick-qty', list).forEach((inp) => {
     inp.addEventListener('input', () => {
-      pickCheckQty(inp.closest('.pick-row'));
+      const row = inp.closest('.pick-row');
+      PICK.qty[row.dataset.name] = inp.value;
+      if (num(inp.value) <= 0) delete PICK.subs[row.dataset.name];
+      pickCheckQty(row);
       updatePickTotal();
     });
+    if (num(inp.value) > 0) pickCheckQty(inp.closest('.pick-row'));
     inp.addEventListener('keydown', (e) => {
       if (e.key !== 'Enter') return;
       e.preventDefault();
@@ -3058,6 +3492,10 @@ function bindFbs() {
   const page = $('#page');
   $$('[data-fbs="filter"]', page).forEach((b) => b.addEventListener('click', async () => {
     FBSPAGE.status = b.dataset.v;
+    await go('fbs');
+  }));
+  $$('[data-fbs="cab"]', page).forEach((b) => b.addEventListener('click', async () => {
+    FBSPAGE.cab = b.dataset.v;
     await go('fbs');
   }));
   $$('[data-fbs="sync"]', page).forEach((b) => b.addEventListener('click', async () => {
@@ -3126,6 +3564,12 @@ function bindWh() {
   const defectIn = $('#in-defect');
   if (defectIn) defectIn.addEventListener('input', () => { st().defect = num(defectIn.value); });
 
+  $$('[data-wh-cex]', page).forEach((b) => b.addEventListener('click', async () => {
+    const c = (WH.fromCex || [])[Number(b.dataset.whCex)];
+    WH.in = { cat: c['категория'], model: c['модель'], color: c['цвет'], supplier: 'свой цех', batch: c['партия'],
+      defect: 0, sizes: { ...c['размеры'] }, cex: c };
+    await go('wh', 'in');
+  }));
   $$('[data-wh="next"]', page).forEach((b) => b.addEventListener('click', async () => {
     const x = st();
     if (!x.cat || !x.model || !x.color) return toast('Выберите категорию, модель и цвет', 'err');
@@ -3133,7 +3577,7 @@ function bindWh() {
     await go('wh', 'in');
   }));
   $$('[data-wh="back"]', page).forEach((b) => b.addEventListener('click', async () => {
-    WH.in = { ...st(), cat: '', model: '', color: '', sizes: {} };
+    WH.in = { ...st(), cat: '', model: '', color: '', sizes: {}, cex: null };
     await go('wh', 'in');
   }));
   $$('input[data-size]', page).forEach((inp) => inp.addEventListener('input', () => {
@@ -3155,9 +3599,12 @@ function bindWh() {
     if (!позиции.length) return toast('Заполните количество хотя бы по одному размеру', 'err');
     b.disabled = true;
     try {
-      const payload = { 'поставщик': x.supplier, 'партия': x.batch, 'неликвид': 0, 'позиции': позиции };
+      const direct = !!($('#in-direct') && $('#in-direct').checked);
+      try { localStorage.setItem('wh.direct', direct ? '1' : '0'); } catch (e) { /* без памяти */ }
+      const payload = { 'поставщик': x.supplier, 'партия': x.batch, 'неликвид': 0, 'позиции': позиции, 'сразу_на_склад': direct };
+      if (x.cex) payload['из_цеха'] = { 'партия': x.cex['партия'], 'цвет': x.cex['цвет'] };
       const res = await sendOrQueue('/api/wh/receive_multi', payload, 'приход', payload, 'приход');
-      if (!res.offline) toast(`Принято ${res['строк']} размеров · ${nf(res['штук'])} шт → в размещение`, 'ok');
+      if (!res.offline) toast(`Принято ${res['строк']} размеров · ${nf(res['штук'])} шт → ${res['сразу_на_склад'] ? 'сразу на склад' : 'в размещение'}`, 'ok');
       WH.in = { cat: '', model: '', color: '', supplier: x.supplier, batch: '', defect: 0, sizes: {} };
       WH.meta = null;
       await go('wh', 'in');
@@ -3167,7 +3614,6 @@ function bindWh() {
   // ---- адрес: живой поиск остатка ----
   const boxInput = $('#wh-box');
   const prodInput = $('#wh-prod');
-  if (boxInput) boxInput.focus();
   if (boxInput) {
     const markBox = () => {
       const wrap = $('#wh-box-state');
@@ -3282,7 +3728,7 @@ function bindWh() {
     const ids = FBSPAGE.pickedIds || [];
     if (!ids.length) return toast('Сначала соберите заказы сканером', 'err');
     const noStock = FBSPAGE.pickedNoStock || 0;
-    const msg = `Отправить в сборку WB ${ids.length} собранных заказов?`
+    const msg = `Подтвердить сборку ${ids.length} заказов? Товар спишется со склада.`
       + (noStock ? `\n\nВнимание: у ${noStock} заказов нет остатка на складе — они уйдут без списания.` : '');
     if (!confirm(msg)) return;
     b.disabled = true;
@@ -3290,7 +3736,7 @@ function bindWh() {
       const r = await api('/api/wb/confirm', { method: 'POST', body: JSON.stringify({ ids }) });
       toast(r['ошибки'] && r['ошибки'].length
         ? `Ушло ${r['подтверждено']}, ошибок ${r['ошибки'].length}`
-        : `В сборку WB ушло: ${r['подтверждено']}`, r['ошибки'] && r['ошибки'].length ? 'warn' : 'ok');
+        : `Подтверждено: ${r['подтверждено']}`, r['ошибки'] && r['ошибки'].length ? 'warn' : 'ok');
       await loadFbsPick();
     } catch (e) { toast(e.message, 'err'); }
     b.disabled = false;

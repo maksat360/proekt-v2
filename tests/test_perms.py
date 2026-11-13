@@ -143,5 +143,48 @@ class PermsTests(unittest.TestCase):
         self.assertEqual(log[0]["кто"], "boss")
 
 
+class OwnRolesTests(unittest.TestCase):
+    """Свои роли по процессам: заказной, складской, управление; швейные — операции маршрута."""
+    setUp = PermsTests.setUp  # то же окружение без Excel, но без повторного прогона тестов PermsTests
+    tearDown = PermsTests.tearDown
+
+    def test_default_warehouse_roles_and_processes(self):
+        roles = perms.all_roles()
+        for code, name in (("wh_receiver", "Приёмщик"), ("wh_picker", "Сборщик"), ("wh_kitter", "Комплектовщик")):
+            self.assertEqual(roles[code], name)
+            self.assertEqual(perms.role_process(code), "склад")
+        self.assertEqual(perms.role_process("storekeeper"), "склад")
+        self.assertEqual(perms.role_process("designer"), "заказ")
+        self.assertEqual(perms.role_process("ОВЕРЛ"), "швейный")
+        picker = {"логин": "p1", "роль": "wh_picker", "активен": 1}
+        self.assertTrue(perms.allowed(picker, "wb.manage"))
+        self.assertFalse(perms.allowed(picker, "cex.pay"))
+        self.assertEqual(perms.portal_role("wh_picker"), "storekeeper")
+
+    def test_create_rename_move_delete(self):
+        r = perms.save_role(ADMIN, "", "Курьер", "склад")
+        self.assertEqual(perms.all_roles()[r["код"]], "Курьер")
+        self.assertFalse(perms.allowed({"логин": "k", "роль": r["код"]}, "wh.view"), "новая роль без прав")
+        with self.assertRaises(ValueError):
+            perms.save_role(ADMIN, "", "курьер", "заказ")  # название занято
+        with self.assertRaises(ValueError):
+            perms.save_role(ADMIN, "", "Петля", "швейный")  # швейные — через операции маршрута
+        perms.save_role(ADMIN, r["код"], "Курьер-экспедитор", "заказ")
+        self.assertEqual(perms.role_process(r["код"]), "заказ")
+        perms.save_role(ADMIN, "packer", "", "управление")  # служебной — только процесс
+        self.assertEqual(perms.role_process("packer"), "управление")
+        self.assertEqual(perms.all_roles()["packer"], "Упаковщик")
+        with self.assertRaises(ValueError):
+            perms.delete_role(ADMIN, r["код"], people=2)
+        with self.assertRaises(ValueError):
+            perms.delete_role(ADMIN, "storekeeper", people=0)
+        perms.delete_role(ADMIN, "wh_kitter", people=0)
+        self.assertNotIn("wh_kitter", perms.all_roles(), "удалённая роль «из коробки» не возвращается")
+
+    def test_rights_needed(self):
+        with self.assertRaises(perms.AccessError):
+            perms.save_role(SEW, "", "Курьер", "склад")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -634,9 +634,7 @@
       const who = text.replace(/^[^,]+,\s*/, '');  // без «Добрый вечер» — одно приветствие на человека
       if (last === who) return;
       try { sessionStorage.setItem('jv-hello', who); } catch (e) { /* приватный режим */ }
-      AS.open = true;
-      $('jv-panel').hidden = false;
-      addMsg('bot', text);
+      addMsg('bot', text);  // приветствие ждёт в переписке; окно открывается только кнопкой
       const voiced = await fetch('/api/assistant/hello?голос=1', { credentials: 'same-origin' }).then((r) => r.json()).catch(() => ({}));
       speak(text, ((voiced && voiced.data) || {}).аудио || '');
     } catch (e) { /* сервер недоступен — кнопка просто не нужна */ }

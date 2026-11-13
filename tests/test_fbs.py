@@ -30,6 +30,18 @@ SAMPLE = [
 ]
 
 
+_REAL_STATUSES = wb_api.order_statuses
+STATUSES: dict = {}  # статусы WB для тестов: id → {supplierStatus, wbStatus}
+
+
+def setUpModule():  # в тестах в настоящий WB не ходим
+    wb_api.order_statuses = lambda token, ids: {i: STATUSES[i] for i in map(str, ids) if i in STATUSES}
+
+
+def tearDownModule():
+    wb_api.order_statuses = _REAL_STATUSES
+
+
 class FbsTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="v2-fbs-"))
@@ -53,7 +65,7 @@ class FbsTests(unittest.TestCase):
         self._old_connect = sqldb.connect
         sqldb.connect = lambda *a, **k: self._old_connect(self.tmp / "db.sqlite")
         self._old_new = wb_api.new_orders
-        self._old_confirm = wb_api.confirm_orders
+        self._old_confirm = getattr(wb_api, "confirm_orders", None)  # в WB больше не подтверждаем
         self._old_all = wb_api.all_orders
         wb_api.all_orders = lambda token, **k: {}
         self.confirmed = []
@@ -69,8 +81,13 @@ class FbsTests(unittest.TestCase):
 
         wb_api.new_orders = fake_new
         wb_api.confirm_orders = fake_confirm
+        import warehouse  # справочник баркодов — свой, не из рабочей книги
+        self._old_bc = warehouse.resolve_by_barcode
+        warehouse.resolve_by_barcode = lambda bc: {"2049570812130": "Брюки/477/чёрный/42"}.get(bc)
 
     def tearDown(self):
+        import warehouse
+        warehouse.resolve_by_barcode = self._old_bc
         cabinets_store.CABINETS, cabinets_store.TOKENS = self._old
         sqldb.connect = self._old_connect
         wb_api.new_orders = self._old_new
@@ -119,14 +136,43 @@ class FbsTests(unittest.TestCase):
         wb_sync.pick(oid, actor="sklad")
         res = wb_sync.confirm([oid], actor="sklad")
         self.assertEqual(res["подтверждено"], 1)
-        self.assertTrue(self.confirmed, "в WB должен уйти запрос confirm")
-        self.assertEqual(self.confirmed[0][1], [101], "подтверждается задание №101")
+        self.assertEqual(self.confirmed, [], "подтверждение только на нашем складе — в WB ничего не уходит")
         row = self.con.execute("SELECT status FROM orders WHERE id=?", (oid,)).fetchone()
         self.assertEqual(row["status"], "processing")
         hist = self.con.execute(
             "SELECT * FROM order_status_history WHERE order_id=? ORDER BY id DESC LIMIT 1",
             (oid,)).fetchone()
         self.assertEqual((hist["from_status"], hist["to_status"]), ("picking", "processing"))
+
+    def test_local_confirm_survives_wb_sync(self):
+        # в WB задание остаётся «новым» — повторная синхронизация не возвращает его в «новые» у нас
+        wb_sync.sync()
+        oid = [o for o in self.orders() if o["external_id"] == "101"][0]["id"]
+        wb_sync.confirm([oid], actor="sklad")
+        old_st = wb_api.order_statuses
+        wb_api.order_statuses = lambda token, ids: {str(i): {"supplierStatus": "new", "wbStatus": "waiting"} for i in ids}
+        try:
+            wb_sync.sync()
+        finally:
+            wb_api.order_statuses = old_st
+        row = self.con.execute("SELECT status FROM orders WHERE id=?", (oid,)).fetchone()
+        self.assertEqual(row["status"], "processing")
+
+    def test_supply_excel_by_day_and_cabinet(self):
+        import io
+        from openpyxl import load_workbook
+        wb_sync.sync()
+        oid = [o for o in self.orders() if o["external_id"] == "101"][0]["id"]
+        wb_sync.confirm([oid], actor="sklad")
+        sup = wb_sync.supplies()
+        self.assertEqual(len(sup), 1)
+        day, cab = sup[0]["дата"], sup[0]["кабинет"]
+        ws = load_workbook(io.BytesIO(wb_sync.supply_xlsx(day, cab, {cab: "КАБ"}))).active
+        rows = list(ws.iter_rows(min_row=4, values_only=True))
+        self.assertEqual((rows[0][0], rows[0][1], rows[0][4], rows[0][5], rows[0][7]), ("КАБ", "101", 1, None, "sklad"))
+        self.assertEqual(rows[-1][:1] + rows[-1][4:5], ("Итого", 1))
+        with self.assertRaises(ValueError):
+            wb_sync.supply_xlsx("2000-01-01")
 
     def test_confirm_twice_is_refused(self):
         wb_sync.sync()
@@ -176,7 +222,7 @@ class PickTests(unittest.TestCase):
 
         self._old_connect = sqldb.connect
         sqldb.connect = lambda *a, **k: self._old_connect(self.tmp / "db.sqlite")
-        self._old_confirm = wb_api.confirm_orders
+        self._old_confirm = getattr(wb_api, "confirm_orders", None)  # в WB больше не подтверждаем
         self._old_all = wb_api.all_orders
         wb_api.all_orders = lambda token, **k: {}
         self.sent = []
@@ -211,7 +257,7 @@ class PickTests(unittest.TestCase):
         wb_sync.pick("o202", actor="sklad")
         res = wb_sync.confirm(["o202"], actor="sklad")
         self.assertEqual(res["подтверждено"], 1)
-        self.assertEqual(self.sent, [[202]])
+        self.assertEqual(self.sent, [])
         self.assertIsNone(self.con.execute(
             "SELECT * FROM shipments WHERE order_ref='202'").fetchone())
 
@@ -219,23 +265,26 @@ class PickTests(unittest.TestCase):
         # сборка идёт через общий экран заказа: подтверждение — явное действие
         res = wb_sync.confirm(["o201"], actor="sklad")
         self.assertEqual(res["подтверждено"], 1)
-        self.assertEqual(self.sent, [[201]])
+        self.assertEqual(self.sent, [])
         hist = [dict(h) for h in self.con.execute(
             "SELECT * FROM order_status_history WHERE order_id='o201' ORDER BY id")]
         self.assertEqual(hist[-1]["to_status"], "processing")
 
-    def test_pick_deducts_stock(self):
+    def test_pick_reserves_but_does_not_deduct(self):
         self.assertEqual(wb_sync.pickable()[0]["stock"], 5)
         wb_sync.pick("o201", actor="sklad")
         ship = self.con.execute("SELECT * FROM shipments WHERE source_sheet='FBS'").fetchone()
-        self.assertIsNotNone(ship, "при сборке товар должен списаться со склада")
-        self.assertEqual(ship["qty"], 1)
+        self.assertIsNone(ship, "при сборке товар не списывается — только при подтверждении")
+        self.assertEqual(wb_sync._free_sql(self.con, "p1"), 4, "собранная единица в резерве")
+        wb_sync.confirm(["o201"], actor="sklad")
+        self.assertEqual(wb_sync._stock_sql(self.con, "p1"), 4)
+        self.assertEqual(wb_sync._free_sql(self.con, "p1"), 4)
 
     def test_confirm_picked_sends_and_writes_shipment(self):
         wb_sync.pick("o201", actor="sklad")
         res = wb_sync.confirm(["o201"], actor="sklad")
         self.assertEqual(res["подтверждено"], 1)
-        self.assertEqual(self.sent, [[201]])
+        self.assertEqual(self.sent, [])
         row = self.con.execute("SELECT status FROM orders WHERE id='o201'").fetchone()
         self.assertEqual(row["status"], "processing")
         ship = self.con.execute("SELECT * FROM shipments WHERE source_sheet='FBS'").fetchone()
@@ -269,7 +318,7 @@ class AggregateTests(unittest.TestCase):
         cabinets_store.save_cabinet("zhsk", "ЖСК", token="token-zhsk")
         self._old_connect = sqldb.connect
         sqldb.connect = lambda *a, **k: self._old_connect(self.tmp / "db.sqlite")
-        self._old_confirm = wb_api.confirm_orders
+        self._old_confirm = getattr(wb_api, "confirm_orders", None)  # в WB больше не подтверждаем
         self._old_all = wb_api.all_orders
         wb_api.all_orders = lambda token, **k: {}
         self.sent = []
@@ -292,11 +341,147 @@ class AggregateTests(unittest.TestCase):
         first = agg["позиции"][0]["item_id"]
         res = wb_sync.confirm_items([first], actor="sklad")
         self.assertEqual(res["подтверждено"], 1)
-        self.assertEqual(self.sent, [[701]])
+        self.assertEqual(self.sent, [])
         # вторая позиция осталась новой
         row = self.con.execute("SELECT status FROM orders WHERE id='o700'").fetchone()
         self.assertEqual(row["status"], "processing")
 
+    def test_confirm_items_with_substitute_deducts_sent_product(self):
+        # вместо «Товар А» (позиция 701) отправили «Товар Б»: WB подтверждаем 701, со склада списываем p2
+        res = wb_sync.confirm_items(["701"], actor="sklad", subs={"701": "Товар Б"})
+        self.assertEqual((res["подтверждено"], res["ошибки"]), (1, []))
+        self.assertEqual(self.sent, [])
+        ship = self.con.execute("SELECT product_id FROM shipments WHERE source_sheet='FBS'").fetchall()
+        self.assertEqual([s["product_id"] for s in ship], ["p2"])
+        note = self.con.execute("SELECT comment FROM order_status_history WHERE order_id='o700'").fetchone()
+        self.assertIn("замена: Товар Б", note["comment"])
+        # в Excel поставки — то, что отправили, а заказанное только для сверки
+        import io
+        from openpyxl import load_workbook
+        day = wb_sync.supplies()[0]["дата"]
+        row = list(load_workbook(io.BytesIO(wb_sync.supply_xlsx(day))).active.iter_rows(min_row=4, max_row=4, values_only=True))[0]
+        self.assertEqual((row[3], row[5]), ("Товар Б", "Товар А"))
+
+    def test_edit_supply_on_site_and_by_excel(self):
+        import io
+        from openpyxl import load_workbook
+        wb_sync.confirm_items(["701"], actor="sklad")
+        stock = lambda pid: wb_sync._stock_sql(self.con, pid)
+        a, b = stock("p1"), stock("p2")
+        # на сайте: вместо «Товар А» ушёл «Товар Б»
+        self.assertEqual(wb_sync.change_sent({"701": "товар б"}, "t")["изменено"], 1)
+        self.assertEqual((stock("p1"), stock("p2")), (a + 1, b - 1))
+        # через Excel: вернули обратно «Товар А»
+        day = wb_sync.supplies()[0]["дата"]
+        wbk = load_workbook(io.BytesIO(wb_sync.supply_xlsx(day)))
+        ws = wbk["Поставка"]
+        self.assertEqual(ws["D4"].value, "Товар Б")
+        ws["D4"] = "Товар А"
+        buf = io.BytesIO()
+        wbk.save(buf)
+        self.assertEqual(wb_sync.supply_import_xlsx(buf.getvalue(), "t")["изменено"], 1)
+        self.assertEqual((stock("p1"), stock("p2")), (a, b))
+        bad = wb_sync.change_sent({"701": "Нет такого", "999": "Товар А"}, "t")
+        self.assertEqual((bad["изменено"], len(bad["ошибки"])), (0, 2))
+
+    def test_unknown_substitute_is_not_sent(self):
+        res = wb_sync.confirm_items(["701"], actor="sklad", subs={"701": "Нет такого"})
+        self.assertEqual(res["подтверждено"], 0)
+        self.assertEqual(self.sent, [])
+        self.assertIn("не найдена", res["ошибки"][0]["ошибка"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class BarcodeMatchTests(unittest.TestCase):
+    """Баркоды WB пишутся в колонку T «главного» (по артикулу B и размеру C); FBS ищет только по ним."""
+
+    def setUp(self):
+        import warehouse
+        from openpyxl import Workbook
+        self.wh = warehouse
+        self.tmp = Path(tempfile.mkdtemp(prefix="v2-bc-"))
+        self.book = self.tmp / "book.xlsm"
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "главный"
+        for _ in range(4):
+            ws.append([])
+        for art, size, name in (("Брюки/477/чёрный/", "42", "Брюки/477/чёрный/42"),
+                                ("Брюки/477/чёрный/", "44", "Брюки/477/чёрный/44"),
+                                ("Постель/шанель/", None, "Постель/шанель/1 сп")):
+            ws.append(["", art, size] + [""] * 8 + [name])
+        wb.save(self.book)
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Товары"
+        for _ in range(4):
+            ws.append([])
+        for art, bc, size in (("Брюки/477/чёрный/", "111", "44"), ("Брюки/477/чёрный/", "112", "42."),
+                              ("Постель/шанель/", "113", "0"), ("28Б-ч", "114", "44")):
+            ws.append([1, art] + [""] * 9 + [bc, size])
+        self.export = self.tmp / "wb.xlsx"
+        wb.save(self.export)
+        self._old = (warehouse.source_path, warehouse.cex_guard, warehouse._backup)
+        warehouse.source_path = lambda: self.book
+        warehouse.cex_guard = lambda p: None
+        warehouse._backup = lambda p: None
+        warehouse._ART_CACHE["key"] = None
+
+    def tearDown(self):
+        self.wh.source_path, self.wh.cex_guard, self.wh._backup = self._old
+        self.wh._ART_CACHE["key"] = None
+
+    def test_import_into_main_sheet_and_resolve(self):
+        res = self.wh.import_barcodes(self.export)
+        self.assertEqual((res["баркодов"], res["строк_заполнено"]), (4, 3))
+        self.assertEqual(res["нет_в_главном"], [("28б-ч", "44", "114")])
+        r = self.wh.resolve_by_barcode
+        self.assertEqual(r("111"), "Брюки/477/чёрный/44", "артикул и размер вместе, а не первый 42-й")
+        self.assertEqual(r("112"), "Брюки/477/чёрный/42", "«42.» = «42»")
+        self.assertEqual(r("113"), "Постель/шанель/1 сп", "размер «0» = без размера")
+        self.assertIsNone(r("114"))
+        self.wh.import_barcodes(self.export)  # повторная загрузка не дублирует
+        from openpyxl import load_workbook
+        self.assertEqual(load_workbook(self.book)["главный"]["T6"].value, "111")
+
+
+class WbStagesTests(unittest.TestCase):
+    """Этапы как во вкладках WB: На сборке → В доставке → Завершённые; подтягиваем то, что уже в работе."""
+
+    def test_wb_target(self):
+        t = wb_sync.wb_target
+        self.assertEqual(t({"supplierStatus": "confirm", "wbStatus": "waiting"}), wb_sync.STATUS_PROCESSING)
+        self.assertEqual(t({"supplierStatus": "complete", "wbStatus": "waiting"}), wb_sync.STATUS_SHIPPED)
+        self.assertEqual(t({"supplierStatus": "complete", "wbStatus": "sorted"}), wb_sync.STATUS_DONE)  # принят складом WB
+        self.assertEqual(t({"supplierStatus": "complete", "wbStatus": "sold"}), wb_sync.STATUS_DONE)
+        self.assertEqual(t({"supplierStatus": "complete", "wbStatus": "canceled_by_client"}), wb_sync.STATUS_CANCELLED)
+        self.assertIsNone(t({}))
+
+    def test_reconcile_moves_and_imports(self):
+        tmp = Path(tempfile.mkdtemp(prefix="v2-stages-"))
+        con = sqldb.connect(tmp / "db.sqlite")
+        sqldb.migrate(con)
+        cab = {"id": "zhsk", "name": "ЖСК"}
+        for oid in ("1", "2", "3"):
+            wb_sync._upsert_order(con, cab, {"id": int(oid), "rid": oid, "article": "477", "skus": [],
+                                             "createdAt": "2026-11-10T07:00:00Z"})
+        con.execute("UPDATE orders SET status='picking' WHERE external_id='3'")
+        STATUSES.clear()
+        STATUSES.update({"1": {"supplierStatus": "complete", "wbStatus": "waiting"},
+                         "2": {"supplierStatus": "complete", "wbStatus": "sold"},
+                         "3": {"supplierStatus": "confirm", "wbStatus": "waiting"},
+                         "9": {"supplierStatus": "confirm", "wbStatus": "waiting"},   # не застали в «Новых»
+                         "8": {"supplierStatus": "complete", "wbStatus": "sold"}})   # давно завершён — не тянем
+        old_all = wb_api.all_orders
+        wb_api.all_orders = lambda token, **k: {i: {"id": int(i), "rid": i, "article": "477", "skus": [],
+                                                    "createdAt": "2026-11-09T07:00:00Z"} for i in ("1", "2", "3", "8", "9")}
+        try:
+            res = wb_sync.reconcile(con, "zhsk", set(), "t", cabinet=cab)
+        finally:
+            wb_api.all_orders = old_all
+        st = {r[0]: r[1] for r in con.execute("SELECT external_id, status FROM orders")}
+        self.assertEqual(st, {"1": "shipped", "2": "done", "3": "picking", "9": "processing"})
+        self.assertEqual((res["подтянуто"], res["отправлено"], res["завершено"]), (1, 1, 1))

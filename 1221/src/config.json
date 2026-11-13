@@ -1,0 +1,13 @@
+{
+ "backend": "excel",
+ "shadow": false,
+ "note": "backend: excel | sql. shadow: true — зеркалить операции склада в SQL. Включать только осознанно.",
+ "visible": [
+  "wh",
+  "shop",
+  "fbs",
+  "cex"
+ ],
+ "client_visible": [],
+ "excel_flush_minutes": 3
+}

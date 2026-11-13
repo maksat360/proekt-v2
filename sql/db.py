@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
+import subprocess
 import sqlite3
 from datetime import datetime
 from pathlib import Path
@@ -160,10 +162,110 @@ MIGRATIONS: list[tuple[int, str, list[str]]] = [
         "ALTER TABLE orders ADD COLUMN external_uid TEXT",
         "CREATE INDEX IF NOT EXISTS ix_orders_uid ON orders(type, cabinet_id, external_uid)",
     ]),
+    (6, "контрагенты: поставщики, покупатели, собственные компании и цеха", [
+        """CREATE TABLE IF NOT EXISTS counterparties (
+            id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, category TEXT NOT NULL,
+            phone TEXT, note TEXT, created_at TEXT NOT NULL, updated_at TEXT)""",
+        "CREATE INDEX IF NOT EXISTS ix_counterparties_cat ON counterparties(category, name)",
+    ]),
+    (7, "адресное хранение: ячейки P/N, коробки K, мешки M и что в них лежит", [
+        """CREATE TABLE IF NOT EXISTS wh_places (
+            code TEXT PRIMARY KEY, kind TEXT NOT NULL, rack INTEGER, floor INTEGER, cell INTEGER,
+            at TEXT, status TEXT NOT NULL DEFAULT 'active', replaced_by TEXT,
+            created_at TEXT NOT NULL, updated_at TEXT)""",
+        "CREATE INDEX IF NOT EXISTS ix_wh_places_kind ON wh_places(kind, status)",
+        """CREATE TABLE IF NOT EXISTS wh_contents (
+            place TEXT NOT NULL, product TEXT NOT NULL, qty REAL NOT NULL, updated_at TEXT,
+            PRIMARY KEY (place, product))""",
+        "CREATE INDEX IF NOT EXISTS ix_wh_contents_product ON wh_contents(product)",
+    ]),
 ]
 
 
-def connect(path: Path | str | None = None) -> sqlite3.Connection:
+# ---------------------------------------------------------------- PostgreSQL
+# Рабочая база — PostgreSQL (config.json → "db": "postgres", "pg_dsn").
+# SQLite остаётся для тестов и явного пути (connect(path) или V2_DB).
+_PG_SUBS = [
+    (re.compile(r"\bBEGIN IMMEDIATE\b"), "BEGIN"),
+    (re.compile(r"\bINTEGER PRIMARY KEY AUTOINCREMENT\b"), "SERIAL PRIMARY KEY"),
+    (re.compile(r"\bREAL\b"), "DOUBLE PRECISION"),
+    (re.compile(r'(?<![\w"])user(?![\w"])'), '"user"'),  # user — зарезервированное слово в PG
+]
+
+
+def _pg_sql(sql: str) -> str:
+    sql = sql.replace("%", "%%").replace("?", "%s")  # shortcut: «?» внутри строковых литералов не поддержан
+    for rx, rep in _PG_SUBS:
+        sql = rx.sub(rep, sql)
+    return sql
+
+
+class PgRow(dict):
+    """Строка как sqlite3.Row: r["col"] и r[0]."""
+    __slots__ = ("_v",)
+
+    def __init__(self, names, values):
+        super().__init__(zip(names, values))
+        self._v = values
+
+    def __getitem__(self, k):
+        return self._v[k] if isinstance(k, int) else super().__getitem__(k)
+
+
+def _pg_rows(cur):
+    names = [c.name for c in cur.description] if cur.description else []
+    return lambda values: PgRow(names, values)
+
+
+class PgConnection:
+    """Тонкая обёртка psycopg с интерфейсом sqlite3 (execute → курсор, «?» → %s)."""
+    dialect = "postgres"
+
+    def __init__(self, dsn: str):
+        import psycopg
+        from psycopg.adapt import Dumper
+
+        class _LooseInt(Dumper):
+            oid = 0  # unknown: PG выводит тип из контекста (текст = 123 не падает, как в SQLite)
+
+            def dump(self, obj):
+                return str(int(obj)).encode()
+
+        self._c = psycopg.connect(dsn, autocommit=True, row_factory=_pg_rows)
+        for t in (int, bool):  # bool → 1/0, как в SQLite (булевых столбцов в схеме нет)
+            self._c.adapters.register_dumper(t, _LooseInt)
+
+    def execute(self, sql: str, params=()):
+        return self._c.execute(_pg_sql(sql), tuple(params or ()))
+
+    def close(self) -> None:
+        self._c.close()
+
+
+def pg_dsn() -> str:
+    return os.environ.get("V2_PG") or str(load_config().get("pg_dsn") or "dbname=portal")
+
+
+def _testing() -> bool:
+    """Запуск тестов (python -m unittest / pytest) — рабочую базу не трогаем."""
+    import sys
+    argv0 = os.path.basename(sys.argv[0] if sys.argv else "")
+    return "unittest" in argv0 or "pytest" in argv0
+
+
+def use_pg(path=None) -> bool:
+    if path or os.environ.get("V2_DB"):
+        return False
+    if os.environ.get("V2_PG"):
+        return True
+    if _testing():
+        return False
+    return load_config().get("db") == "postgres"
+
+
+def connect(path: Path | str | None = None):
+    if use_pg(path):
+        return PgConnection(pg_dsn())
     target = Path(path) if path else DB_PATH
     target.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(str(target), timeout=10, isolation_level=None)
@@ -200,11 +302,22 @@ def now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _pg_bin(name: str) -> str:
+    for d in ("/opt/homebrew/opt/postgresql@17/bin", "/usr/local/opt/postgresql@17/bin"):
+        if Path(d, name).exists():
+            return str(Path(d, name))
+    return shutil.which(name) or name
+
+
 def backup(con: sqlite3.Connection, keep: int = 30) -> Path:
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    dest = BACKUP_DIR / f"portal_{datetime.now():%Y%m%d_%H%M%S}.db"
-    con.execute("VACUUM INTO ?", (str(dest),))
-    old = sorted(BACKUP_DIR.glob("portal_*.db"))
+    pg = isinstance(con, PgConnection)
+    dest = BACKUP_DIR / f"portal_{datetime.now():%Y%m%d_%H%M%S}.{'sql' if pg else 'db'}"
+    if pg:
+        subprocess.run([_pg_bin("pg_dump"), "-f", str(dest), pg_dsn()], check=True)
+    else:
+        con.execute("VACUUM INTO ?", (str(dest),))
+    old = sorted(BACKUP_DIR.glob(f"portal_*.{dest.suffix[1:]}"))
     for f in old[:-keep]:
         f.unlink(missing_ok=True)
     return dest
@@ -229,7 +342,7 @@ def set_meta(con: sqlite3.Connection, key: str, value) -> None:
 def get_meta(con: sqlite3.Connection, key: str, default=None):
     try:
         row = con.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
-    except sqlite3.OperationalError:
+    except Exception:  # нет таблицы meta (sqlite / postgres)
         return default
     if not row:
         return default
@@ -255,7 +368,7 @@ def save_config(cfg: dict) -> None:
 def shadow_enabled() -> bool:
     if os.environ.get("V2_SHADOW") == "1":
         return True
-    return bool(load_config().get("shadow"))
+    return not _testing() and bool(load_config().get("shadow"))
 
 
 def backend() -> str:
@@ -263,6 +376,9 @@ def backend() -> str:
 
 
 def integrity(con: sqlite3.Connection) -> str:
+    if isinstance(con, PgConnection):
+        con.execute("SELECT 1")
+        return "ok"
     return con.execute("PRAGMA integrity_check").fetchone()[0]
 
 

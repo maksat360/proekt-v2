@@ -61,7 +61,8 @@
   --radius: 26px;
   --radius-sm: 14px;
   --ease: cubic-bezier(.32, .72, 0, 1);
-  --spring: cubic-bezier(.2, .9, .25, 1.15);
+  /* Apple: окна, меню и подсказки не «пружинят» — без перелёта (damping 1.0) */
+  --spring: cubic-bezier(.2, .9, .25, 1);
 
   /* фон — цветные «лужи» под стеклом */
   --mesh-1: rgba(96, 150, 255, .55);
@@ -116,6 +117,7 @@
 
 /* ---------- основа ---------- */
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+a, button, input, select, textarea, label, summary, [role="button"], [data-act], [data-shop] { touch-action: manipulation; }
 html, body { height: 100%; }
 html { scroll-behavior: smooth; }
 body {
@@ -784,6 +786,21 @@ input[list]::-webkit-calendar-picker-indicator { opacity: .35; }
 .stock { font-size: 11.5px; font-weight: 600; color: var(--green); }
 .stock.zero { color: var(--red); }
 .product .btn { width: 100%; margin-top: 6px; min-height: 34px; font-size: 13px; }
+/* размеры внутри карточки — как на Wildberries */
+.szrow { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.szbtn {
+  position: relative; min-width: 38px; height: 30px; padding: 0 8px; border-radius: 10px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--glass-thin); color: var(--ink); font: inherit; font-size: 12.5px; font-weight: 600;
+  transition: background .15s var(--ease), border-color .15s var(--ease), transform .15s var(--spring);
+}
+.szbtn:hover { border-color: var(--ink-3); }
+.szbtn:active { transform: scale(.94); }
+.szbtn.on { background: var(--ink); color: var(--bg); border-color: transparent; }
+.szbtn.none { color: var(--ink-3); text-decoration: line-through; opacity: .6; }
+.szbtn i {
+  position: absolute; top: -6px; right: -6px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px;
+  background: var(--blue); color: #fff; font-style: normal; font-size: 10px; line-height: 16px; text-align: center;
+}
 
 .cart-fab[hidden] { display: none; }
 .cart-fab {
@@ -896,6 +913,21 @@ input[list]::-webkit-calendar-picker-indicator { opacity: .35; }
 .pick-row.bad .pick-qty { border-color: var(--red); }
 .pick-row.partial { background: var(--orange-soft); border-color: rgba(255, 149, 0, .45); }
 .pick-row.partial .pick-hit { color: var(--orange); }
+.pick-row.sub { background: var(--purple-soft); border-color: rgba(175, 82, 222, .5); box-shadow: 0 0 0 3px rgba(175, 82, 222, .12); }
+.pick-row.sub .pick-hit { color: var(--purple); }
+/* фильтр сборки как автофильтр Excel */
+.pick-xf { position: relative; }
+.pick-xf > summary { list-style: none; width: 100%; justify-content: center; }
+.pick-xf > summary::-webkit-details-marker { display: none; }
+.pick-xf-pop {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; width: min(320px, calc(100vw - 32px));
+  display: grid; gap: 8px; padding: 12px; border-radius: 18px;
+  background: var(--glass-strong); -webkit-backdrop-filter: blur(24px); backdrop-filter: blur(24px);
+  border: 1px solid var(--line); box-shadow: 0 12px 40px rgba(0, 0, 0, .18);
+}
+.pick-xf-pop .btn { justify-content: flex-start; }
+.pick-xf-list { max-height: 46vh; overflow: auto; display: grid; gap: 2px; padding: 6px 4px; border-top: 1px solid var(--line-2); }
+.pick-xf-list label { display: flex; align-items: center; gap: 8px; padding: 5px 4px; font-size: 13.5px; cursor: pointer; }
 .pick-row.done { opacity: .5; }
 .pick-foot {
   display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
@@ -1134,6 +1166,30 @@ input[list]::-webkit-calendar-picker-indicator { opacity: .35; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
   body::before { animation: none; }
+  /* окна, подсказки и смена страницы — короткое проявление без сдвига, чтобы было видно, что что-то открылось */
+  .overlay, .modal, .toast, .sheet, .gsel-panel, .undo-bar, .cart-fab, #page > * { animation: rmFade .2s ease both !important; }
+}
+@keyframes rmFade { from { opacity: 0; } to { opacity: 1; } }
+
+/* отклик в момент нажатия, без задержки (Apple: response на pointer-down) */
+.btn:active, .chipbtn:active, .szbtn:active, .nav a:active, .bitem:active, .company:active,
+.sync-chip:active, .cart-fab:active, .modal-h .x:active { transition-duration: 80ms; }
+
+/* система просит меньше прозрачности — плотные панели без размытия */
+@media (prefers-reduced-transparency: reduce) {
+  :root { --glass: rgba(255, 255, 255, .95); --glass-strong: #fff; --glass-thin: rgba(255, 255, 255, .88); --blur: none; --blur-heavy: none; }
+  body::before { display: none; }
+}
+@media (prefers-reduced-transparency: reduce) and (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --glass: #1f2128; --glass-strong: #2a2c34; --glass-thin: #1a1c22; --blur: none; --blur-heavy: none; }
+}
+
+/* система просит больше контраста — чёткие границы и тёмный вторичный текст */
+@media (prefers-contrast: more) {
+  :root { --ink-2: #2b2f38; --ink-3: #4a4f5c; --line: rgba(0, 0, 0, .28); --line-2: rgba(0, 0, 0, .18); --glass-brd: rgba(0, 0, 0, .35); --glass: rgba(255, 255, 255, .94); --glass-strong: #fff; }
+}
+@media (prefers-contrast: more) and (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --ink-2: #d6d9e0; --ink-3: #b0b5c0; --line: rgba(255, 255, 255, .3); --line-2: rgba(255, 255, 255, .2); --glass-brd: rgba(255, 255, 255, .4); --glass: #1f2128; --glass-strong: #2a2c34; }
 }
 
 /* более слабые устройства (сканеры TC15 и т.п.): без размытия, но со стеклянным видом */
@@ -1179,3 +1235,30 @@ input[list]::-webkit-calendar-picker-indicator { opacity: .35; }
 .v2acc-btn.danger:hover { background: var(--red-soft); }
 .acc.quick { background: var(--green-soft); border-color: var(--green); }
 .acc.quick em { font-style: normal; font-size: 12px; font-weight: 600; color: var(--green); }
+
+/* карточка товара магазина */
+.shop-card { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; }
+.sc-main { border-radius: 14px; overflow: hidden; aspect-ratio: 3 / 4; display: flex; align-items: center; justify-content: center; }
+.sc-main img { width: 100%; height: 100%; object-fit: cover; }
+.sc-main .art { width: 70%; }
+.sc-thumbs { display: flex; gap: 6px; margin-top: 8px; overflow-x: auto; }
+.sc-thumbs img { width: 56px; height: 74px; object-fit: cover; border-radius: 8px; cursor: pointer; opacity: .6; border: 2px solid transparent; flex: none; }
+.sc-thumbs img.on { opacity: 1; border-color: var(--accent, #2f6bff); }
+@media (max-width: 720px) {
+  .shop-card { grid-template-columns: minmax(0, 1fr); }
+  .sc-main { aspect-ratio: auto; height: min(62vh, 460px); }
+  .sc-info .table { width: 100%; font-size: 14px; }
+  .sc-info .table th, .sc-info .table td { padding: 8px 4px; }
+  .sc-info .table .btn.sm { padding: 6px 10px; font-size: 12.5px; white-space: nowrap; }
+}
+
+/* Склад → Адрес */
+.ad-ctx { margin-top: 10px; padding: 12px; border-radius: 12px; background: var(--bg2, #f4f5f7); min-height: 48px; }
+.ad-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.ad-code { font-size: 20px; letter-spacing: .5px; }
+.ad-items { width: 100%; margin: 4px 0; }
+.ad-put { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.ad-unit { display: flex; flex-direction: column; gap: 6px; padding: 10px 0; border-bottom: 1px solid var(--line, #e6e6ea); }
+.ad-unit:last-child { border-bottom: 0; }
+.ad-rack { flex-wrap: wrap; }
+details.card > summary { list-style: none; }
