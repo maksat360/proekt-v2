@@ -1,23 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Синхронизация каталога магазина с Excel-файлом цеха.
+"""Синхронизация каталога магазина с листом «главный» книги цеха (книга хранится в базе).
 
 Правила:
-  • файл-источник только ЧИТАЕТСЯ, никогда не сохраняется;
+  • книга только ЧИТАЕТСЯ, никогда не сохраняется;
   • количество берётся строго из колонки «ф.к» листа «главный» (фактическое количество);
   • лист «каробки» используется только для сверки и отчёта о расхождениях;
   • цены и фото, заданные в портале, при пересинхронизации сохраняются;
-  • если файл изменился (mtime/размер), данные пересобираются автоматически.
+  • если книга в базе изменилась, данные пересобираются автоматически.
 
 Использование:
     from shop_sync import sync_if_changed, sync_from_excel, status
-    sync_if_changed()          # дешёвая проверка mtime + синк при изменении
+    sync_if_changed()          # дешёвая проверка версии книги + синк при изменении
     sync_from_excel(force=True)
 """
 from __future__ import annotations
 
 import json
-import os
 import threading
 from collections import defaultdict
 from datetime import datetime
@@ -27,10 +26,7 @@ from openpyxl import load_workbook
 
 BASE = Path(__file__).resolve().parent
 DATA = BASE / "data"
-SOURCE_FILE = DATA / "shop_source.txt"
 STATUS_FILE = DATA / "shop_status.json"
-
-DEFAULT_SOURCE = Path("/Users/temp/швейный цех приложение/цех_склад для apk.xlsm")
 
 DEFAULT_PRICE = {
     "Брюки": 1800, "Худи": 1600, "Толстовка": 1600, "Лонгслив": 950,
@@ -46,21 +42,6 @@ _LOCK = threading.Lock()
 
 
 # ------------------------------------------------------------------ helpers
-def source_path() -> Path:
-    if SOURCE_FILE.exists():
-        raw = SOURCE_FILE.read_text(encoding="utf-8").strip()
-        if raw:
-            return Path(os.path.expanduser(raw))
-    return DEFAULT_SOURCE
-
-
-def set_source(path: str | Path) -> Path:
-    p = Path(os.path.expanduser(str(path))).resolve()
-    DATA.mkdir(parents=True, exist_ok=True)
-    SOURCE_FILE.write_text(str(p), encoding="utf-8")
-    return p
-
-
 def _clean(value) -> str:
     return "" if value is None else str(value).strip()
 
@@ -105,52 +86,29 @@ def _write_status(payload: dict) -> None:
     tmp.replace(STATUS_FILE)
 
 
-def _signature(path: Path) -> tuple:
-    try:
-        st = path.stat()
-        return (int(st.st_mtime), int(st.st_size))
-    except OSError:
-        return (0, 0)
-
-
 # ------------------------------------------------------------------- sync
-def sync_from_excel(path: str | Path | None = None, force: bool = False) -> dict:
-    """Пересобирает products.xlsx из Excel. Источник не изменяется."""
+def sync_from_excel(force: bool = False) -> dict:
+    """Пересобирает таблицу products из листа «главный» книги цеха (в базе). Книга не изменяется."""
+    import sheets
     from server import read_table, write_table  # импорт здесь, чтобы не было цикла
 
-    src = Path(os.path.expanduser(str(path))) if path else source_path()
     with _LOCK:
-        if not src.exists():
-            payload = {**status(), "error": f"файл не найден: {src}",
-                       "source": str(src), "synced_at": status().get("synced_at")}
-            _write_status(payload)
-            return payload
-
-        sig = _signature(src)
+        sig = sheets.version("цех")
         prev = status()
-        if not force and prev.get("signature") == list(sig) and STATUS_FILE.exists():
+        if not force and prev.get("signature") == sig and STATUS_FILE.exists():
             products = read_table("products")
             if products:
                 return prev
 
-        # читаем только для чтения: файл никогда не сохраняется
-        wb = load_workbook(src, data_only=True)
-        try:
-            sheet = wb["главный"]
-            rows = list(sheet.iter_rows(values_only=True))
-        finally:
-            wb.close()
+        wb = sheets.View("цех")
+        rows = list(wb["главный"].iter_rows(values_only=True))
 
         # сверка с листом «каробки» (только для отчёта)
         boxes: dict[str, float] = defaultdict(float)
-        wb2 = load_workbook(src, data_only=True)
-        try:
-            if "каробки" in wb2.sheetnames:
-                for r in list(wb2["каробки"].iter_rows(values_only=True))[1:]:
-                    if r and r[5] and isinstance(r[6], (int, float)):
-                        boxes[_clean(r[5])] += float(r[6])
-        finally:
-            wb2.close()
+        if "каробки" in wb.sheetnames:
+            for r in list(wb["каробки"].iter_rows(values_only=True))[1:]:
+                if r and len(r) > 6 and r[5] and isinstance(r[6], (int, float)):
+                    boxes[_clean(r[5])] += float(r[6])
 
         old = {(_clean(p.get("наименование"))): p for p in read_table("products")}
 
@@ -238,9 +196,9 @@ def sync_from_excel(path: str | Path | None = None, force: bool = False) -> dict
         write_table("products", products)
 
         payload = {
-            "source": str(src),
-            "source_name": src.name,
-            "signature": list(sig),
+            "source": "база данных",
+            "source_name": "база данных",
+            "signature": sig,
             "synced_at": datetime.now().strftime("%d.%m.%Y %H:%M:%S"),
             "позиций": len(products),
             "в_наличии": len([p for p in products if p["количество"] > 0]),
@@ -255,14 +213,13 @@ def sync_from_excel(path: str | Path | None = None, force: bool = False) -> dict
 
 
 def sync_if_changed() -> dict:
-    src = source_path()
-    sig = _signature(src)
+    import sheets
     prev = status()
-    if prev.get("signature") == list(sig) and prev.get("позиций"):
+    if prev.get("signature") == sheets.version("цех") and prev.get("позиций"):
         return prev
     try:
-        return sync_from_excel(src)
-    except Exception as exc:  # noqa: BLE001 — файл занят Excel/OneDrive
+        return sync_from_excel()
+    except Exception as exc:  # noqa: BLE001
         payload = {**prev, "error": f"{type(exc).__name__}: {exc}",
                    "checked_at": datetime.now().strftime("%H:%M:%S")}
         _write_status(payload)

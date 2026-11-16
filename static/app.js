@@ -493,22 +493,19 @@ const PAGES = {};
 
 PAGES.dash = async () => {
   const { data } = await api('/api/dashboard');
-  const role = STATE.me.роль;
-  const tasks = data['мои_задачи'] || [];
-  const wip = data['незавершёнка'] || {};
-  const wipRows = Object.entries(wip).filter(([, v]) => v > 0);
-  const worker = (STATE.me.роли_портала || []).includes('prod') || role === 'technologist';
+  const cex = data['цех'] || null;  // реальные цифры цеха; портальные партии не ведутся
+  const report = STATE.caps['report.build']  // начальник может быть и швеёй (роль prod) — отчёт по праву
+    ? (await api('/api/dashboard/report').catch(() => ({ data: null }))).data : null;
+  const month = new Date().toLocaleDateString('ru-RU', { month: 'long' });
+  const whose = report ? 'весь цех' : 'мои';
+  const wip = cex ? Object.entries(cex['этапы'] || {}).filter(([, v]) => v > 0)
+    : Object.entries(data['незавершёнка'] || {}).filter(([, v]) => v > 0);
+  const unit = cex ? 'шт' : 'разд.';
 
-  const kpis = worker ? `
-    ${kpi('Мои задачи', tasks.length, tasks.length ? 'в работе сейчас' : 'свободно')}
-    ${kpi('Сдано штук', nf(data['моя_выработка']['штук']), 'за всё время')}
-    ${kpi('Заработано', money(data['моя_выработка']['сумма']), 'сдельно', 'ok')}
-    ${kpi('Оценка качества', data['оценка_средняя'] ? data['оценка_средняя'] + ' / 5' : '—', 'проверок: ' + data['проверок'])}`
-    : `
-    ${kpi('Партий', data['партий'], 'в работе: ' + data['в_работе'])}
-    ${kpi('Штук в производстве', nf(data['штук']), 'на складе: ' + nf(data['на_складе']))}
-    ${kpi('Отгружено', nf(data['отгружено']), 'свободно: ' + nf(Math.max(0, num(data['на_складе']) - num(data['отгружено']))), 'ok')}
-    ${kpi('Оценка технолога', data['оценка_средняя'] ? data['оценка_средняя'] + ' / 5' : '—', 'проверок: ' + data['проверок'])}`;
+  const kpis = `
+    ${kpi('Сдано штук', nf(cex ? cex['сдано'] : data['моя_выработка']['штук']), `за ${month} · ${whose}`)}
+    ${kpi('Заработано', money(cex ? cex['заработано'] : data['моя_выработка']['сумма']), `сдельно за ${month} · ${whose}`, 'ok')}
+    ${kpi('Оценка качества', data['оценка_средняя'] ? data['оценка_средняя'] + ' / 5' : '—', data['проверок'] ? 'проверок: ' + data['проверок'] : 'проверок ОТК пока нет')}`;
 
   return `
     <div class="hero">
@@ -516,46 +513,37 @@ PAGES.dash = async () => {
         <h1>${greeting()},<br><em>${esc((STATE.me.фио || '').split(' ')[0])}</em></h1>
         <div class="sub">${new Date().toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' })} · ${esc(STATE.company['название'])}</div>
       </div>
-      <div class="actions">
-        ${STATE.caps['batches.create'] ? '<button class="btn primary" data-act="new-batch">Новая партия</button>' : ''}
-        ${worker ? '<a class="btn" href="#/tasks">Мои задачи</a>' : '<a class="btn" href="#/batches">Все партии</a>'}
-      </div>
     </div>
     <div class="kpis">${kpis}</div>
-    ${tasks.length ? `
-      <div class="card">
-        <div class="card-h"><h3>В работе прямо сейчас</h3><div class="spacer"></div><a class="more" href="#/tasks">Все задачи</a></div>
-        <div class="card-b"><div class="tasks">
-          ${tasks.map((t) => `
-            <div class="task">
-              <div class="th"><b>#${t['партия']} · ${esc(t['артикул'])}</b></div>
-              <div class="meta"><span>${esc(t['название'])}</span><span>${esc(t['цвет'])} / ${esc(t['размер'])}</span></div>
-              <div class="meta"><span>начато: <b>${esc(String(t['начало']).slice(-5))}</b></span><span class="timer">${timeAgo(t['начало'])}</span></div>
-              <div class="btn-row">
-                <button class="btn primary sm" data-act="finish" data-arg="${t['pass_id']}">Завершить</button>
-                <button class="btn sm" data-act="minus" data-arg="${t['pass_id']}">Минус 1</button>
-              </div>
-            </div>`).join('')}
-        </div></div>
-      </div>` : ''}
     <div class="split">
       <div class="card">
-        <div class="card-h"><h3>Последние партии</h3><div class="spacer"></div><a class="more" href="#/batches">Все</a></div>
-        <div class="card-b tight">
-          <div class="blist">
-            ${data['последние'].map(bitem).join('') || '<div class="empty">Партий пока нет</div>'}
-          </div>
+        <div class="card-h"><h3>Заказы цеха</h3><div class="spacer"></div><a class="more" href="/cex/">Открыть цех</a></div>
+        <div class="card-b">
+          ${cex && cex['заказы'].length ? cex['заказы'].map((o) => `
+            <div class="kv"><span><b>№${esc(o['номер'])}</b> · ${esc(o['клиент'] || 'без клиента')} <span class="muted">· ${esc(String(o['дата']).slice(0, 10))}</span></span>
+              <span>${nf(o['штук'])} шт · ${pill(o['статус'] || '—', 'blue')}</span></div>`).join('')
+            : '<div class="hint">Заказов в цехе пока нет</div>'}
         </div>
       </div>
       <div>
         <div class="card">
           <div class="card-h"><h3>Незавершённое производство</h3></div>
           <div class="card-b">
-            ${wipRows.length ? wipRows.map(([name, v]) => `
-              <div class="kv"><span>${esc(name)}</span><b>${v} разд.</b></div>`).join('') : '<div class="hint">Всё разобрано</div>'}
+            ${wip.length ? wip.map(([name, v]) => `
+              <div class="kv"><span>${esc(name)}</span><b>${nf(v)} ${unit}</b></div>`).join('') : '<div class="hint">Всё разобрано</div>'}
           </div>
         </div>
-        ${data['материалов'] !== undefined ? `
+        ${cex && cex['материалы'] ? `
+        <div class="card">
+          <div class="card-h"><h3>Материалы цеха</h3></div>
+          <div class="card-b">
+            <div class="kv"><span>В справочнике</span><b>${nf(cex['материалы']['в_справочнике'])}</b></div>
+            <div class="kv"><span>Есть на складе</span><b>${nf(cex['материалы']['на_складе'])} поз.</b></div>
+            <div class="kv"><span>Сумма остатков</span><b>${money(cex['материалы']['сумма'])}</b></div>
+            ${cex['материалы']['без_цены'] ? `<div class="hint">без цены поступления: ${nf(cex['материалы']['без_цены'])} поз. — в сумму не вошли</div>` : ''}
+            <a class="btn" href="/cex/" style="width:100%;margin-top:8px">Открыть цех</a>
+          </div>
+        </div>` : data['материалов'] !== undefined ? `
         <div class="card">
           <div class="card-h"><h3>Материалы</h3></div>
           <div class="card-b">
@@ -565,8 +553,223 @@ PAGES.dash = async () => {
           </div>
         </div>` : ''}
       </div>
-    </div>`;
+    </div>
+    ${report ? bossReport(report) : ''}
+    ${report ? `<div class="card" id="wb-an">
+      <div class="card-h"><h3>Аналитика Wildberries</h3><div class="spacer"></div><div class="seg" id="wb-an-tabs"></div></div>
+      <div class="card-b" id="wb-an-b"><span class="muted">загружаю…</span></div>
+    </div>` : ''}`;
 };
+
+// ---------- аналитика WB: заказы, выкупы, остатки на складах WB, сколько довезти ----------
+const WBAN = { cab: 'all', days: 30, data: null, timer: null };
+
+async function loadWbAn(cab = WBAN.cab, force = false) {
+  WBAN.cab = cab;
+  clearTimeout(WBAN.timer);
+  if (!$('#wb-an')) return;
+  let r;
+  try {
+    r = (await api('/api/dashboard/wb?кабинет=' + encodeURIComponent(cab) + (force ? '&обновить=1' : ''))).data;
+  } catch (e) {
+    $('#wb-an-b').innerHTML = `<div class="notice">${esc(e.message)}</div>`;
+    return;
+  }
+  if (!$('#wb-an')) return;
+  WBAN.data = r;
+  $('#wb-an-tabs').innerHTML = [['all', 'Общая WB'], ...r['все'].map((c) => [c.id, 'WB ' + c.name])]
+    .map(([id, t]) => `<button type="button" class="${id === cab ? 'on' : ''}" data-wb-cab="${esc(id)}">${esc(t)}</button>`).join('');
+  $$('[data-wb-cab]', $('#wb-an-tabs')).forEach((b) => b.addEventListener('click', () => loadWbAn(b.dataset.wbCab)));
+  renderWbAn();
+  if (r['кабинеты'].some((c) => c['обновляется'])) WBAN.timer = setTimeout(() => loadWbAn(), 8000);
+}
+
+function renderWbAn() {
+  const r = WBAN.data;
+  const N = WBAN.days;
+  const per = r['дней'];
+  const F = WBAN.f || (WBAN.f = { cat: '', model: '', color: '', size: '' });
+  const all = r['строки'];
+  const pick = (x, skip) => (skip === 'cat' || !F.cat || x['категория'] === F.cat)
+    && (skip === 'model' || !F.model || x['модель'] === F.model)
+    && (skip === 'color' || !F.color || x['цвет'] === F.color)
+    && (skip === 'size' || !F.size || x['размер'] === F.size);
+  const rows = all.filter((x) => pick(x));
+  const sum = (k, list = rows) => list.reduce((t, x) => t + num(x[k]), 0);
+  const cur = { RUB: '₽', KGS: 'сом', KZT: '₸', BYN: 'BYN', AMD: '֏', UZS: 'сум' }[r['валюта']] || '';
+
+  // сезонность: выкупы по месяцам у выбранных товаров; коэффициент месяца = его среднее / среднее всех месяцев
+  const monthsTotal = {};
+  rows.forEach((x) => Object.entries(x['месяцы'] || {}).forEach(([m, q]) => { monthsTotal[m] = (monthsTotal[m] || 0) + q; }));
+  const thisMonth = new Date().toISOString().slice(0, 7);
+  const full = Object.keys(monthsTotal).filter((m) => m < thisMonth).sort();  // текущий месяц неполный
+  const byMoy = Array.from({ length: 12 }, () => []);
+  full.forEach((m) => byMoy[Number(m.slice(5, 7)) - 1].push(monthsTotal[m]));
+  const moyAvg = byMoy.map((a) => (a.length ? a.reduce((t, v) => t + v, 0) / a.length : null));
+  const known = moyAvg.filter((v) => v !== null);
+  const mean = known.length ? known.reduce((t, v) => t + v, 0) / known.length : 0;
+  const coef = moyAvg.map((v) => (v === null || !mean ? null : v / mean));
+  const now = new Date().getMonth();
+  const next = (now + 1) % 12;
+  // поправка на сезон: продажи последних 30 дней × (коэф. следующего месяца / коэф. текущего), если история ≥ 12 мес.
+  const seasonOk = full.length >= 12 && coef[now] && coef[next];
+  const k = seasonOk && WBAN.season !== false ? coef[next] / coef[now] : 1;
+
+  const noStock = r['кабинеты'].filter((c) => c['ключ'] && !c['остатки']).map((c) => c.name);
+  const stock = !noStock.length;
+  const calc = (list) => {
+    const day = sum('заказы_30', list) / per * k;
+    const wb = sum('на_wb', list);
+    return { day, wb, enough: day ? Math.floor(wb / day) : null, need: stock ? Math.max(0, Math.ceil(day * N - wb)) : 0 };
+  };
+  const needOf = (list) => list.reduce((t, z) => t + calc([z]).need, 0);  // по размерам: лишнее одного не закрывает другой
+  const days = (v) => (v === null ? 'не продаётся' : nf(v) + ' дн');
+  const cell = (v) => (!stock ? '<span class="muted">—</span>' : v === null ? '<span class="muted">не продаётся</span>' : nf(v) + ' дн');
+
+  const partName = { 'заказы': 'заказы', 'выкупы': 'выкупы', 'остатки': 'остатки', 'история': 'история продаж' };
+  const status = r['кабинеты'].map((c) => {
+    const s = !c['ключ'] ? '<span class="pill orange">нет ключа — вставьте в Склад → Журнал → Кабинеты</span>'
+      : c['обновляется'] ? '<span class="pill blue">загружаю из WB…</span>' : '';
+    const ps = c['части'] || {};
+    const parts = Object.entries(ps).map(([n, p]) => `${partName[n] || n}: ${p['идёт'] ? (p['ошибка'] ? 'загружено ' + nf(p['строк']) + ' строк, продолжит сам' : 'загружается (' + nf(p['строк']) + ' строк)') : p['обновлено'] ? esc(p['обновлено']) : '—'}`).join(' · ');
+    const err = Object.entries(ps).filter(([, p]) => p['ошибка'])
+      .map(([n, p]) => `<div class="hint" style="color:var(--orange,#c60)">${esc(partName[n] || n)}: ${esc(p['ошибка'])}${/Финансы/.test(p['ошибка']) ? ' — добавьте в ключ раздел «Финансы» (только чтение), и продажи подтянутся с 29.01.2024' : ''}</div>`).join('');
+    return `<div class="kv"><span><b>${esc(c.name)}</b> ${c['ключ'] ? `<span class="hint">${parts}</span>` : ''}</span><span>${s}</span></div>${err}`;
+  }).join('');
+
+  const uniq = (field, skip) => [...new Set(all.filter((x) => pick(x, skip)).map((x) => x[field]))]
+    .sort((a, b) => String(a).localeCompare(String(b), 'ru', { numeric: true }));
+  const sel = (id, label, field, skip) => `<label class="hint" style="display:flex;flex-direction:column;gap:2px">${label}
+    <select class="input" data-wb-f="${skip}" style="min-width:120px"><option value="">все</option>
+    ${uniq(field, skip).map((v) => `<option ${v === F[skip] ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></label>`;
+
+  const groups = {};
+  rows.forEach((x) => { const g = `${x['категория']}\u0001${x['модель']}\u0001${x['цвет']}`; (groups[g] = groups[g] || []).push(x); });
+  const arts = Object.entries(groups).map(([g, list]) => {
+    const [cat, model, color] = g.split('\u0001');
+    return { cat, model, color, list, ...calc(list), o30: sum('заказы_30', list), need: needOf(list),
+             wbArts: [...new Set(list.flatMap((x) => x['артикулы_wb'] || []))] };
+  }).filter((x) => x.o30 || x.wb || sum('выкупы_30', x.list))
+    .sort((x, y) => y.need - x.need || y.o30 - x.o30);
+  const total = calc(rows);
+  const bought = sum('выкупы_30');
+  const returned = sum('возвраты_30');
+  const mon = (m) => new Date(m + '-01T00:00').toLocaleDateString('ru-RU', { month: 'short', year: '2-digit' });
+  const maxM = Math.max(1, ...full.map((m) => monthsTotal[m]));
+  const MOY = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+
+  $('#wb-an-b').innerHTML = `
+    ${status}
+    <div class="btn-row" style="margin:10px 0;flex-wrap:wrap;align-items:flex-end;gap:8px">
+      ${sel('c', 'Категория', 'категория', 'cat')}${sel('m', 'Модель', 'модель', 'model')}
+      ${sel('l', 'Цвет', 'цвет', 'color')}${sel('s', 'Размер', 'размер', 'size')}
+      <label class="hint" style="display:flex;flex-direction:column;gap:2px">Запас на
+        <select class="input" id="wb-an-days" style="width:110px">${[14, 30, 45, 60, 90].map((d) => `<option value="${d}" ${d === N ? 'selected' : ''}>${d} дней</option>`).join('')}</select></label>
+      <button class="btn sm" id="wb-an-refresh" style="margin-left:auto">Обновить из WB</button>
+    </div>
+    <div class="kpis">
+      ${kpi('Заказано за 7 дн', nf(sum('заказы_7')), 'в день ' + nf(Math.round(sum('заказы_7') / 7)))}
+      ${kpi('Заказано за 30 дн', nf(sum('заказы_30')), 'отмен: ' + nf(sum('отмены_30')))}
+      ${kpi('Выкуплено за 30 дн', nf(bought), 'возвратов: ' + nf(returned) + (bought + returned ? ' · выкуп ' + Math.round(bought * 100 / (bought + returned)) + '%' : ''))}
+      ${kpi('К перечислению', nf(Math.round(sum('к_перечислению'))) + (cur ? ' ' + cur : ''), 'за 30 дн, за вычетом возвратов', 'ok')}
+      ${stock ? kpi('На складах WB', nf(total.wb), 'к клиентам: ' + nf(sum('к_клиенту')) + ' · возвраты в пути: ' + nf(sum('от_клиента')))
+        : kpi('На складах WB', '—', 'нет остатков: ' + noStock.join(', '))}
+      ${stock ? kpi('Довезти на ' + N + ' дн', nf(needOf(rows)), rows.length ? 'всего хватит на ' + days(total.enough) : '')
+        : kpi('Довезти', '—', 'без остатков WB не считаю')}
+    </div>
+    <details style="padding:10px 0;border-bottom:1px solid var(--line)" ${WBAN.openSeason ? 'open' : ''} id="wb-an-season">
+      <summary style="cursor:pointer"><b>Сезонность</b> · ${full.length ? `выкупы по месяцам за ${full.length} мес.` : 'история продаж ещё не загружена'}
+        ${seasonOk ? ` · следующий месяц (${MOY[next]}) обычно <b>${coef[next] >= coef[now] ? '+' : ''}${Math.round((coef[next] / coef[now] - 1) * 100)}%</b> к текущему` : ''}</summary>
+      ${full.length ? `
+        <div class="hint" style="margin:8px 0">Сезон — месяцы выше 1,0 (продаётся больше среднего), мёртвый сезон — ниже. Считается по выбранным фильтрам.</div>
+        <div style="display:grid;grid-template-columns:repeat(12,1fr);gap:4px;margin-bottom:12px">
+          ${coef.map((c, i) => `<div style="text-align:center"><div class="hint">${MOY[i]}</div>
+            <div style="font-weight:600;color:${c === null ? 'var(--muted)' : c >= 1.15 ? 'var(--green,#1a7f37)' : c <= 0.85 ? 'var(--orange,#c60)' : 'inherit'}">${c === null ? '—' : c.toFixed(1).replace('.', ',')}</div></div>`).join('')}
+        </div>
+        <div class="tablescroll"><div style="display:flex;align-items:flex-end;gap:3px;height:120px;min-width:${full.length * 22}px">
+          ${full.map((m) => `<div title="${mon(m)}: ${nf(monthsTotal[m])} шт" style="flex:1;display:flex;flex-direction:column;justify-content:flex-end;height:100%">
+            <div style="background:var(--accent,#0a84ff);opacity:.75;border-radius:3px 3px 0 0;height:${Math.max(2, monthsTotal[m] * 100 / maxM)}%"></div>
+            <div class="hint" style="font-size:10px;text-align:center;white-space:nowrap">${mon(m)}</div></div>`).join('')}
+        </div></div>
+        ${seasonOk ? `<label class="hint" style="display:flex;gap:6px;align-items:center;margin-top:8px">
+          <input type="checkbox" id="wb-an-season-k" ${WBAN.season !== false ? 'checked' : ''}> учитывать сезон в «довезти» (×${k.toFixed(2).replace('.', ',')})</label>`
+          : '<div class="hint" style="margin-top:8px">Для поправки на сезон нужна история хотя бы за 12 месяцев.</div>'}`
+        : '<div class="hint" style="margin-top:8px">История копится каждый час с сегодняшнего дня. Чтобы сразу получить продажи с 29.01.2024, добавьте в ключ аналитики раздел «Финансы» (только чтение).</div>'}
+    </details>
+    ${arts.map((x) => `
+      <details style="padding:10px 0;border-bottom:1px solid var(--line)">
+        <summary style="cursor:pointer"><b>${esc(x.cat)} ${esc(x.model)}${x.color !== '—' ? ' · ' + esc(x.color) : ''}</b>
+          · заказов ${nf(x.o30)} за 30 дн (≈ ${nf(Math.round(x.day * 10) / 10)} в день)${stock ? ` · на WB <b>${nf(x.wb)}</b> · хватит ${cell(x.enough)}` : ''}${x.need ? ` · <b>довезти ${nf(x.need)}</b>` : ''}
+          ${x.wbArts.length ? `<div class="hint">артикул WB: ${x.wbArts.map(esc).join(', ')}</div>` : ''}</summary>
+        <div class="tablescroll"><table class="resp" style="margin-top:6px">
+          <thead><tr><th>Размер</th><th class="num">Заказы 7 дн</th><th class="num">Заказы 30 дн</th><th class="num">Выкупы</th><th class="num">Возвраты</th><th class="num">На WB</th><th class="num">Хватит</th><th class="num">Довезти</th></tr></thead>
+          <tbody>${x.list.slice().sort((p, q) => String(p['размер']).localeCompare(String(q['размер']), 'ru', { numeric: true })).map((z) => {
+            const c = calc([z]);
+            return `<tr><td data-l="Размер"><b>${esc(z['размер'])}</b></td>
+              <td data-l="Заказы 7 дн" class="num">${nf(z['заказы_7'])}</td><td data-l="Заказы 30 дн" class="num">${nf(z['заказы_30'])}</td>
+              <td data-l="Выкупы" class="num">${nf(z['выкупы_30'])}</td><td data-l="Возвраты" class="num">${nf(z['возвраты_30'])}</td>
+              <td data-l="На WB" class="num">${stock ? nf(z['на_wb']) : '<span class="muted">—</span>'}</td><td data-l="Хватит" class="num">${cell(c.enough)}</td>
+              <td data-l="Довезти" class="num">${c.need ? `<b>${nf(c.need)}</b>` : '<span class="muted">—</span>'}</td></tr>`;
+          }).join('')}</tbody></table></div>
+      </details>`).join('') || '<div class="empty">Данных пока нет</div>'}`;
+  $('#wb-an-refresh').addEventListener('click', () => loadWbAn(WBAN.cab, true));
+  $('#wb-an-days').addEventListener('change', (e) => { WBAN.days = Number(e.target.value); renderWbAn(); });
+  $$('[data-wb-f]', $('#wb-an-b')).forEach((s) => s.addEventListener('change', () => { F[s.dataset.wbF] = s.value; renderWbAn(); }));
+  const sk = $('#wb-an-season-k');
+  if (sk) sk.addEventListener('change', () => { WBAN.season = sk.checked; renderWbAn(); });
+  $('#wb-an-season').addEventListener('toggle', (e) => { WBAN.openSeason = e.target.open; });
+}
+
+
+// отчёты начальника (бывшие листы «отчет» и «Дашборд» книги цеха)
+function bossReport(r) {
+  const sales = r['продажи'] || {};
+  const left = Object.fromEntries((sales['категории'] || []).map((c) => [c['категория'], num(c['остаток'])]));
+  // колонки: что отгружали на ИП, плюс категории, которые только лежат на складе
+  const cats = [...(r['категории'] || []), ...Object.keys(left).filter((c) => left[c] && !(r['категории'] || []).includes(c))];
+  const rows = r['поставки'] || [];
+  const sum = (c) => rows.reduce((t, x) => t + num((x['по_категориям'] || {})[c]), 0);
+  // неделя понедельник–воскресенье: «9–15 нояб.», текущая помечена
+  const week = (iso) => {
+    const a = new Date(iso + 'T00:00');
+    const b = new Date(a); b.setDate(a.getDate() + 6);
+    const m = (d) => d.toLocaleDateString('ru-RU', { month: 'short' });
+    const txt = m(a) === m(b) ? `${a.getDate()}–${b.getDate()} ${m(b)}` : `${a.getDate()} ${m(a)} – ${b.getDate()} ${m(b)}`;
+    const now = new Date();
+    return now >= a && now < new Date(b.getTime() + 864e5) ? `<b>${txt}</b> <span class="muted">· эта неделя</span>` : txt;
+  };
+  return `
+    <div class="card">
+      <div class="card-h"><h3>Поставки по неделям</h3><div class="spacer"></div><span class="hint">штук на каждый ИП и покупателям (заказы сотрудников), неделя пн–вс</span></div>
+      <div class="card-b tight tablescroll">
+        <table class="resp">
+          <thead><tr><th>Неделя</th><th>ИП / покупатель</th>${cats.map((c) => `<th class="num">${esc(c)}</th>`).join('')}<th class="num">Итог</th></tr></thead>
+          <tbody>${rows.map((x) => `<tr>
+            <td data-l="Неделя" style="white-space:nowrap">${week(x['неделя'])}</td>
+            <td data-l="ИП / покупатель">${x['покупатель'] ? `${esc(x['ип'])} <span class="muted">· покупатель</span>` : `<b>${esc(x['ип'])}</b>`}</td>
+            ${cats.map((c) => `<td data-l="${esc(c)}" class="num">${(x['по_категориям'] || {})[c] ? nf(x['по_категориям'][c]) : '<span class="muted">—</span>'}</td>`).join('')}
+            <td data-l="Итог" class="num"><b>${nf(x['итог'])}</b></td>
+          </tr>`).join('') || `<tr><td colspan="${cats.length + 3}" class="empty">Поставок пока нет</td></tr>`}</tbody>
+          ${rows.length ? `<tfoot><tr><td><b>Всего</b></td><td></td>${cats.map((c) => `<td class="num">${sum(c) ? `<b>${nf(sum(c))}</b>` : '<span class="muted">—</span>'}</td>`).join('')}
+            <td class="num"><b>${nf(rows.reduce((t, x) => t + num(x['итог']), 0))}</b></td></tr>
+            <tr><td style="white-space:nowrap"><b>Остаток на складе</b></td><td></td>${cats.map((c) => `<td class="num"><b>${nf(left[c])}</b></td>`).join('')}
+            <td class="num"><b>${nf(sales['остаток'])}</b></td></tr></tfoot>` : ''}
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-h"><h3>Продажи и остаток: категория → артикул → размер</h3><div class="spacer"></div><span class="hint">продано ${nf(sales['всего'])} шт (ИП, WB FBS, покупатели) · на складе ${nf(sales['остаток'])} шт</span></div>
+      <div class="card-b">
+        ${(sales['категории'] || []).map((c) => `
+          <details style="padding:10px 0;border-bottom:1px solid var(--line)">
+            <summary style="cursor:pointer"><b>${esc(c['категория'])}</b> · продано ${nf(c['штук'])} шт · ${c['доля']}% · <b>остаток ${nf(c['остаток'])}</b>${progress(c['доля'], false)}</summary>
+            ${c['артикулы'].map((a) => `
+              <div class="kv"><span>Артикул <b>${esc(a['артикул'])}</b> · ${a['доля']}%</span><span>продано <b>${nf(a['штук'])}</b> · остаток <b>${nf(a['остаток'])}</b></span></div>
+              <div class="hint" style="margin:-4px 0 8px">${a['размеры'].map((z) => `${esc(z['размер'])}: ${nf(z['штук'])} / ост. ${nf(z['остаток'])}`).join(' · ')}</div>`).join('')}
+          </details>`).join('') || '<div class="empty">Продаж пока нет</div>'}
+      </div>
+    </div>`;
+}
 
 function greeting() {
   const h = new Date().getHours();
@@ -943,11 +1146,11 @@ PAGES.users = async () => {
         <div class="btn-row" style="margin-top:10px">
           <button class="btn primary" data-act="save-brand">Сохранить оформление</button>
         </div>
-        <div class="hint" style="margin-top:8px">Эти же значения можно править в Excel — лист «настройки».</div>
+        <div class="hint" style="margin-top:8px">Значения хранятся в базе (лист «настройки» книги цеха).</div>
       </div>
     </div>` : ''}
     <div class="card"><div class="card-b tight tablescroll">
-      <div class="hint" style="padding:10px 14px">Логины, пароли и роли хранятся в Excel — лист «сотрудники». Список ниже читается оттуда.</div>
+      <div class="hint" style="padding:10px 14px">Логины, пароли и роли хранятся в базе (лист «сотрудники» книги цеха). Список ниже читается оттуда.</div>
       <table class="resp">
         <thead><tr><th>ФИО</th><th>Логин</th><th>Роль</th><th>Статус</th><th></th></tr></thead>
         <tbody>${data.map((u) => `<tr>
@@ -991,7 +1194,7 @@ PAGES.report = async () => `
            'Проходы по процессам: кто, сколько, тариф, время',
            'Оценки технолога по каждому разделу',
            'Готовая продукция и отгрузки',
-           'Материалы и цепочка процессов из Excel'].map((t) => `<div class="kv"><span>${t}</span><b>✓</b></div>`).join('')}
+           'Материалы и цепочка процессов из базы'].map((t) => `<div class="kv"><span>${t}</span><b>✓</b></div>`).join('')}
         <div style="margin-top:14px"><button class="btn primary" data-act="report">Собрать и скачать</button></div>
         <div class="hint" style="margin-top:8px">Файл также сохраняется в data/отчёты/</div>
       </div>
@@ -999,9 +1202,8 @@ PAGES.report = async () => `
     <div class="card">
       <div class="card-h"><h3>Как это работает</h3></div>
       <div class="card-b" style="font-size:13px;color:var(--ink-2);line-height:1.6">
-        Портал читает Excel-файлы в папке data, склеивает их в один workbook и отдаёт на скачивание.
-        Данные не меняются — только чтение. Гибкие настройки (цепочка процессов, тарифы, периоды
-        выплат, цеха) правятся прямо в Excel и подхватываются без перезапуска сервера.
+        Портал собирает таблицы из базы в один файл Excel и отдаёт на скачивание.
+        Данные не меняются — только чтение.
       </div>
     </div>
   </div>`;
@@ -1815,7 +2017,7 @@ async function archiveTab() {
 
 function shopSyncLine(src) {
   if (!src) return '';
-  if (src.error) return `<span style="color:var(--red)">Excel недоступен: ${esc(src.error)}</span> — показаны последние данные`;
+  if (src.error) return `<span style="color:var(--red)">Книга цеха недоступна: ${esc(src.error)}</span> — показаны последние данные`;
   const parts = [];
   if (src.source_name) parts.push('источник: ' + esc(src.source_name));
   if (src.synced_at) parts.push('обновлено ' + esc(src.synced_at));
@@ -1836,7 +2038,7 @@ function startShopWatch() {
       if (line) line.innerHTML = shopSyncLine(res['источник']);
       if (next && next !== prev) {
         refreshShopGrid();
-        toast('Каталог обновлён из Excel', 'ok');
+        toast('Каталог обновлён из книги цеха', 'ok');
       }
     } catch (e) { /* тихо: следующий тик попробует снова */ }
   }, 10000);
@@ -2123,6 +2325,7 @@ PAGES.fbs = async () => {
                     ['picking', 'Собирается'], ['picked', 'Собран'],
                     ['shipped', 'В доставке'], ['done', 'Завершённые'], ['cancelled', 'Отменённые']];
   const canManage = STATE.caps && STATE.caps['wb.manage'];
+  const pulled = (await api('/api/fbs/pulled' + (cab ? '?кабинет=' + encodeURIComponent(cab) : '')).catch(() => ({ data: [] }))).data || [];
 
   return `
     <div class="hero">
@@ -2142,9 +2345,34 @@ PAGES.fbs = async () => {
         ${statuses.map(([v, l]) => `<button class="tab ${status === v ? 'on' : ''}" data-fbs="filter" data-v="${v}">${l}${st[v] ? ' · ' + st[v] : ''}</button>`).join('')}
       </div>
     </div></div>
+    ${fbsPulledHtml(pulled, canManage)}
     <div id="fbs-list">${fbsListHtml(rows, canManage)}</div>
     ${fbsSuppliesHtml(res['поставки'] || [])}`;
 };
+
+// заказ перевели в поставку в кабинете WB раньше, чем его подтвердили у нас: товар со склада не списан
+function fbsPulledHtml(list, canManage) {
+  if (!list.length) return '';
+  return `<div class="card" style="border:2px solid var(--orange,#c60)">
+    <div class="card-h"><h3>В поставке WB, но не подтверждены у нас: ${list.length}</h3><div class="spacer"></div>
+      ${canManage && list.length > 1 ? `<button class="btn sm primary" data-fbs-pulled="${esc(list.map((x) => x.id).join(','))}">Подтвердить и списать все</button>` : ''}</div>
+    <div class="card-b">
+      <div class="hint" style="margin-bottom:8px">В кабинете WB эти задания уже перевели в поставку, а на сайте их не подтверждали — склад их не списал. Если товар ушёл, нажмите «Подтвердить и списать».</div>
+      ${list.map((x) => `<div class="order-row">
+        <span>${esc(x['product_name'] || x['title'] || x['sku'])}
+          <span class="muted"> · ${esc(cabName(x['cabinet_id']))} · задание ${esc(x['external_id'])} · ${esc(String(x['ts']).slice(0, 16))} · ${esc(x['status_label'])}</span></span>
+        <b>${x['product_id'] ? '' : '⚠ нет в каталоге — укажите в «Изменить» поставки'}</b>
+        ${canManage && x['product_id'] ? `<button class="btn tiny primary" data-fbs-pulled="${esc(x.id)}">Подтвердить и списать</button>` : ''}
+      </div>`).join('')}
+    </div></div>`;
+}
+
+async function fbsConfirmPulled(ids, day = '', subs = {}) {
+  const r = await api('/api/fbs/pulled/confirm', { method: 'POST', body: JSON.stringify({ ids, день: day, замены: subs }) });
+  const bad = r['ошибки'] || [];
+  toast(`Списано: ${r['списано']}` + (bad.length ? ` · ошибки: ${bad.map((e) => e['ошибка']).join('; ')}` : ''), bad.length ? 'err' : 'ok');
+  return r;
+}
 
 function rerenderRoute() {
   const [r, p] = (location.hash.replace(/^#\//, '') || 'dash').split('/');
@@ -2155,6 +2383,20 @@ function rerenderRoute() {
 async function supplyEdit(day, cab) {
   const res = await api('/api/wb/supply?дата=' + day + '&кабинет=' + encodeURIComponent(cab));
   const lines = res.data || [];
+  const canManage = STATE.caps && STATE.caps['wb.manage'];
+  const pulled = canManage ? ((await api('/api/fbs/pulled?кабинет=' + encodeURIComponent(cab)).catch(() => ({ data: [] }))).data || []) : [];
+  // задания, которые в WB ушли в поставку без подтверждения у нас, — добавить в эту поставку со списанием
+  const addHtml = pulled.length ? `
+      <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--line)">
+        <h3 style="margin:0 0 6px">Добавить в эту поставку</h3>
+        <div class="hint" style="margin-bottom:8px">В WB эти задания уже в поставке, а у нас не подтверждены. «Добавить» спишет товар со склада датой ${esc(day)}.</div>
+        ${pulled.map((x) => `<div class="order-row" style="gap:8px;flex-wrap:wrap">
+          <span>задание ${esc(x['external_id'])} <span class="muted">· ${esc(x['title'] || x['sku'])} · ${esc(String(x['ts']).slice(0, 16))}</span></span>
+          <input class="input" list="sup-goods" data-addname="${esc(x.id)}" data-was="${esc(x['product_name'])}"
+                 value="${esc(x['product_name'])}" placeholder="что отправили" style="min-width:240px">
+          <button type="button" class="btn tiny primary" data-supadd="${esc(x.id)}" data-day="${esc(day)}">Добавить</button>
+        </div>`).join('')}
+      </div>` : '';
   modal({
     title: `Поставка ${day} · ${lines[0] ? lines[0]['кабинет'] : cab}`,
     wide: true,
@@ -2169,7 +2411,7 @@ async function supplyEdit(day, cab) {
           <td data-l="Отправлено"><input class="input" list="sup-goods" data-task="${esc(x['задание'])}"
               data-was="${esc(x['отправлено'])}" value="${esc(x['отправлено'])}" style="min-width:240px"></td>
         </tr>`).join('')}</tbody>
-      </table></div>`,
+      </table></div>${addHtml}`,
     onSubmit: async () => {
       const ch = {};
       $$('[data-task]', $('#mf')).forEach((i) => { if (i.value.trim() && i.value.trim() !== i.dataset.was) ch[i.dataset.task] = i.value.trim(); });
@@ -2201,6 +2443,23 @@ document.addEventListener('click', (e) => {
   }
   const b = e.target.closest('[data-supedit]');
   if (b) supplyEdit(b.dataset.supedit, b.dataset.cab).catch((err) => toast(err.message, 'err'));
+  const pb = e.target.closest('[data-fbs-pulled]');
+  if (pb) {
+    pb.disabled = true;
+    fbsConfirmPulled(pb.dataset.fbsPulled.split(',')).then(rerenderRoute).catch((err) => { toast(err.message, 'err'); pb.disabled = false; });
+  }
+  const ab = e.target.closest('[data-supadd]');
+  if (ab) {
+    const id = ab.dataset.supadd;
+    const inp = $(`[data-addname="${CSS.escape(id)}"]`);
+    const name = inp ? inp.value.trim() : '';
+    const subs = name && name !== inp.dataset.was ? { [id]: name } : {};
+    ab.disabled = true;
+    fbsConfirmPulled([id], ab.dataset.day || '', subs).then((r) => {
+      if (r['списано']) ab.closest('.order-row').innerHTML = `<span>задание добавлено в поставку и списано</span>`;
+      else ab.disabled = false;
+    }).catch((err) => { toast(err.message, 'err'); ab.disabled = false; });
+  }
 });
 document.addEventListener('change', async (e) => {
   const inp = e.target.closest('[data-supimport]');
@@ -2660,8 +2919,9 @@ window.addEventListener('offline', () => { SYNC.online = false; syncPaint(); });
 // ------------------------------------------------------------------ склад
 const FBSPAGE = { status: '', cab: '', names: {} };
 
-const WH = { meta: null, tab: 'stock', ф: { cat: '', model: '', color: '', size: '', only: true }, stock: [] };
-const WH_TABS = [['stock', 'Главная'], ['in', 'Приход'], ['addr', 'Адрес'], ['out', 'Поставка'], ['log', 'Журнал']];
+const WH = { meta: null, tab: 'stock', ф: { cat: [], model: [], color: [], size: [], only: true }, stock: [] };
+const WH_F = [['cat', 'категория'], ['model', 'модель'], ['color', 'цвет'], ['size', 'размер']];
+const WH_TABS = [['stock', 'Главная'], ['in', 'Приход'], ['addr', 'Адрес'], ['out', 'Поставка'], ['rev', 'Ревизия'], ['log', 'Журнал']];
 
 function whTabs(active) {
   return `<div class="tabs">${WH_TABS.map(([id, label]) => `
@@ -2704,8 +2964,120 @@ PAGES.wh = async (param) => {
   if (tab === 'addr') return head + await whAddrPage(meta);
   if (tab === 'out') return head + await whOut(meta);
   if (tab === 'log') return head + await whLog();
+  if (tab === 'rev') return head + '<div id="rev-box">' + await revHtml(meta) + '</div>';
   return head + await whStock(meta);
 };
+
+// ---------- Ревизия: пересчёт товара и проведение разницы ----------
+const REV = { q: '', only: false };
+
+async function revHtml(meta) {
+  const res = await api('/api/wh/revision');
+  const cur = res.data;
+  const hist = res['история'] || [];
+  const sign = (d) => d == null ? '' : `<b style="color:${d > 0 ? 'var(--green)' : d < 0 ? '#d12e2e' : 'inherit'}">${d > 0 ? '+' : ''}${nf(d)}</b>`;
+  const histHtml = hist.length ? `<div class="card"><div class="card-h"><h3>Прошлые ревизии</h3></div>
+    <div class="card-b tight tablescroll"><table class="resp"><thead><tr><th>Дата</th><th>Категория</th><th>Статус</th><th class="num">Позиций</th><th class="num">Излишек</th><th class="num">Недостача</th></tr></thead>
+    <tbody>${hist.map((h) => `<tr>
+      <td data-l="Дата">${esc(h['закрыта'] || h['начата'])}<div class="cell-sub">${esc(h['кто'] || '')}</div></td>
+      <td data-l="Категория">${esc(h['категория'] || 'весь склад')}</td>
+      <td data-l="Статус"><span class="pill ${h['статус'] === 'проведена' ? 'green' : 'grey'}">${esc(h['статус'])}</span></td>
+      <td data-l="Позиций" class="num">${nf(h['позиций'])}</td>
+      <td data-l="Излишек" class="num">${h['излишек'] ? '+' + nf(h['излишек']) : '0'}</td>
+      <td data-l="Недостача" class="num">${h['недостача'] ? '−' + nf(h['недостача']) : '0'}</td></tr>
+      ${h['расхождения'].length ? `<tr><td colspan="6" class="cell-sub">${h['расхождения'].map((d) => `${esc(d['наименование'])}: ${nf(d['система'])} → ${nf(d['факт'])}`).join(' · ')}</td></tr>` : ''}`).join('')}</tbody></table></div></div>` : '';
+
+  if (!cur) {
+    return `<div class="card"><div class="card-h"><h3>Новая ревизия</h3></div><div class="card-b">
+      <div class="field"><label>Что пересчитываем</label>
+        <select class="input" id="rev-cat"><option value="">Весь склад</option>
+          ${meta['категории'].map((c) => `<option>${esc(c)}</option>`).join('')}</select></div>
+      <button class="btn primary big" data-rev="start">Начать ревизию</button>
+      <div class="hint" style="margin-top:10px">Сканируйте или вводите, сколько товара на полке. При проведении остаток в базе станет равен факту — только по пересчитанным позициям.</div>
+    </div></div>` + histHtml;
+  }
+  const items = cur['товары'];
+  const done = items.filter((i) => i['факт'] != null);
+  const q = REV.q.toLowerCase();
+  const rows = items.filter((i) => (!q || i['наименование'].toLowerCase().includes(q)) && (!REV.only || i['факт'] != null));
+  const shown = rows.slice(0, 300);
+  const plus = done.reduce((a, i) => a + Math.max(0, i['разница']), 0);
+  const minus = done.reduce((a, i) => a + Math.max(0, -i['разница']), 0);
+  return `<div class="card"><div class="card-h"><h3>Ревизия · ${esc(cur['категория'] || 'весь склад')}</h3><div class="spacer"></div>
+      <span class="hint">начата ${esc(cur['начата'])} · ${esc(cur['кто'] || '')}</span></div>
+    <div class="card-b">
+      <div class="field"><label>Скан товара (+1)</label>
+        <input class="input scan" id="rev-scan" placeholder="штрихкод или наименование" autocomplete="off"></div>
+      <div class="wh-found" id="rev-found">Пересчитано ${nf(done.length)} из ${nf(items.length)} позиций · излишек +${nf(plus)} · недостача −${nf(minus)}</div>
+      <div class="btn-row" style="margin-top:12px">
+        <input class="input" id="rev-q" placeholder="поиск по названию" value="${esc(REV.q)}" style="max-width:260px">
+        <button class="btn sm ${REV.only ? 'primary' : ''}" data-rev="only">Только пересчитанные</button>
+        <span style="margin-left:auto"></span>
+        <button class="btn sm" data-rev="cancel">Отменить ревизию</button>
+        <button class="btn primary sm" data-rev="apply" ${done.length ? '' : 'disabled'}>Провести ревизию</button>
+      </div>
+    </div></div>
+    <div class="card"><div class="card-b tight tablescroll"><table class="resp">
+      <thead><tr><th>Товар</th><th class="num">По базе</th><th class="num">Факт</th><th class="num">Разница</th></tr></thead>
+      <tbody>${shown.map((i) => `<tr>
+        <td data-l="Товар"><div class="cell-main">${esc(i['наименование'])}</div></td>
+        <td data-l="По базе" class="num">${nf(i['система'])}</td>
+        <td data-l="Факт" class="num"><input class="input" type="number" min="0" inputmode="numeric" style="width:90px;text-align:right"
+            data-rev-qty="${esc(i['наименование'])}" value="${i['факт'] == null ? '' : i['факт']}" placeholder="—"></td>
+        <td data-l="Разница" class="num">${sign(i['разница'])}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">Ничего не найдено</td></tr>'}</tbody>
+    </table>${rows.length > shown.length ? `<div class="hint" style="padding:10px 14px">Показано ${shown.length} из ${rows.length} — уточните поиск</div>` : ''}</div></div>` + histHtml;
+}
+
+async function revRefresh(focusScan) {
+  const box = $('#rev-box');
+  if (!box) return;
+  box.innerHTML = await revHtml(await whMeta());
+  bindRev();
+  if (focusScan && $('#rev-scan')) $('#rev-scan').focus();
+}
+
+function bindRev() {
+  const box = $('#rev-box');
+  if (!box) return;
+  const rid = () => api('/api/wh/revision').then((r) => r.data && r.data.id);
+  const post = (act, body) => api('/api/wh/revision/' + act, { method: 'POST', body: JSON.stringify(body) });
+  $$('[data-rev="start"]', box).forEach((b) => b.addEventListener('click', () => guard((async () => {
+    await post('start', { 'категория': $('#rev-cat').value });
+    await revRefresh(true);
+  })())));
+  $$('[data-rev="only"]', box).forEach((b) => b.addEventListener('click', () => { REV.only = !REV.only; guard(revRefresh()); }));
+  $$('[data-rev="cancel"]', box).forEach((b) => b.addEventListener('click', () => guard((async () => {
+    if (!confirm('Отменить ревизию? Пересчёт не попадёт в остатки.')) return;
+    await post('cancel', { id: await rid() });
+    await revRefresh();
+  })())));
+  $$('[data-rev="apply"]', box).forEach((b) => b.addEventListener('click', () => guard((async () => {
+    if (!confirm('Провести ревизию? Остаток пересчитанных позиций станет равен факту.')) return;
+    const r = await post('apply', { id: await rid() });
+    toast(`Ревизия проведена: ${nf(r['позиций'])} поз., излишек +${nf(r['излишек'])}, недостача −${nf(r['недостача'])}`);
+    WH.meta = null;
+    await revRefresh();
+  })())));
+  const q = $('#rev-q');
+  if (q) q.addEventListener('change', () => { REV.q = q.value.trim(); guard(revRefresh()); });
+  const scan = $('#rev-scan');
+  if (scan) scan.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || !scan.value.trim()) return;
+    e.preventDefault();
+    const v = scan.value.trim();
+    scan.value = '';
+    guard((async () => {
+      const r = await post('count', { id: await rid(), 'товар': v, 'добавить': 1 });
+      await revRefresh(true);
+      const f = $('#rev-found');
+      if (f) { f.className = 'wh-found good'; f.textContent = `${r['наименование']} — факт ${nf(r['факт'])}`; }
+    })());
+  });
+  $$('[data-rev-qty]', box).forEach((inp) => inp.addEventListener('change', () => guard((async () => {
+    await post('count', { id: await rid(), 'товар': inp.dataset.revQty, 'факт': inp.value.trim() });
+    await revRefresh();
+  })())));
+}
 
 // ---------- Главная: остатки с каскадными фильтрами ----------
 async function whStock(meta) {
@@ -2716,39 +3088,52 @@ async function whStock(meta) {
   } catch (e) {
     WH.stock = localItems().filter((i) => (WH.ф.only ? (i['остаток'] || 0) !== 0 : true));
   }
-  const models = WH.ф.cat ? Object.keys(meta['дерево'][WH.ф.cat] || {}) : [];
-  const colors = WH.ф.cat && WH.ф.model ? Object.keys(meta['дерево'][WH.ф.cat][WH.ф.model] || {}) : [];
-  const sizes = WH.ф.cat && WH.ф.model && WH.ф.color
-    ? (meta['дерево'][WH.ф.cat][WH.ф.model][WH.ф.color] || []) : [];
+  // фильтры как в Excel: несколько значений; варианты каждого — из товаров, подходящих под фильтры выше
+  const f = WH.ф;
+  const uniq = (rows, k) => [...new Set(rows.map((i) => i[k]))].filter((v) => v !== '' && v != null)
+    .sort((a, b) => k === 'размер' ? (parseFloat(a) - parseFloat(b)) || String(a).localeCompare(b) : String(a).localeCompare(b, 'ru'));
+  // варианты — из всего справочника (как раньше), чтобы новые модели с нулевым остатком тоже были видны
+  let pool = [];
+  for (const [c, models] of Object.entries(meta['дерево'])) for (const [m, colors] of Object.entries(models))
+    for (const [col, sizes] of Object.entries(colors)) for (const z of sizes) pool.push({ 'категория': c, 'модель': m, 'цвет': col, 'размер': z });
+  const opts = {};
+  for (const [key, col] of WH_F) {
+    opts[key] = uniq(pool, col);
+    f[key] = f[key].filter((v) => opts[key].includes(v));  // выбор, которого больше нет выше по цепочке, снимаем
+    if (f[key].length) pool = pool.filter((i) => f[key].includes(i[col]));
+  }
+  const xf = (key, label, all) => {
+    const sel = f[key];
+    const text = !sel.length ? all : sel.length <= 2 ? sel.join(', ') : `${sel.slice(0, 2).join(', ')} +${sel.length - 2}`;
+    return `<div class="field"><label>${label}</label>
+      <details class="xf" data-xf="${key}">
+        <summary class="input">${esc(text)}</summary>
+        <div class="xf-pop">
+          <input class="input xf-q" placeholder="поиск">
+          <label class="xf-row xf-all"><input type="checkbox" ${sel.length ? '' : 'checked'}> <b>Выделить всё</b></label>
+          <div class="xf-list">${opts[key].map((v) => `<label class="xf-row"><input type="checkbox" value="${esc(v)}" ${!sel.length || sel.includes(v) ? 'checked' : ''}> ${esc(v)}</label>`).join('') || '<div class="hint">нет вариантов</div>'}</div>
+          <div class="btn-row"><button type="button" class="btn primary sm" data-xf-ok>ОК</button><button type="button" class="btn sm" data-xf-reset>Сбросить</button></div>
+        </div>
+      </details></div>`;
+  };
+  const xlsxQ = new URLSearchParams();
+  for (const [key] of WH_F) f[key].forEach((v) => xlsxQ.append(key, v));
+  const xlsxLabel = (f.model.length ? f.model : f.cat).join(', ');
 
   return `
-    <div class="card">
+    <div class="card" style="overflow:visible;z-index:5">
       <div class="card-b" style="padding-top:16px">
         <div class="grid2">
-          <div class="field"><label>Категория</label>
-            <select class="input wh-f" data-f="cat">
-              <option value="">Все категории</option>
-              ${meta['категории'].map((c) => `<option ${WH.ф.cat === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}
-            </select></div>
-          <div class="field"><label>Модель</label>
-            <select class="input wh-f" data-f="model" ${models.length ? '' : 'disabled'}>
-              <option value="">Все модели</option>
-              ${models.map((m) => `<option ${WH.ф.model === m ? 'selected' : ''}>${esc(m)}</option>`).join('')}
-            </select></div>
-          <div class="field"><label>Цвет</label>
-            <select class="input wh-f" data-f="color" ${colors.length ? '' : 'disabled'}>
-              <option value="">Все цвета</option>
-              ${colors.map((c) => `<option ${WH.ф.color === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}
-            </select></div>
-          <div class="field"><label>Размер</label>
-            <select class="input wh-f" data-f="size" ${sizes.length ? '' : 'disabled'}>
-              <option value="">Все размеры</option>
-              ${sizes.map((s) => `<option ${WH.ф.size === s ? 'selected' : ''}>${esc(s)}</option>`).join('')}
-            </select></div>
+          ${xf('cat', 'Категория', 'Все категории')}
+          ${xf('model', 'Модель', 'Все модели')}
+          ${xf('color', 'Цвет', 'Все цвета')}
+          ${xf('size', 'Размер', 'Все размеры')}
         </div>
         <div class="btn-row" style="margin-top:12px">
           <button class="btn ${WH.ф.only ? 'primary' : ''} sm" data-wh="only">Только с остатком</button>
           <button class="btn ${WH.ф.only ? '' : 'primary'} sm" data-wh="all">Все товары</button>
+          <a class="btn sm" download title="Все цвета и размеры по выбранным фильтрам, с полным наименованием и остатком"
+             href="/api/wh/model.xlsx?${xlsxQ}">Скачать Excel${xlsxLabel ? ' · ' + esc(xlsxLabel.length > 30 ? xlsxLabel.slice(0, 30) + '…' : xlsxLabel) : ''}</a>
           <span class="hint" id="wh-count" style="margin-left:auto"></span>
         </div>
       </div>
@@ -2759,10 +3144,7 @@ async function whStock(meta) {
 function whListHtml() {
   const f = WH.ф;
   const rows = WH.stock.filter((i) =>
-    (!f.cat || i['категория'] === f.cat) &&
-    (!f.model || i['модель'] === f.model) &&
-    (!f.color || i['цвет'] === f.color) &&
-    (!f.size || i['размер'] === f.size) &&
+    WH_F.every(([key, col]) => !f[key].length || f[key].includes(i[col])) &&
     (!f.only || i['остаток'] > 0));
   if (!rows.length) return '<div class="card"><div class="empty">Ничего не найдено</div></div>';
   const shown = rows.slice(0, 120);
@@ -3029,8 +3411,8 @@ async function whLog() {
           ${Object.entries(labels).map(([k, v]) => `<option value="${k}" ${k === kind ? 'selected' : ''}>${v}</option>`).join('')}
         </select></div>
       <div class="card-b" style="padding-top:12px">
-        <button class="btn primary" data-wh="export">Записать в Excel сейчас</button>
-        <span class="hint" style="margin-left:10px" id="wh-sync-line">запись в Excel пачкой раз в несколько минут</span>
+        <button class="btn primary" data-wh="export">Записать в книгу цеха сейчас</button>
+        <span class="hint" style="margin-left:10px" id="wh-sync-line">запись в книгу цеха пачкой раз в несколько минут</span>
       </div>
       <div id="sync-bar"></div>
       <div class="card" id="cabinets-card">
@@ -3050,6 +3432,9 @@ async function whLog() {
             <div class="field" style="grid-column:1/-1"><label>Токен Wildberries</label>
               <input class="input" id="cab-token" type="password" autocomplete="new-password"
                      placeholder="вставьте токен — он сохранится и больше не покажется"></div>
+            <div class="field" style="grid-column:1/-1"><label>Ключ для аналитики <span class="muted">(только чтение: Статистика, Аналитика, Контент, Поставки — без Маркетплейса)</span></label>
+              <input class="input" id="cab-analytics" type="password" autocomplete="new-password"
+                     placeholder="отдельный ключ для отчётов о продажах и запасах"></div>
           </div>
           <button type="button" class="btn primary" onclick="cabSave()" style="margin-top:10px">Сохранить кабинет</button>
           <div class="hint" style="margin-top:8px">Токен нужен для FBS: заказы из кабинета подтягиваются автоматически.</div>
@@ -3066,10 +3451,8 @@ async function whLog() {
       <div class="card-b" style="padding-top:12px">
         <div class="btn-row">
           <a class="btn primary" href="/api/export/workbook" download>Скачать Excel</a>
-          <button class="btn" data-wh="backups">Показать резервные копии</button>
-          <span class="hint" style="margin-left:auto">свежая копия рабочей книги, только чтение</span>
+          <span class="hint" style="margin-left:auto">книга цеха из базы данных</span>
         </div>
-        <div id="backup-list" style="margin-top:10px"></div>
       </div>
       <div class="card-b tight tablescroll">
         <table class="resp">
@@ -3268,27 +3651,33 @@ async function applyScan(code, input) {
     if (input) input.classList.add('bad');
     return;
   }
-  let owner = rows.find((r) => r.dataset.name === name);
-  if (!owner) {
-    const short = name.split('/').slice(1).join('/');
-    const row = input && input.closest('.pick-row');
-    const rowQty = row && row.querySelector('.pick-qty');
-    // замена — только в сборке FBS: WB подтверждается по заказанной позиции, со склада списывается отсканированный
-    if (!row || !rowQty || rowQty.disabled || !(PICK.order && PICK.order['агрегат'])) {
-      toast('«' + short + '» нет в этом заказе', 'err');
-      if (input) input.classList.add('bad');
-      return;
-    }
-    toast('Не тот товар: «' + short + '» нет в заказе', 'warn');
-    if (!confirm(`Отсканирован «${name}» — его нет в заказе.\n\nОтправить его ВМЕСТО «${row.dataset.name}»?\nСо склада спишется отсканированный товар.`)) {
+  const short = name.split('/').slice(1).join('/');
+  const row = input && input.closest('.pick-row');
+  const rowQty = row && row.querySelector('.pick-qty');
+  const fbs = PICK.order && PICK.order['агрегат'];
+  const elsewhere = rows.find((r) => r.dataset.name === name);
+  let owner;
+  if (row && row.dataset.name === name) {
+    owner = row;
+    delete PICK.subs[name];  // отсканирован правильный товар — замена снимается
+  } else if (fbs && row && rowQty && !rowQty.disabled) {
+    // FBS: скан относится к строке, где стоит курсор. Не тот товар — только с подтверждением замены,
+    // даже если он есть в заказе другой строкой (иначе синий нельзя отправить вместо чёрного)
+    toast('Не тот товар: «' + short + '»', 'warn');
+    const note = elsewhere ? `«${short}» есть в заказе отдельной строкой, но вы сканируете в строке другого товара.` : 'Его нет в заказе.';
+    if (!confirm(`Отсканирован «${name}». ${note}\n\nОтправить его ВМЕСТО «${row.dataset.name}»?\nСо склада спишется отсканированный товар.`)) {
       input.classList.add('bad');
       input.select();
       return;
     }
     PICK.subs[row.dataset.name] = name;
     owner = row;
+  } else if (elsewhere && !fbs) {
+    owner = elsewhere;  // обычный заказ: товар найден в своей строке
   } else {
-    delete PICK.subs[name];  // отсканирован правильный товар — замена снимается
+    toast('«' + short + '» ' + (elsewhere ? '— сканируйте в строке этого товара' : 'нет в этом заказе'), 'err');
+    if (input) input.classList.add('bad');
+    return;
   }
   const qty = owner.querySelector('.pick-qty');
   qty.value = qty.max;
@@ -3531,15 +3920,37 @@ function bindFbs() {
 
 function bindWh() {
   const page = $('#page');
+  bindRev();
 
   // фильтры главной
-  $$('.wh-f', page).forEach((sel) => sel.addEventListener('change', async () => {
-    WH.ф[sel.dataset.f] = sel.value;
-    if (sel.dataset.f === 'cat') { WH.ф.model = ''; WH.ф.color = ''; WH.ф.size = ''; }
-    if (sel.dataset.f === 'model') { WH.ф.color = ''; WH.ф.size = ''; }
-    if (sel.dataset.f === 'color') { WH.ф.size = ''; }
-    await go('wh');
-  }));
+  if (!WH.xfOutside) {  // клик мимо открытого фильтра закрывает его
+    WH.xfOutside = true;
+    document.addEventListener('click', (e) => {
+      $$('details.xf[open]').forEach((o) => { if (!o.contains(e.target)) o.open = false; });
+    });
+  }
+  $$('details.xf', page).forEach((d) => {
+    const boxes = () => $$('.xf-list input', d);
+    const all = $('.xf-all input', d);
+    d.addEventListener('toggle', () => {
+      if (!d.open) return;
+      $$('details.xf[open]', page).forEach((o) => { if (o !== d) o.open = false; });
+      $('.xf-q', d).focus();
+    });
+    $('.xf-q', d).addEventListener('input', (e) => {
+      const q = e.target.value.trim().toLowerCase();
+      $$('.xf-list .xf-row', d).forEach((r) => { r.style.display = r.textContent.toLowerCase().includes(q) ? '' : 'none'; });
+    });
+    all.addEventListener('change', () => boxes().forEach((b) => { if (b.closest('.xf-row').style.display !== 'none') b.checked = all.checked; }));
+    d.addEventListener('change', (e) => { if (e.target !== all) all.checked = boxes().every((b) => b.checked); });
+    $('[data-xf-reset]', d).addEventListener('click', async () => { WH.ф[d.dataset.xf] = []; await go('wh'); });
+    $('[data-xf-ok]', d).addEventListener('click', async () => {
+      const on = boxes().filter((b) => b.checked).map((b) => b.value);
+      if (!on.length) { toast('Отметьте хотя бы одно значение', 'err'); return; }
+      WH.ф[d.dataset.xf] = on.length === boxes().length ? [] : on;  // всё отмечено = без фильтра
+      await go('wh');
+    });
+  });
   $$('[data-wh="only"]', page).forEach((b) => b.addEventListener('click', async () => { WH.ф.only = true; await go('wh'); }));
   $$('[data-wh="all"]', page).forEach((b) => b.addEventListener('click', async () => { WH.ф.only = false; await go('wh'); }));
 
@@ -3693,7 +4104,7 @@ function bindWh() {
     b.disabled = true;
     try {
       const r = await api('/api/wh/export', { method: 'POST' });
-      toast(`В Excel: приход ${r['приход']}, адрес ${r['адрес']}, отгрузки ${r['отгрузки']}`, 'ok');
+      toast(`В книгу цеха: приход ${r['приход']}, адрес ${r['адрес']}, отгрузки ${r['отгрузки']}`, 'ok');
       WH.meta = null;
       await go('wh', 'log');
     } catch (e) { toast(e.message, 'err'); }
@@ -3750,11 +4161,11 @@ function bindWh() {
       try {
         const st2 = (await api('/api/wh/sync_status')).data;
         const parts = [];
-        if (st2['выполняется']) parts.push('записываю в Excel…');
-        else if (st2['в_очереди'] && st2['следующая']) parts.push(`ждут записи: ${st2['в_очереди']} · запись в Excel в ${st2['следующая']}`);
+        if (st2['выполняется']) parts.push('записываю в книгу цеха…');
+        else if (st2['в_очереди'] && st2['следующая']) parts.push(`ждут записи: ${st2['в_очереди']} · запись в книгу цеха в ${st2['следующая']}`);
         if (st2['последняя']) parts.push('последняя: ' + st2['последняя']);
         $('#wh-sync-line').textContent = parts.join(' · ')
-          || `запись в Excel пачкой раз в ${st2['интервал_мин'] || 3} мин`;
+          || `запись в книгу цеха пачкой раз в ${st2['интервал_мин'] || 3} мин`;
       } catch (e) { /* тихо */ }
       setTimeout(tick, 4000);
     };
@@ -3916,19 +4327,22 @@ async function cabSave() {
   const id = (idEl ? idEl.value : '').trim().toLowerCase();
   const name = (nameEl ? nameEl.value : '').trim();
   const token = (tokEl ? tokEl.value : '').trim();
+  const anEl = $('#cab-analytics');
+  const analytics = (anEl ? anEl.value : '').trim();
   if (!name) { toast('Укажите название кабинета', 'err'); return; }
   if (!id) { toast('Не заполнился код — введите название кабинета', 'err'); return; }
-  if (token && token.split('.').length !== 3) {
+  if ([token, analytics].some((t) => t && t.split('.').length !== 3)) {
     toast('Похоже, это не токен WB: настоящий выглядит как eyJhbGciOi… (три части через точку)', 'warn');
   }
   if (btn) { btn.disabled = true; btn.textContent = 'Сохраняю…'; }
   try {
     await api('/api/wb/cabinets', {
       method: 'POST',
-      body: JSON.stringify({ id, name, token: token || undefined }),
+      body: JSON.stringify({ id, name, token: token || undefined, analytics_token: analytics || undefined }),
     });
-    toast(token ? 'Токен сохранён для «' + name + '»' : 'Кабинет сохранён', 'ok');
+    toast(token || analytics ? 'Ключ сохранён для «' + name + '»' : 'Кабинет сохранён', 'ok');
     if (tokEl) tokEl.value = '';
+    if (anEl) anEl.value = '';
     await go('wh', 'log');
   } catch (e) {
     toast(e.message || 'Не удалось сохранить', 'err');
@@ -3999,13 +4413,16 @@ async function loadCabinets() {
     const res = await api('/api/wb/cabinets');
     const rows = res.data || [];
     box.innerHTML = rows.length ? `<table class="resp">
-      <thead><tr><th>Кабинет</th><th>Код</th><th>Токен</th><th>Статус</th><th></th></tr></thead>
+      <thead><tr><th>Кабинет</th><th>Код</th><th>Токен</th><th>Аналитика</th><th>Статус</th><th></th></tr></thead>
       <tbody>${rows.map((c) => `<tr>
         <td data-l="Кабинет"><b>${esc(c['name'])}</b></td>
         <td data-l="Код"><span class="mono">${esc(c['id'])}</span></td>
         <td data-l="Токен">${c['token_set']
           ? `<span class="pill green">задан ${esc(c['token_hint'])}</span>`
           : '<span class="pill orange">не задан</span>'}</td>
+        <td data-l="Аналитика">${c['analytics_set']
+          ? `<span class="pill green">задан ${esc(c['analytics_hint'])}</span>`
+          : '<span class="pill">не задан</span>'}</td>
         <td data-l="Статус">${c['active'] ? 'включён' : 'выключен'}</td>
         <td><button class="btn tiny ${c['token_set'] ? '' : 'primary'}" data-cab-edit="${esc(c['id'])}"
               data-cab-name="${esc(c['name'])}" data-cab-active="${c['active']}">${c['token_set'] ? 'Изменить' : 'Вставить токен'}</button></td>
@@ -4180,6 +4597,7 @@ function enhanceSelects(scope) {
 
 function bind(route, param) {
   const page = $('#page');
+  if (route === 'dash' && $('#wb-an', page)) loadWbAn();
 
   $$('[data-act]', page).forEach((el) => {
     el.addEventListener('click', (e) => {

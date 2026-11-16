@@ -4,6 +4,7 @@
 Токены НЕ хранятся в коде и НЕ попадают в логи.
   data/wb_cabinets.json   — список кабинетов (id, имя, активность)
   secrets/wb_tokens.json  — токены, права 600 (только владелец может читать)
+  secrets/wb_analytics_tokens.json — отдельные ключи «только чтение» для аналитики (без Маркетплейса)
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ BASE = Path(__file__).resolve().parent
 CABINETS = BASE / "data" / "wb_cabinets.json"
 SECRETS_DIR = BASE / "secrets"
 TOKENS = SECRETS_DIR / "wb_tokens.json"
+ANALYTICS = SECRETS_DIR / "wb_analytics_tokens.json"
 
 DEFAULTS = [
     {"id": "zhsk", "name": "ЖСК", "wb_name": "", "active": 1},
@@ -46,13 +48,17 @@ def _tokens() -> dict:
     return _read(TOKENS, {})
 
 
+def _hint(t: str) -> str:
+    return (t[:4] + "…" + t[-4:]) if len(t) > 12 else ""
+
+
 def cabinets() -> list[dict]:
     """Список кабинетов без токенов, но с признаком «токен задан»."""
     items = _read(CABINETS, None)
     if not items:
         items = [dict(x) for x in DEFAULTS]
         _write_private(CABINETS, items)
-    tokens = _tokens()
+    tokens, analytics = _tokens(), _read(ANALYTICS, {})
     out = []
     for c in items:
         token = tokens.get(c["id"], "")
@@ -62,7 +68,9 @@ def cabinets() -> list[dict]:
             "wb_name": c.get("wb_name", ""),
             "active": int(c.get("active", 1)),
             "token_set": bool(token),
-            "token_hint": (token[:4] + "…" + token[-4:]) if len(token) > 12 else "",
+            "token_hint": _hint(token),
+            "analytics_set": bool(analytics.get(c["id"])),
+            "analytics_hint": _hint(analytics.get(c["id"], "")),
             "last_sync_at": c.get("last_sync_at", ""),
         })
     return out
@@ -91,7 +99,7 @@ def clean_token(raw: str) -> str:
 
 
 def save_cabinet(cid: str, name: str, token: str | None = None,
-                 active: int | None = None) -> dict:
+                 active: int | None = None, analytics_token: str | None = None) -> dict:
     cid = (cid or "").strip().lower()
     if not cid:
         raise ValueError("нужен id кабинета")
@@ -116,6 +124,10 @@ def save_cabinet(cid: str, name: str, token: str | None = None,
         tokens = _tokens()
         tokens[cid] = clean_token(token)
         _write_private(TOKENS, tokens)
+    if analytics_token is not None and analytics_token.strip():
+        analytics = _read(ANALYTICS, {})
+        analytics[cid] = clean_token(analytics_token)
+        _write_private(ANALYTICS, analytics)
     return {"id": cid, "name": found["name"], "active": found["active"]}
 
 
@@ -126,10 +138,18 @@ def remove_cabinet(cid: str) -> None:
     tokens = _tokens()
     tokens.pop(cid, None)
     _write_private(TOKENS, tokens)
+    analytics = _read(ANALYTICS, {})
+    if analytics.pop(cid, None) is not None:
+        _write_private(ANALYTICS, analytics)
 
 
 def token(cid: str) -> str:
     return _tokens().get(cid, "")
+
+
+def analytics_token(cid: str) -> str:
+    """Ключ для аналитики; пока его нет — основной токен кабинета."""
+    return _read(ANALYTICS, {}).get(cid, "") or token(cid)
 
 
 def mark_sync(cid: str, error: str = "") -> None:

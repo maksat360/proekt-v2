@@ -9,6 +9,7 @@ const ST = {
   права: {},
   refs: { категории: [], модели: [], цвета: [], размеры: [] },
   stock: {},       // модель → {«цвет|размер»: остаток} — подсказка в «Новом заказе»
+  prod: {},        // модель → {«цвет|размер»: штук в производстве} — тоже подсказка
   заказы: [],
   клиенты: [],
   источник: '',
@@ -291,14 +292,8 @@ function render() {
     <div id="cx-view">${viewHtml()}</div>
 
     <div class="cx-foot">
-      Данные пишутся прямо в <code>${esc(shortPath(ST.источник))}</code>. Поправили цифру в Excel — приложение увидит при следующем открытии экрана.
+      Данные хранятся в базе данных портала.
     </div>`;
-}
-
-function shortPath(path) {
-  if (!path) return 'рабочую книгу';
-  const parts = String(path).split('/');
-  return parts.slice(-2).join('/');
 }
 
 function viewHtml() {
@@ -327,8 +322,7 @@ function newHtml() {
   const info = modelInfo(f.модель);
 
   return `
-  <div class="cx-grid">
-    <div>
+  <div class="cx-new">
       <div class="cx-card">
         <div class="cx-card-h"><h3>От кого и когда</h3></div>
         <div class="cx-card-b">
@@ -381,11 +375,7 @@ function newHtml() {
         </div>
         ${f.модель ? gridHtml(colors, sizes, own) : ''}
       </div>
-    </div>
-
-    <div class="cx-side">
       ${cartHtml()}
-    </div>
   </div>`;
 }
 
@@ -420,12 +410,20 @@ function stockOf(key) {
   const st = ST.stock[ST.form.модель];
   return st && Object.prototype.hasOwnProperty.call(st, key) ? num(st[key]) : (st ? 0 : null);
 }
+function prodOf(key) {
+  const pr = ST.prod[ST.form.модель];
+  return pr ? Math.max(0, num(pr[key] || 0)) : 0;
+}
 function stockLine(key) {
   const now = stockOf(key);
   if (now == null) return `<div class="cx-gstk" data-stk="${esc(key)}"></div>`;
+  const prod = prodOf(key);
   const plan = Math.max(0, Math.round(num(ST.grid[key])));
-  const lvl = now <= 0 ? 'zero' : now < 10 ? 'low' : 'ok';
-  return `<div class="cx-gstk ${lvl}" data-stk="${esc(key)}" title="Сейчас на складе ${nf(now)} · заказ ${nf(plan)} · прогноз ${nf(now + plan)}">${nf(now)}${plan ? ` → <b>${nf(now + plan)}</b>` : ''}</div>`;
+  const total = now + prod + plan;
+  const lvl = now + prod <= 0 ? 'zero' : now + prod < 10 ? 'low' : 'ok';
+  return `<div class="cx-gstk ${lvl}" data-stk="${esc(key)}"
+    title="На складе ${nf(now)} · в производстве ${nf(prod)} · этот заказ ${nf(plan)} · итого будет ${nf(total)}">
+    <span>ск ${nf(now)}</span>${prod ? `<span>пр ${nf(prod)}</span>` : ''}${prod || plan ? `<span class="cx-gtot">= <b>${nf(total)}</b></span>` : ''}</div>`;
 }
 function loadStock(model) {
   if (!model || ST.stock[model] || ST.stockLoading === model) return;
@@ -434,15 +432,21 @@ function loadStock(model) {
     .then((d) => { ST.stock[model] = d || {}; })
     .catch(() => { ST.stock[model] = {}; })
     .finally(() => { ST.stockLoading = ''; if (ST.form.модель === model) render(); });
+  if (!ST.prod[model]) {
+    api(`${API}/production?модель=${encodeURIComponent(model)}`)
+      .then((d) => { ST.prod[model] = d || {}; })
+      .catch(() => { ST.prod[model] = {}; })
+      .finally(() => { if (ST.form.модель === model) render(); });
+  }
 }
 function stockTableHtml() {
   const st = ST.stock[ST.form.модель];
   const keys = Object.keys(ST.grid).filter((k) => num(ST.grid[k]) > 0);
   if (!st || !keys.length) return '';
-  const rows = keys.map((k) => { const [c, z] = k.split('|'); const now = stockOf(k); const plan = Math.round(num(ST.grid[k]));
-    return `<tr><td>${esc(c)}</td><td>${esc(z)}</td><td class="num ${now <= 0 ? 'cx-neg' : ''}">${nf(now)}</td><td class="num">+${nf(plan)}</td><td class="num"><b>${nf(now + plan)}</b></td></tr>`; }).join('');
-  return `<div class="cx-gstock-card"><div class="cx-hint" style="margin-bottom:6px"><b>Склад и прогноз</b> · только подсказка: заказ на пошив склад не меняет и не резервирует</div>
-    <div class="cx-scroll"><table class="cx-table"><thead><tr><th>Цвет</th><th>Размер</th><th class="num">Сейчас на складе</th><th class="num">Заказ</th><th class="num">Прогноз</th></tr></thead>
+  const rows = keys.map((k) => { const [c, z] = k.split('|'); const now = stockOf(k); const prod = prodOf(k); const plan = Math.round(num(ST.grid[k]));
+    return `<tr><td>${esc(c)}</td><td>${esc(z)}</td><td class="num ${now <= 0 ? 'cx-neg' : ''}">${nf(now)}</td><td class="num">${nf(prod)}</td><td class="num">+${nf(plan)}</td><td class="num"><b>${nf(now + prod + plan)}</b></td></tr>`; }).join('');
+  return `<div class="cx-gstock-card"><div class="cx-hint" style="margin-bottom:6px"><b>Склад, производство и прогноз</b> · только подсказка: заказ на пошив склад не меняет и не резервирует</div>
+    <div class="cx-scroll"><table class="cx-table"><thead><tr><th>Цвет</th><th>Размер</th><th class="num">На складе</th><th class="num">В производстве</th><th class="num">Этот заказ</th><th class="num">Итого будет</th></tr></thead>
     <tbody>${rows}</tbody></table></div></div>`;
 }
 
@@ -472,6 +476,7 @@ function gridHtml(colors, sizes, own) {
       <input class="input" id="cx-gfilter" placeholder="Найти цвет" value="${esc(ST.gridFilter)}" autocomplete="off">
       <span class="cx-hint">${own ? `У модели ${nf((ST.refs.варианты[ST.form.модель] || {}).цвета.length)} цв. и ${nf(sizes.length)} разм. по каталогу. ` : 'Модели нет в каталоге «главный» — показаны все цвета. '}Пустые клетки не попадут в заказ.</span>
       ${own ? `<label class="cx-gall"><input type="checkbox" data-act="grid-all" ${ST.gridAllColors ? 'checked' : ''}> новый цвет (показать все)</label>` : ''}
+      <span class="cx-glegend">Под клеткой: <b>ск</b> — на складе, <b>пр</b> — в производстве, <b>=</b> — сколько будет вместе с этим заказом</span>
     </div>
     <div class="cx-gwrap">
       <table class="cx-gtable">
@@ -671,7 +676,8 @@ function costHtml(d) {
   const rows = [];
   (d.ткань.строки || []).forEach((r) => {
     rows.push(costLine('Ткань: ' + r.вид + (r.цвет ? ' · ' + r.цвет : ''),
-      r.нет_веса ? 'вес не вписан' : nf(r.кг) + ' кг' + (r.цена_кг != null ? ' × ' + nf(r.цена_кг) : ' · нет цены'),
+      r.нет_веса ? 'вес не вписан' : (r.возврат_кг ? `выдано ${nf(r.выдано_кг)} − остаток ${nf(r.возврат_кг)} = ` : '')
+        + nf(r.кг) + ' кг' + (r.цена_кг != null ? ' × ' + nf(r.цена_кг) : ' · нет цены'),
       r.сумма));
   });
   (d.материалы.строки || []).forEach((r) => {
@@ -694,6 +700,13 @@ function costHtml(d) {
     <div class="cx-total" style="margin:0 -20px">
       <span class="t">Итого</span><span class="v">${nf(d.итого)}</span><span class="u">${d.за_шт != null ? nf(d.за_шт) + ' сом/шт' : ''}</span>
     </div>
+    ${(d.по_размерам || []).length > 1 ? `
+    <div class="cx-field" style="margin-top:14px"><label>Себестоимость по размерам, сом/шт</label></div>
+    <div class="cx-hint">Ткань делится по штукам и % расхода размера из спецификации; материалы, работа и общие — поровну на штуку</div>
+    <div class="cx-scroll"><table class="cx-table"><thead><tr><th>Размер</th><th class="num">Шт</th><th class="num">%</th><th class="num">Ткань, кг/шт</th><th class="num">Ткань</th><th class="num">Итого за шт</th></tr></thead>
+      <tbody>${d.по_размерам.map((s) => `<tr><td>${esc(s.размер)}${d.модели.length > 1 ? ` <span class="cx-muted">${esc(s.модель)}</span>` : ''}</td>
+        <td class="num">${nf(s.шт)}</td><td class="num">${nf(s.процент)}</td><td class="num">${nf(s.ткань_кг)}</td>
+        <td class="num">${nf(s.ткань_сом)}</td><td class="num"><b>${nf(s.за_шт)}</b></td></tr>`).join('')}</tbody></table></div>` : ''}
     ${note}`;
 }
 
@@ -1748,6 +1761,7 @@ async function submitOrder() {
     ST.lastOrder = { ...res, клиент: fromSupplier ? ST.form.поставщик.trim() : 'Свой цех', штук: cartQty(), источник: ST.form.источник };
     if (fromSupplier && !ST.поставщики.includes(ST.form.поставщик.trim())) ST.поставщики.push(ST.form.поставщик.trim());
     ST.cart = [];
+    ST.prod = {};  // новый заказ уже в производстве — подсказку перечитаем
     ST.form = { ...ST.form, комментарий: '', количество: 1 };
     await refreshOrders();
     ST.view = 'success';

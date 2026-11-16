@@ -365,9 +365,10 @@ def pickable() -> list[dict]:
 
 
 def _deduct(con, order_id: str, actor: str = "", subs: dict | None = None,
-            only: set[str] | None = None) -> int:
+            only: set[str] | None = None, ts: str | None = None) -> int:
     """Списывает со склада собранные позиции заказа (один раз).
-    subs: {id позиции WB: product_id} — отправлен другой товар (замена), списываем его."""
+    subs: {id позиции WB: product_id} — отправлен другой товар (замена), списываем его.
+    ts — время списания (день поставки), по умолчанию сейчас."""
     items = con.execute(
         "SELECT id, external_id, product_id, shipped FROM order_items WHERE order_id=?",
         (order_id,)).fetchall()
@@ -386,7 +387,7 @@ def _deduct(con, order_id: str, actor: str = "", subs: dict | None = None,
             """INSERT INTO shipments(id, ts, target, product_id, qty, order_ref, user,
                     external_uuid, source_sheet)
                VALUES (?,?,?,?,?,?,?,?,?)""",
-            (_id("sh", ext), _now(), "WB", pid, 1, order_id,
+            (_id("sh", ext), ts or _now(), "WB", pid, 1, order_id,
              actor or "склад", ext, "FBS"))
         con.execute("UPDATE order_items SET shipped=1 WHERE id=?", (it["id"],))
         done += 1
@@ -597,6 +598,83 @@ def confirm_items(item_ids: list[str], actor: str = "", subs: dict | None = None
     finally:
         con.close()
     return {"подтверждено": ok, "ошибки": errors}
+
+
+PULLED = "подтянут из WB%"  # заказ появился у нас, когда в WB он уже был на сборке или в поставке
+
+
+def pulled_unconfirmed(cabinet_id: str | None = None) -> list[dict]:
+    """Заказы, которые в WB перевели в поставку, а у нас не подтверждали: товар со склада не списан."""
+    con = sqldb.connect()
+    try:
+        where, args = ("AND o.cabinet_id = ?", [cabinet_id]) if cabinet_id else ("", [])
+        rows = con.execute(
+            f"""SELECT o.id, o.external_id, o.cabinet_id, o.status, o.ts, i.title, i.external_sku,
+                       i.product_id, p.name AS product_name
+                FROM orders o JOIN order_items i ON i.order_id = o.id
+                LEFT JOIN products p ON p.id = i.product_id
+                WHERE o.type='fbs' AND COALESCE(i.shipped, 0) = 0
+                  AND o.status IN ('processing', 'shipped', 'done')
+                  AND EXISTS (SELECT 1 FROM order_status_history h WHERE h.order_id = o.id AND h.comment LIKE ?)
+                  {where}
+                ORDER BY o.ts""", [PULLED, *args]).fetchall()
+        return [{"id": r["id"], "external_id": r["external_id"], "cabinet_id": r["cabinet_id"],
+                 "status": r["status"], "status_label": LABELS.get(r["status"], r["status"]), "ts": r["ts"],
+                 "title": r["title"] or "", "sku": r["external_sku"] or "",
+                 "product_id": r["product_id"], "product_name": r["product_name"] or ""} for r in rows]
+    finally:
+        con.close()
+
+
+def confirm_pulled(order_ids: list[str], actor: str = "", day: str | None = None,
+                   subs: dict | None = None) -> dict:
+    """«Подтвердить и списать» заказ, который уже ушёл в поставку WB мимо нашего подтверждения.
+    day — день поставки (YYYY-MM-DD), куда добавить; subs: {id заказа: наименование} — что отправили."""
+    ts = None
+    if day:
+        datetime.strptime(day, "%Y-%m-%d")  # ValueError на мусор
+        ts = f"{day} 23:59:00"
+    con = sqldb.connect()
+    ok, errors = 0, []
+    try:
+        for oid in order_ids:
+            oid = str(oid)
+            row = con.execute(
+                """SELECT o.id, o.status, i.product_id FROM orders o JOIN order_items i ON i.order_id = o.id
+                   WHERE o.id = ? AND o.type='fbs' AND COALESCE(i.shipped, 0) = 0
+                     AND EXISTS (SELECT 1 FROM order_status_history h WHERE h.order_id = o.id AND h.comment LIKE ?)""",
+                (oid, PULLED)).fetchone()
+            if not row:
+                errors.append({"id": oid, "ошибка": "заказ не найден или уже списан"})
+                continue
+            name = str((subs or {}).get(oid) or "").strip()
+            sub = {}
+            if name:
+                p = con.execute("SELECT id FROM products WHERE lower(name) = lower(?)", (name,)).fetchone()
+                if not p:
+                    errors.append({"id": oid, "ошибка": f"«{name}» нет в каталоге"})
+                    continue
+                for it in con.execute("SELECT external_id FROM order_items WHERE order_id=?", (oid,)).fetchall():
+                    sub[str(it["external_id"])] = p["id"]
+            elif not row["product_id"]:
+                errors.append({"id": oid, "ошибка": "товар не сопоставлен — укажите, что отправили"})
+                continue
+            # без дня — датой заказа: старый заказ не должен попасть в сегодняшнюю поставку
+            when = ts or (str(con.execute("SELECT ts FROM orders WHERE id=?", (oid,)).fetchone()["ts"])[:10] + " 23:59:00")
+            con.execute("BEGIN IMMEDIATE")
+            try:
+                n = _deduct(con, oid, actor, sub, ts=when)
+                _history(con, oid, row["status"], row["status"], actor or "склад",
+                         "подтверждён и списан: в WB уже был в поставке" + (f" ({day})" if day else ""))
+                con.execute("COMMIT")
+            except Exception:
+                con.execute("ROLLBACK")
+                raise
+            ok += n
+        sqldb.audit(con, actor, "fbs_confirm_pulled", "orders", "", {"ok": ok, "errors": errors})
+    finally:
+        con.close()
+    return {"списано": ok, "ошибки": errors}
 
 
 def as_client_orders() -> list[dict]:

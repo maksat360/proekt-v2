@@ -234,6 +234,32 @@ class PickTests(unittest.TestCase):
         wb_api.confirm_orders = self._old_confirm
         self.con.close()
 
+    def test_pulled_order_confirm_and_deduct(self):
+        """В WB задание перевели в поставку мимо нас — «Подтвердить и списать» списывает один раз,
+        датой поставки, а обычные «на сборке» в этот список не попадают."""
+        self.con.execute("UPDATE orders SET status='processing' WHERE id IN ('o201','o202')")
+        self.con.execute("""INSERT INTO order_status_history(order_id, from_status, to_status, actor, at, comment)
+                            VALUES ('o201','new','processing','wb-api',?,'подтянут из WB: уже был в работе')""",
+                         (sqldb.now(),))
+        self.con.execute("UPDATE order_items SET external_id=id")
+        self.con.commit()
+        self.assertEqual([x["external_id"] for x in wb_sync.pulled_unconfirmed()], ["201"])
+        res = wb_sync.confirm_pulled(["o201"], actor="sklad", day="2026-11-15")
+        self.assertEqual(res, {"списано": 1, "ошибки": []})
+        sh = self.con.execute("SELECT ts, product_id FROM shipments WHERE order_ref='o201'").fetchall()
+        self.assertEqual([(r["ts"], r["product_id"]) for r in sh], [("2026-11-15 23:59:00", "p1")])
+        self.assertEqual(wb_sync.pulled_unconfirmed(), [], "списан — из списка уходит")
+        self.assertEqual(wb_sync.confirm_pulled(["o201"])["списано"], 0, "второй раз не списывает")
+        self.assertTrue(wb_sync.confirm_pulled(["o202"])["ошибки"], "не подтянутый заказ так не списать")
+        self.con.execute("""INSERT INTO order_status_history(order_id, from_status, to_status, actor, at, comment)
+                            VALUES ('o202','new','processing','wb-api',?,'подтянут из WB: уже был в работе')""",
+                         (sqldb.now(),))
+        self.con.execute("UPDATE orders SET ts='2026-11-10 07:53:13' WHERE id='o202'")
+        self.con.commit()
+        wb_sync.confirm_pulled(["o202"])
+        self.assertEqual(self.con.execute("SELECT ts FROM shipments WHERE order_ref='o202'").fetchone()["ts"],
+                         "2026-11-10 23:59:00", "без дня — датой заказа, не в сегодняшнюю поставку")
+
     def test_pickable_shows_stock(self):
         rows = {r["external_id"]: r for r in wb_sync.pickable()}
         self.assertTrue(rows["201"]["can_pick"])
@@ -424,14 +450,14 @@ class BarcodeMatchTests(unittest.TestCase):
             ws.append([1, art] + [""] * 9 + [bc, size])
         self.export = self.tmp / "wb.xlsx"
         wb.save(self.export)
-        self._old = (warehouse.source_path, warehouse.cex_guard, warehouse._backup)
-        warehouse.source_path = lambda: self.book
-        warehouse.cex_guard = lambda p: None
-        warehouse._backup = lambda p: None
+        import sheets
+        self.sheets, self._old = sheets, sheets.DATA
+        sheets.DATA = self.tmp  # книга цеха — во временной базе
+        sheets.import_file("цех", self.book)
         warehouse._ART_CACHE["key"] = None
 
     def tearDown(self):
-        self.wh.source_path, self.wh.cex_guard, self.wh._backup = self._old
+        self.sheets.DATA = self._old
         self.wh._ART_CACHE["key"] = None
 
     def test_import_into_main_sheet_and_resolve(self):
@@ -444,8 +470,7 @@ class BarcodeMatchTests(unittest.TestCase):
         self.assertEqual(r("113"), "Постель/шанель/1 сп", "размер «0» = без размера")
         self.assertIsNone(r("114"))
         self.wh.import_barcodes(self.export)  # повторная загрузка не дублирует
-        from openpyxl import load_workbook
-        self.assertEqual(load_workbook(self.book)["главный"]["T6"].value, "111")
+        self.assertEqual(self.sheets.grid("цех", "главный")[5][19], "111")
 
 
 class WbStagesTests(unittest.TestCase):

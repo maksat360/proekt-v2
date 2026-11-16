@@ -468,6 +468,8 @@ function flModelSizes(model) {
   return v && v.размеры.length ? v.размеры.map(String) : sizesFor(model).map((x) => String(x.размер));
 }
 const flMats = () => FL.supply.материалы || [];
+// % расхода ткани по размерам выбранной модели: правка в FL.bomPct, иначе — сохранённое
+const flBomPct = () => FL.bomPct || ((FL.supply.ткань_проценты || {})[FL.bomModel] || {});
 const flCats = () => [...new Set(flMats().map((m) => m.категория))];
 
 function bomHtml() {
@@ -485,7 +487,9 @@ function bomHtml() {
       <div class="cx-formgrid">
         <div class="cx-field"><label>Категория</label><select class="input" data-fl-bom="${i}|категория">${opt('', r.категория, '— выберите —')}${flCats().map((c) => opt(c, r.категория)).join('')}</select></div>
         <div class="cx-field"><label>Вид</label><select class="input" data-fl-bom="${i}|материал">${opt('', r.материал, '— выберите —')}${kindOpts}</select></div>
-        <div class="cx-field"><label>В цвет изделия</label><select class="input" data-fl-bom="${i}|цвет">${opt('', r.цвет, '1-й (основной)')}${opt('цвет 2', r.цвет, '2-й')}${opt('цвет 3', r.цвет, '3-й')}${r.цвет && !/^цвет \d$/.test(r.цвет) ? opt(r.цвет, r.цвет) : ''}</select></div>
+        <div class="cx-field"><label>В цвет изделия</label>${(flMatOf(r.материал) || {}).по_цветам === false
+          ? '<select class="input" disabled><option>без цвета — один на все</option></select>'
+          : `<select class="input" data-fl-bom="${i}|цвет">${opt('', r.цвет, '1-й (основной)')}${opt('цвет 2', r.цвет, '2-й')}${opt('цвет 3', r.цвет, '3-й')}${r.цвет && !/^цвет \d$/.test(r.цвет) ? opt(r.цвет, r.цвет) : ''}</select>`}</div>
         <div class="cx-field"><label>Расход на 1 шт, ${esc((flMatOf(r.материал) || {}).ед || r.ед || 'ед.')}</label><input class="input cx-mini" type="number" min="0" step="any" data-fl-bom="${i}|норма" value="${esc(r.норма || '')}"></div>
         <div class="cx-field" style="align-self:end"><button class="btn ghost" data-act="fl-bom-del" data-i="${i}">✕ убрать</button></div>
       </div>
@@ -504,6 +508,11 @@ function bomHtml() {
       ${FL.bomModel ? `
         <div class="cx-hint" style="margin-top:12px">Сколько уходит на 1 шт изделия (г, м, шт — по ед. позиции). Цвет материала = цвет изделия; у изделия в 2–3 цвета выберите, к какому цвету относится материал.</div>
         <div class="cx-hint" style="margin-top:6px"><b>${esc(FL.bomModel)}</b>${(modelInfo(FL.bomModel) || {}).категория ? ' · ' + esc(modelInfo(FL.bomModel).категория) : ''} · размеры: ${sizes.map(esc).join(', ') || '—'}</div>
+        ${sizes.length ? `<div class="cc-sec" style="margin-top:10px">
+          <div class="cx-hint" style="margin-bottom:4px"><b>Расход ткани по размерам, %</b> — к основному размеру (100%). Маленькие меньше, большие больше: по ним фактический расход рулонов делится в себестоимости. Пусто = 100%</div>
+          <div class="cx-gwrap" style="max-height:none"><table class="cx-gtable"><thead><tr>${sizes.map((z) => `<th>${esc(z)}</th>`).join('')}</tr></thead>
+            <tbody><tr>${sizes.map((z) => `<td><input class="cx-gin" type="number" min="1" step="any" data-fl-bompct="${esc(z)}"
+              value="${esc(flBomPct()[z] || '')}" placeholder="100"></td>`).join('')}</tr></tbody></table></div></div>` : ''}
         ${rows || '<div class="cx-hint" style="margin-top:8px">Материалов пока нет</div>'}
         <div class="cx-btn-row" style="margin-top:10px">
           <button class="btn" data-act="fl-bom-add">+ Материал</button>
@@ -585,6 +594,8 @@ function nomCardHtml() {
         <div class="cx-field"><label>Цена закупки</label><input class="input cx-mini" type="number" min="0" step="any" id="fl-n-цена" value="${esc(m.цена || '')}"></div>
       </div>
       <div class="cx-field" style="margin-top:8px"><label>Параметры</label><input class="input" id="fl-n-параметры" value="${esc(m.параметры)}"></div>
+      <label style="display:flex;gap:8px;align-items:center;margin-top:10px"><input type="checkbox" id="fl-n-поцветам" ${m.по_цветам !== false ? 'checked' : ''}>
+        <span>Различается по цветам <span class="cx-hint">— как нитки и ткань. Снимите для кармана, резинки: один остаток на все цвета изделия</span></span></label>
       <div class="cx-btn-row" style="margin-top:10px">
         <button class="btn primary" data-act="fl-nom-save">Сохранить</button>
         <button class="btn ghost" data-act="fl-mat-del" data-cat="${esc(m.категория)}" data-kind="${esc(m.вид)}">✕</button>
@@ -593,7 +604,7 @@ function nomCardHtml() {
       <h4 style="margin:18px 0 6px">Где используется · ${nf(used.length)}</h4>
       ${used.length ? `<table class="cx-table cx-table-sm"><thead><tr><th>Артикул</th><th>Цвет</th><th class="num">Расход на 1 шт</th></tr></thead><tbody>
         ${used.map((u) => `<tr><td><a role="button" tabindex="0" style="cursor:pointer" data-act="fl-nom-bom" data-model="${esc(u.модель)}">${esc(u.модель)}</a></td>
-          <td>${esc(/^цвет \d$/.test(u.цвет) ? u.цвет.replace('цвет ', '') + '-й цвет изделия' : (u.цвет || 'цвет изделия'))}</td>
+          <td>${m.по_цветам === false ? 'без цвета' : esc(/^цвет \d$/.test(u.цвет) ? u.цвет.replace('цвет ', '') + '-й цвет изделия' : (u.цвет || 'цвет изделия'))}</td>
           <td class="num">${u.норма ? `${nf(u.норма)} ${esc(u.ед)}` : '—'}${Object.keys(u.по_размерам || {}).length ? ' <span class="cx-hint">+ по размерам</span>' : ''}</td></tr>`).join('')}</tbody></table>`
         : '<div class="cx-hint">Ни в одной спецификации</div>'}
 
@@ -614,7 +625,8 @@ function movesHtml() {
     const have = (FL.supply.остатки || []).find((x) => flLow(x.материал) === flLow(r.материал) && flLow(x.цвет) === flLow(r.цвет));
     return `<tr>
       <td><select class="input" data-fl-mv="${i}|материал">${flOpt('', r.материал, '— позиция —')}${kinds.replace(`value="${esc(r.материал)}"`, `value="${esc(r.материал)}" selected`)}</select></td>
-      <td><input class="input" data-fl-mv="${i}|цвет" list="fl-colors" value="${esc(r.цвет)}" placeholder="без цвета"></td>
+      <td>${m && m.по_цветам === false ? '<input class="input" disabled placeholder="без цвета">'
+        : `<input class="input" data-fl-mv="${i}|цвет" list="fl-colors" value="${esc(r.цвет)}" placeholder="без цвета">`}</td>
       <td class="num cx-muted">${r.материал ? `${nf(have ? have.остаток : 0)} ${esc((m || {}).ед || '')}` : ''}</td>
       <td><input class="input cx-mini" type="number" min="0" step="any" data-fl-mv="${i}|количество" value="${esc(r.количество)}"></td>
       ${isIn ? `<td><input class="input cx-mini" type="number" min="0" step="any" data-fl-mv="${i}|цена" value="${esc(r.цена)}"></td>` : ''}
@@ -827,6 +839,7 @@ document.addEventListener('click', async (ev) => {
   }
   if (act === 'fl-bom-pick') {
     FL.bomModel = el.dataset.model;
+    FL.bomPct = null;
     FL.bomRows = ((FL.supply.спецификации || {})[FL.bomModel] || []).map((r) => ({ ...r }));
     if (!FL.bomRows.length) FL.bomRows.push({ категория: '', материал: '', цвет: '', норма: '', ед: 'м', параметры: '', по_размерам: {} });
     return render();
@@ -865,7 +878,7 @@ document.addEventListener('click', async (ev) => {
   }
   if (act === 'fl-nom-bom') {
     ev.preventDefault();
-    FL.nomTab = 'bom'; FL.bomModel = el.dataset.model;
+    FL.nomTab = 'bom'; FL.bomModel = el.dataset.model; FL.bomPct = null;
     FL.bomRows = ((FL.supply.спецификации || {})[FL.bomModel] || []).map((r) => ({ ...r }));
     return render();
   }
@@ -880,7 +893,8 @@ document.addEventListener('click', async (ev) => {
       FL.nomSel = вид;
     }
     await flPost('/supply/material', { категория, вид, тип: v('тип'), ед: v('ед'), код: v('код'),
-      поставщик: v('поставщик'), цена: v('цена'), мин: m.мин, параметры: v('параметры') }, `«${m.вид}» сохранено`);
+      поставщик: v('поставщик'), цена: v('цена'), мин: m.мин, параметры: v('параметры'),
+      по_цветам: ($('#fl-n-поцветам') || {}).checked !== false }, `«${m.вид}» сохранено`);
     return;
   }
   if (act === 'fl-cat-ren') {
@@ -910,7 +924,8 @@ document.addEventListener('click', async (ev) => {
   }
   if (act === 'fl-bom-del') { FL.bomRows.splice(Number(el.dataset.i), 1); return render(); }
   if (act === 'fl-bom-save') {
-    await flPost('/supply/bom', { модель: FL.bomModel, строки: FL.bomRows }, `Спецификация ${FL.bomModel} сохранена`);
+    await flPost('/supply/bom', { модель: FL.bomModel, строки: FL.bomRows, ткань_проценты: flBomPct() }, `Спецификация ${FL.bomModel} сохранена`);
+    FL.bomPct = null;
     return;
   }
   if (act === 'fl-rp-add') {  // приёмка рулонов штуками: одна строка прихода на всю партию
@@ -977,6 +992,10 @@ document.addEventListener('input', (ev) => {
     const pos = t.selectionStart;
     render();
     const n = $('#fl-nomq'); if (n) { n.focus(); n.setSelectionRange(pos, pos); }
+  }
+  if (t.dataset.flBompct) {
+    FL.bomPct = { ...flBomPct() };
+    if (num(t.value) > 0) FL.bomPct[t.dataset.flBompct] = num(t.value); else delete FL.bomPct[t.dataset.flBompct];
   }
   if (t.dataset.flBomsize) {
     const [i, z] = t.dataset.flBomsize.split('|');

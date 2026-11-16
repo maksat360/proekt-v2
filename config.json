@@ -3,6 +3,7 @@
  "shadow": true,
  "note": "backend: excel | sql. shadow: true — зеркалить операции склада в SQL. Включать только осознанно.",
  "visible": [
+  "dash",
   "wh",
   "shop",
   "fbs",

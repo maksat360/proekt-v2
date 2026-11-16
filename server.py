@@ -19,6 +19,7 @@ import os
 import re
 import secrets
 import shutil
+import sys
 import threading
 from datetime import date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -154,9 +155,6 @@ def can(who, cap: str) -> bool:
 
 
 # ---------------------------------------------------------------- Excel layer
-def table_path(name: str) -> Path:
-    return DATA / f"{name}.xlsx"
-
 
 def norm(value):
     if value is None:
@@ -168,61 +166,27 @@ def norm(value):
     return value
 
 
-_TABLE_CACHE: dict = {}  # имя таблицы → (mtime_ns, размер, строки)
+_TABLE_CACHE: dict = {}  # не используется: кэш строк теперь в sheets.rows; оставлен для тестов
 
 
 def read_table(name: str) -> list[dict]:
-    """Строки таблицы; файл перечитывается только после изменения."""
-    path = table_path(name)
-    try:
-        st = path.stat()
-    except OSError:
-        return []
-    sig = (st.st_mtime_ns, st.st_size)
-    hit = _TABLE_CACHE.get(name)
-    if hit and hit[0] == sig:
-        return [dict(r) for r in hit[1]]
-    rows = _read_table_file(name, path)
-    _TABLE_CACHE[name] = (sig, rows)
-    return [dict(r) for r in rows]
-
-
-def _read_table_file(name: str, path: Path) -> list[dict]:
-    with IO_LOCK:
-        wb = load_workbook(path, data_only=True)
-        ws = wb[name] if name in wb.sheetnames else wb.active
-        rows = list(ws.iter_rows(values_only=True))
+    """Строки таблицы из базы (бывший data/<имя>.xlsx)."""
+    import sheets
+    rows = sheets.grid("data", name, DATA)
     if not rows:
         return []
     header = [str(norm(c) or f"col{i}") for i, c in enumerate(rows[0])]
     out = []
     for raw in rows[1:]:
-        if raw is None or all(c is None or c == "" for c in raw):
+        if all(c is None or c == "" for c in raw):
             continue
-        out.append({header[i]: norm(raw[i]) if i < len(raw) else "" for i in range(len(header))})
+        out.append({header[i]: norm(raw[i]) if raw[i] is not None else "" for i in range(len(header))})
     return out
 
 
 def write_table(name: str, rows: list[dict]) -> None:
-    cols = SCHEMAS[name]
-    path = table_path(name)
-    with IO_LOCK:
-        wb = Workbook()
-        ws = wb.active
-        ws.title = name
-        ws.append(cols)
-        for cell in ws[1]:
-            cell.font = Font(bold=True, color="FFFFFF")
-            cell.fill = PatternFill("solid", fgColor="1F3864")
-        for row in rows:
-            ws.append([row.get(c, "") for c in cols])
-        for i, col in enumerate(cols, start=1):
-            ws.column_dimensions[get_column_letter(i)].width = max(12, min(32, len(col) + 8))
-        ws.freeze_panes = "A2"
-        tmp = path.with_suffix(".tmp.xlsx")
-        wb.save(tmp)
-        tmp.replace(path)
-        _TABLE_CACHE.pop(name, None)
+    import sheets
+    sheets.put_table("data", name, SCHEMAS[name], rows, DATA)
 
 
 def append_row(name: str, row: dict) -> None:
@@ -232,8 +196,10 @@ def append_row(name: str, row: dict) -> None:
 
 
 def ensure_tables() -> None:
+    import sheets
+    have = set(sheets.names("data", DATA))
     for name in SCHEMAS:
-        if not table_path(name).exists():
+        if name not in have:
             write_table(name, [])
 
 
@@ -716,6 +682,11 @@ def dashboard(me: dict) -> dict:
         },
         "последние": batches[:6],
     }
+    try:  # реальные цифры цеха (портальные партии выше пустые — цех ведётся в своём разделе)
+        import cex_api
+        data["цех"] = cex_api.dash_summary(None if can(me, "report.build") else str(me.get("логин")))
+    except Exception as exc:  # noqa: BLE001 — сводка не должна падать из-за цеха
+        print(f"сводка: цех недоступен: {exc}", file=sys.stderr)
     if can(me, "materials.view"):
         mats = read_table("materials")
         data["материалов"] = len(mats)
@@ -777,8 +748,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Encoding", "gzip")
             self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        for k, v in (extra or {}).items():
+        extra = dict(extra or {})
+        self.send_header("Cache-Control", extra.pop("Cache-Control", "no-store"))
+        for k, v in extra.items():
             self.send_header(k, v)
         self.end_headers()
         if self.command != "HEAD":
@@ -957,7 +929,15 @@ class Handler(BaseHTTPRequestHandler):
         ctype = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
         if ctype.startswith("text/") or target.suffix in (".js", ".css", ".html"):
             ctype += "; charset=utf-8"
-        self._send(target.read_bytes(), ctype)
+        # файл с ?v=… меняет адрес при каждом обновлении — его можно держать в кэше браузера год;
+        # картинки — сутки; страницы и sw.js — без кэша, иначе обновления не дойдут
+        if "v=" in urlparse(self.path).query and target.suffix in (".js", ".css"):
+            cache = "public, max-age=31536000, immutable"
+        elif target.suffix in (".png", ".jpg", ".jpeg", ".webp", ".svg", ".ico", ".woff2"):
+            cache = "public, max-age=86400"
+        else:
+            cache = "no-store"
+        self._send(target.read_bytes(), ctype, extra={"Cache-Control": cache})
 
     def _assistant_tools(self, me: dict) -> dict:
         """Инструменты Джарвиса — строго по правам сотрудника (как у кнопок на сайте)."""
@@ -1358,6 +1338,23 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/dashboard":
             self._json({"ok": True, "data": dashboard(me)})
+            return
+
+        if path == "/api/dashboard/report":  # отчёты начальника: поставки по неделям и продажи
+            if not can(me, "report.build"):
+                self._err("нет прав", 403)
+                return
+            import boss_report
+            self._json({"ok": True, "data": boss_report.build()})
+            return
+
+        if path == "/api/dashboard/wb":  # аналитика WB: кабинет или все вместе
+            if not can(me, "report.build"):
+                self._err("нет прав", 403)
+                return
+            import wb_report
+            self._json({"ok": True, "data": wb_report.report((query.get("кабинет") or ["all"])[0],
+                                                             force=bool(query.get("обновить")))})
             return
 
         if path == "/api/batches" and method == "GET":
@@ -2170,6 +2167,19 @@ class Handler(BaseHTTPRequestHandler):
                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                200, {"Content-Disposition": disp})
                     return
+                if path == "/api/wh/model.xlsx":  # все цвета и размеры модели по фильтрам Главной
+                    f = {k: [v for v in query.get(k, []) if v] for k in ("cat", "model", "color", "size")}
+                    try:
+                        data = warehouse.model_xlsx(**f)
+                    except ValueError as exc:
+                        self._err(str(exc), 404)
+                        return
+                    label = ", ".join(f["model"] or f["cat"])[:60] or "весь склад"
+                    fname = f"Характеристики {label}.xlsx".replace("/", "-")
+                    disp = "attachment; filename=\"model.xlsx\"; filename*=UTF-8''" + quote(fname)
+                    self._send(data, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                               200, {"Content-Disposition": disp})
+                    return
                 if path == "/api/wh/receipt":
                     self._json({"ok": True, "data": warehouse.receipt_lines(
                         str(query.get("дата", [""])[0]),
@@ -2199,6 +2209,10 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 if path == "/api/wh/negatives":
                     self._json({"ok": True, "data": warehouse.negatives()})
+                    return
+                if path == "/api/wh/revision":  # ревизия: открытая + прошлые
+                    import revision
+                    self._json({"ok": True, "data": revision.current(), "история": revision.history()})
                     return
                 if path == "/api/wh/verify":
                     items = warehouse.stock_items()
@@ -2266,6 +2280,28 @@ class Handler(BaseHTTPRequestHandler):
                     if src.get("партия"):  # приёмка упакованного в цехе: отметить коробки принятыми
                         import cex_api  # POST уже под WRITE_LOCK
                         cex_api.pack_received(str(src["партия"]), str(src.get("цвет", "")))
+                    self._json({"ok": True, **res})
+                    return
+                if path.startswith("/api/wh/revision/"):
+                    import revision
+                    act, who, rid = path.rsplit("/", 1)[1], str(me.get("фио", "") or me.get("логин", "")), str(body.get("id", ""))
+                    if act == "start":
+                        res = revision.start(str(body.get("категория", "")), who)
+                    elif act == "count":
+                        item = warehouse.resolve_product(str(body.get("товар", "")))  # штрихкод, код или наименование
+                        if not item:
+                            raise ValueError(f"Не нашёл товар: {body.get('товар', '')}")
+                        qty = body.get("факт")
+                        res = revision.count(rid, item["наименование"], who,
+                                             qty=None if qty in (None, "") else as_num(qty),
+                                             add=as_num(body.get("добавить")) or 0)
+                    elif act == "apply":
+                        res = revision.apply(rid, who)
+                    elif act == "cancel":
+                        res = revision.cancel(rid, who)
+                    else:
+                        self._err("неизвестный запрос", 404)
+                        return
                     self._json({"ok": True, **res})
                     return
                 if path == "/api/wh/export":
@@ -2433,6 +2469,28 @@ class Handler(BaseHTTPRequestHandler):
                 self._err(f"сборка FBS: {exc}", 500)
             return
 
+        if path == "/api/fbs/pulled" and method == "GET":  # в поставке WB, у нас не подтверждены
+            if not can(me, "wh.view"):
+                self._err("нет доступа", 403)
+                return
+            import wb_sync
+            self._json({"ok": True, "data": wb_sync.pulled_unconfirmed(query.get("кабинет", [""])[0] or None)})
+            return
+
+        if path == "/api/fbs/pulled/confirm" and method == "POST":  # «Подтвердить и списать»
+            if not can(me, "wb.manage"):
+                self._err("подтверждать может склад, менеджер или начальник", 403)
+                return
+            body = self._body()
+            try:
+                import wb_sync
+                self._json({"ok": True, **wb_sync.confirm_pulled(
+                    [str(x) for x in body.get("ids") or []], str(me.get("фио", "")),
+                    str(body.get("день") or "") or None, dict(body.get("замены") or {}))})
+            except ValueError as exc:
+                self._err(str(exc))
+            return
+
         if path == "/api/fbs/pick" and method == "POST":
             if not can(me, "wb.manage"):
                 self._err("собирать заказы может склад, менеджер или начальник", 403)
@@ -2509,7 +2567,8 @@ class Handler(BaseHTTPRequestHandler):
                 res = cabinets_store.save_cabinet(
                     str(body.get("id", "")), str(body.get("name", "")),
                     body.get("token") if body.get("token") else None,
-                    body.get("active") if "active" in body else None)
+                    body.get("active") if "active" in body else None,
+                    body.get("analytics_token") if body.get("analytics_token") else None)
                 self._json({"ok": True, **res})
             except ValueError as exc:
                 self._err(str(exc))
@@ -2640,48 +2699,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._err(str(exc))
             return
 
-        if path == "/api/export/workbook" and method == "GET":
+        if path == "/api/export/workbook" and method == "GET":  # книга цеха из базы одним .xlsx
             if not can(me, "wh.view"):
                 self._err("нет доступа", 403)
                 return
-            try:
-                import export_workbook
-                info = export_workbook.snapshot()
-            except Exception as exc:  # noqa: BLE001
-                self._err(f"не удалось сделать копию: {exc}", 500)
-                return
-            data = Path(info["путь"]).read_bytes()
-            ascii_name = f"ceh_sklad_{datetime.now():%Y%m%d_%H%M}.xlsm"
-            disp = ("attachment; filename=\"" + ascii_name + "\"; filename*=UTF-8''"
-                    + quote(Path(info["путь"]).name))
-            self._send(data,
-                       "application/vnd.ms-excel.sheet.macroEnabled.12", 200,
-                       {"Content-Disposition": disp})
-            return
-
-        if path == "/api/export/backups" and method == "GET":
-            if not can(me, "wh.view"):
-                self._err("нет доступа", 403)
-                return
-            import export_workbook
-            self._json({"ok": True, "data": export_workbook.list_backups()})
-            return
-
-        if path == "/api/export/backup" and method == "GET":
-            if not can(me, "wh.view"):
-                self._err("нет доступа", 403)
-                return
-            name = str(query.get("name", [""])[0])
-            try:
-                import export_workbook
-                target = export_workbook.backup_path(name)
-            except ValueError as exc:
-                self._err(str(exc), 400)
-                return
-            data = target.read_bytes()
-            disp = ("attachment; filename=\"backup.xlsm\"; filename*=UTF-8''" + quote(target.name))
-            self._send(data, "application/vnd.ms-excel.sheet.macroEnabled.12", 200,
-                       {"Content-Disposition": disp})
+            import sheets
+            fname = f"Книга цеха {datetime.now():%Y-%m-%d %H%M}.xlsx"
+            self._send(sheets.to_xlsx("цех"),
+                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 200,
+                       {"Content-Disposition": "attachment; filename=\"book.xlsx\"; filename*=UTF-8''" + quote(fname),
+                        "Cache-Control": "no-store"})
             return
 
         if path == "/api/report" and method == "POST":
@@ -2814,6 +2841,8 @@ def main():
             print("распознавание речи не готово:", exc)
 
     threading.Thread(target=_warm_voice, daemon=True).start()
+    import wb_report
+    threading.Thread(target=wb_report.loop, daemon=True).start()  # история WB копится каждый час
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"Проект V2.1 · http://{args.host}:{args.port}")

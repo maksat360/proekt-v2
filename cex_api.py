@@ -5,14 +5,16 @@ from __future__ import annotations
 import json
 import re
 import threading
+import time
 from datetime import date, datetime, timedelta
 
 import cex_store as store
 import perms
 
 MODELS = ("Справочник модели",
-          ["категория", "модель", "название", "размерная сетка", "цена", "активна", "размер от", "размер до", "цвета"],
-          [14, 10, 30, 16, 10, 9, 9, 9, 40])
+          ["категория", "модель", "название", "размерная сетка", "цена", "активна", "размер от", "размер до", "цвета",
+           "ткань %"],
+          [14, 10, 30, 16, 10, 9, 9, 9, 40, 24])
 LETTER_ORDER = ["XXS", "XS", "S", "M", "L", "XL", "XXL", "3XL", "4XL", "5XL", "6XL"]
 
 
@@ -128,8 +130,8 @@ BOM = ("Спецификация",
 # Справочник материалов: категории (рулон, карман, нитки…) и виды внутри них.
 # Строка с пустым «вид» — сама категория, пока в ней нет видов.
 MATERIALS = ("Материалы",
-             ["категория", "вид", "ед.", "параметры", "код", "тип", "поставщик", "цена", "мин. остаток"],
-             [18, 30, 8, 34, 10, 14, 20, 10, 12])
+             ["категория", "вид", "ед.", "параметры", "код", "тип", "поставщик", "цена", "мин. остаток", "по цветам"],
+             [18, 30, 8, 34, 10, 14, 20, 10, 12, 10])
 MAT_TYPES = ("сырьё", "материал", "фурнитура", "упаковка", "полуфабрикат")
 # Журнал движения номенклатуры: остаток = сумма «количество» (приход +, расход −).
 MOVES = ("Движение материалов",
@@ -671,6 +673,25 @@ def model_stock(model: str) -> dict[str, float]:
     return out
 
 
+FINISHED = ("на складе", "отгружен", "отгружена", "отменён", "отменен", "отменена")
+
+
+def model_production(model: str) -> dict[str, int]:
+    """Сколько штук модели сейчас в производстве: «цвет|размер» → штук по незакрытым заказам цеха.
+    shortcut: заказ считается целиком, пока не «на складе» — частичную приёмку на склад не вычитаем;
+    если частичные приёмки станут частыми, вычитать принятое по партиям."""
+    want = _s(model).lower()
+    out: dict[str, int] = {}
+    for o in orders():
+        if _s(o.get("статус")).lower() in FINISHED:
+            continue
+        for p in o["позиции"]:
+            if _s(p.get("модель")).lower() == want:
+                k = f"{_s(p.get('цвет'))}|{_norm_size(p.get('размер'))}"
+                out[k] = out.get(k, 0) + _int(p.get("количество"))
+    return out
+
+
 def create_party(me: dict, body: dict) -> dict:
     """Закройщик создаёт партию из карты «ждёт кроя»: всю карту, часть или больше карты."""
     num = _s(body.get("заказ"))
@@ -929,8 +950,20 @@ def materials() -> list[dict]:
     return [{"категория": _s(r.get("категория")), "вид": _s(r.get("вид")),
              "ед": _s(r.get("ед.")), "параметры": _s(r.get("параметры")),
              "код": _s(r.get("код")), "тип": _s(r.get("тип")), "поставщик": _s(r.get("поставщик")),
-             "цена": _num(r.get("цена")), "мин": _num(r.get("мин. остаток"))}
+             "цена": _num(r.get("цена")), "мин": _num(r.get("мин. остаток")),
+             "по_цветам": _s(r.get("по цветам")).lower() != "нет"}
             for r in _rows(MATERIALS) if _s(r.get("категория"))]
+
+
+_PLAIN = {"ts": 0.0, "set": frozenset()}
+
+
+def _plain() -> frozenset:
+    """Виды сырья без цветов (карман, резинка…): один остаток на все цвета изделия. Кэш 2 с — зовётся в циклах."""
+    if time.time() - _PLAIN["ts"] > 2 or _PLAIN.get("st") is not store:
+        _PLAIN.update(ts=time.time(), st=store, set=frozenset(_s(r.get("вид")).lower() for r in _rows(MATERIALS)
+                                                    if _s(r.get("вид")) and _s(r.get("по цветам")).lower() == "нет"))
+    return _PLAIN["set"]
 
 
 def _next_code(rows: list[dict]) -> str:
@@ -966,7 +999,9 @@ def save_material(me: dict, body: dict) -> dict:
         row = {"категория": cat, "вид": kind, "ед.": _s(body.get("ед")) or "м", "параметры": _s(body.get("параметры")),
                "код": _s(body.get("код")) or _s(old.get("код")) or (_next_code(rows) if kind else ""),
                "тип": typ, "поставщик": _s(body.get("поставщик")),
-               "цена": _num(body.get("цена")) or "", "мин. остаток": _num(body.get("мин")) or ""}
+               "цена": _num(body.get("цена")) or "", "мин. остаток": _num(body.get("мин")) or "",
+               "по цветам": _s(old.get("по цветам")) if body.get("по_цветам") is None
+               else ("" if body.get("по_цветам") else "нет")}
         rows = [r for r in rows if not same(r)] + [row]
         for r in rows:  # позициям, заведённым до кодов, — код при первой записи справочника
             if _s(r.get("вид")) and not _s(r.get("код")):
@@ -975,6 +1010,7 @@ def save_material(me: dict, body: dict) -> dict:
             rows = [r for r in rows if not (_s(r.get("категория")).lower() == cat.lower() and not _s(r.get("вид")))]
     rows.sort(key=lambda r: (_s(r.get("категория")).lower(), _s(r.get("вид")).lower()))
     store.write_sheet(MATERIALS[0], MATERIALS[1], rows)
+    _PLAIN["ts"] = 0.0
     return {"категория": cat, "вид": kind}
 
 
@@ -1036,8 +1072,25 @@ def save_bom(me: dict, body: dict) -> dict:
                       "параметры": _s(it.get("параметры")), "категория": _s(it.get("категория")),
                       "по размерам": "; ".join(f"{k}:{v:g}" for k, v in sizes.items())})
     rows = [r for r in _rows(BOM) if _s(r.get("модель")) != model] + lines
-    store.write_sheet(BOM[0], BOM[1], rows)
+    writes = [(BOM[0], BOM[1], rows)]
+    pct = body.get("ткань_проценты")
+    if pct is not None:  # расход ткани по размерам в % к основному размеру; пусто — 100%
+        pct = _parse_sizes(pct if isinstance(pct, str) else "; ".join(f"{k}:{v}" for k, v in pct.items()))
+        mrows = _rows(MODELS)
+        row = next((r for r in mrows if _s(r.get("модель")) == model), None)
+        if row is None and pct:
+            raise ValueError(f"Модели «{model}» нет в справочнике — проценты ткани сохранить некуда")
+        if row is not None:
+            row["ткань %"] = "; ".join(f"{k}:{v:g}" for k, v in pct.items())
+            writes.append((MODELS[0], MODELS[1], mrows))
+    store.write_sheets(writes)
     return {"модель": model, "строк": len(lines)}
+
+
+def fabric_pct() -> dict[str, dict[str, float]]:
+    """Модель → {размер: % расхода ткани к основному размеру}. Нет размера — 100%."""
+    return {_s(r.get("модель")): _parse_sizes(r.get("ткань %")) for r in _rows(MODELS)
+            if _s(r.get("модель")) and _s(r.get("ткань %"))}
 
 
 def _part_color(bom_color: str, item_color: str) -> str:
@@ -1063,7 +1116,8 @@ def supply_need(card: list[dict], bom: dict) -> tuple[list[dict], list[str]]:
         for b in lines:
             if b["материал"].lower() in rolls:
                 continue
-            k = (b["материал"], _part_color(b["цвет"], c["цвет"]), b["ед"])
+            color = "" if b["материал"].lower() in _plain() else _part_color(b["цвет"], c["цвет"])
+            k = (b["материал"], color, b["ед"])
             norm = b.get("по_размерам", {}).get(_norm_size(c["размер"]), b["норма"])  # своя норма размера, иначе общая
             need[k] = need.get(k, 0) + norm * c["итог"]
     return ([{"материал": k[0], "цвет": k[1], "ед": k[2], "нужно": round(v, 3)}
@@ -1114,7 +1168,8 @@ def moves() -> list[dict]:
 
 
 def _mkey(mat: str, color: str) -> tuple[str, str]:
-    return (_s(mat).lower(), _s(color).lower())
+    m = _s(mat).lower()
+    return (m, "" if m in _plain() else _s(color).lower())  # сырьё без цветов — один остаток
 
 
 def stock(mv: list[dict] | None = None) -> dict[tuple[str, str], float]:
@@ -1147,7 +1202,7 @@ def add_move(me: dict, body: dict) -> dict:
         ref = known.get(mat.lower())
         if not ref:
             raise ValueError(f"Строка {i}: «{mat}» нет в номенклатуре — сначала заведите позицию")
-        color, qty = _s(it.get("цвет")), _num(it.get("количество"))
+        color, qty = ("" if not ref["по_цветам"] else _s(it.get("цвет"))), _num(it.get("количество"))
         roll = ref["вид"].lower() in pcs_rolls
         if roll and qty != int(qty):
             raise ValueError(f"Строка {i} ({mat}): рулоны считаются штуками — укажите целое число. "
@@ -1295,10 +1350,11 @@ def supply_state() -> dict:
     left = [{"материал": "", "цвет": "", "остаток": v, "_k": k} for k, v in stock(mv).items()]
     names = {}
     for m in mv:  # исходное написание названия и цвета
-        names.setdefault(_mkey(m["материал"], m["цвет"]), (m["материал"], m["цвет"]))
+        k = _mkey(m["материал"], m["цвет"])
+        names.setdefault(k, (m["материал"], m["цвет"] if k[1] else ""))
     for x in left:
         x["материал"], x["цвет"] = names[x.pop("_k")]
-    return {"очередь": queue_, "спецификации": bom, "материалы": materials(),
+    return {"очередь": queue_, "спецификации": bom, "материалы": materials(), "ткань_проценты": fabric_pct(),
             "рулоны": list(roll_registry().values())[::-1][:300],
             "рулоны_склад": rolls_in_stock(mv),
             "приёмки_рулонов": [m for m in mv if m["документ"] == "поступление" and m["ед"] == "шт"
@@ -3858,6 +3914,37 @@ def _party_models() -> dict[str, str]:
     return out
 
 
+def dash_summary(login: str | None = None) -> dict:
+    """Для «Сводки» портала: сдано и начислено сдельно за этот месяц (Выдачи «готово»),
+    незавершённые штуки заказов цеха по этапам и последние заказы. login — только свои выдачи."""
+    today = date.today()
+    qty, money = 0, 0.0
+    for r in _rows(OUT):
+        d = _date_of(r.get("дата"))
+        if _s(r.get("статус")) != "готово" or not d or (d.year, d.month) != (today.year, today.month):
+            continue
+        if login and _s(r.get("логин")) != login:
+            continue
+        qty += _int(r.get("количество"))
+        money += float(str(r.get("сумма") or 0).replace(",", ".") or 0)
+    stages = {st: 0 for st in CARD_STAGES}
+    recent = []
+    for o in orders():
+        if o["статус"] == "отклонён":
+            continue
+        for pos in o["позиции"]:
+            if pos["остаток"]:
+                stages[pos["этап"]] = stages.get(pos["этап"], 0) + pos["остаток"]
+        recent.append({"номер": o["номер"], "дата": o["дата"], "клиент": o["клиент"], "штук": o["штук"],
+                       "принято": o["принято"], "статус": o["статус"]})
+    left = {k: v for k, v in stock().items() if v > 0}
+    prices = {k: mat_price(*k)[0] for k in left}  # средняя цена поступлений; без цены — 0
+    mats = {"в_справочнике": len(materials()), "на_складе": len(left),
+            "сумма": round(sum(v * prices[k] for k, v in left.items()), 2),
+            "без_цены": sum(1 for k in left if not prices[k])}
+    return {"сдано": qty, "заработано": round(money, 2), "этапы": stages, "заказы": recent[:6], "материалы": mats}
+
+
 def payroll_data(month: str, me: dict) -> dict:
     seed_staff()
     y, m, last = _month_bounds(month)
@@ -4161,23 +4248,11 @@ def _grid_for(size: str) -> str:
 def _catalog_rows() -> list[dict]:
     """Каталог «главный»: [{категория, модель, цвет, размер}].
     Шапку ищем в первых строках по слову «модел» — над ней бывают пустые строки."""
-    import zipfile
-    path = store.source_path()
-    try:
-        st = path.stat()
-    except OSError:
-        return []
-    key = (str(path), st.st_mtime_ns, st.st_size)
+    import sheets
+    key = sheets.version(store.BOOK)
     if _CATALOG_CACHE.get("key") == key:
         return _CATALOG_CACHE["rows"]
-    try:
-        with zipfile.ZipFile(path) as zf:
-            target = store._sheet_map(zf).get("главный")
-            if not target:
-                return []
-            raw = store._cells_to_values(zf.read(target), store._shared_strings(zf))
-    except Exception:
-        return []
+    raw = [cells for _, cells in sheets.rows(store.BOOK, "главный") or []]
     head_i, cols = None, {}
     for i, r in enumerate(raw[:10]):
         names = {_s(v).lower(): c for c, v in r.items()}
@@ -4361,9 +4436,32 @@ def order_cost(num: str) -> dict:
         g = fabric.setdefault(k, {"вид": k[0], "цвет": k[1], "шт": 0, "кг": 0.0})
         g["шт"] += _int(r.get("шт"))
         g["кг"] += _num(r.get("вес кг"))
+    # остаток рулонов, который закройщик сдал после кроя (кг): вычитаем из выданного — в цене только ушедшее в крой
+    back_kg: dict[str, float] = {}
+    for m in moves():
+        if m["документ"] == "возврат из кроя" and m["заказ"] == num:
+            kg = m.get("вес") or (m["количество"] if _s(m.get("ед")).lower() == "кг" else 0)
+            if kg > 0:
+                back_kg[_s(m.get("цвет")).lower()] = back_kg.get(_s(m.get("цвет")).lower(), 0) + kg
+    left_kg = 0.0
+    for color, kg in back_kg.items():
+        same = [g for g in fabric.values() if g["цвет"].lower() == color and g["кг"] > 0]
+        if same:
+            for g in same:
+                take = min(g["кг"], kg * g["кг"] / sum(x["кг"] for x in same))
+                g["возврат_кг"] = g.get("возврат_кг", 0) + take
+        else:
+            left_kg += kg  # цвет остатка не указан или не совпал — делим на все рулоны по весу
+    issued = sum(g["кг"] for g in fabric.values())
+    for g in fabric.values():
+        if left_kg and issued:
+            g["возврат_кг"] = g.get("возврат_кг", 0) + left_kg * g["кг"] / issued
+        g["выдано_кг"] = g["кг"]
+        g["кг"] = max(0.0, g["кг"] - g.get("возврат_кг", 0))
     fabric_lines = []
     fabric_sum = 0.0
     for g in sorted(fabric.values(), key=lambda x: (x["вид"], x["цвет"])):
+        g["возврат_кг"] = round(g.get("возврат_кг", 0), 3)
         price, ok = price_kg(g["вид"], g["цвет"], day)
         total = round(g["кг"] * price, 2) if ok else None
         fabric_sum += total or 0
@@ -4428,6 +4526,33 @@ def order_cost(num: str) -> dict:
 
     work_total = round(work_fact if work_fact > 0 else work_plan, 2)
     total = round(fabric_sum + mat_sum + work_total + overhead, 2)
+
+    # --- по размерам: ткань делим по штукам × % расхода размера, остальное — поровну на штуку
+    pct = fabric_pct()
+    pieces: dict[tuple, int] = {}
+    for r in _rows(CUT):  # факт кроя; пока не кроили — по карте заказа
+        pnum = _s(r.get("№ партии"))
+        if pnum in pmodel and _s(r.get("приёмка")) != RETURNED:
+            k = (pmodel[pnum], _norm_size(r.get("размер")))
+            pieces[k] = pieces.get(k, 0) + _int(r.get("факт шт"))
+    if not pieces:
+        for c in card_of(order, cards):
+            k = (_s(c["модель"]), _norm_size(c["размер"]))
+            pieces[k] = pieces.get(k, 0) + _int(c["итог"])
+    pieces = {k: v for k, v in pieces.items() if v > 0}
+    weight = {k: v * pct.get(k[0], {}).get(k[1], 100) / 100 for k, v in pieces.items()}
+    wsum, psum = sum(weight.values()), sum(pieces.values())
+    rest_pc = (total - fabric_sum) / psum if psum else 0
+    fabric_kg = sum(l["кг"] for l in fabric_lines)
+    by_size = []
+    for k in sorted(pieces, key=lambda k: (k[0], _size_key(k[1]))):
+        share = weight[k] / wsum if wsum else 0
+        fab = fabric_sum * share
+        by_size.append({"модель": k[0], "размер": k[1], "шт": pieces[k],
+                        "процент": pct.get(k[0], {}).get(k[1], 100),
+                        "ткань_кг": round(fabric_kg * share / pieces[k], 3),
+                        "ткань_сом": round(fab / pieces[k], 2),
+                        "за_шт": round(fab / pieces[k] + rest_pc, 2)})
     incomplete = (any(l["нет_цены"] or l["нет_веса"] for l in fabric_lines)
                   or any(l["нет_цены"] for l in mat_lines))
     return {
@@ -4441,6 +4566,7 @@ def order_cost(num: str) -> dict:
         "накладные": {"сом_шт": per_piece, "сумма": overhead},
         "итого": total,
         "за_шт": round(total / qty, 2) if qty else None,
+        "по_размерам": by_size,
         "неполная": incomplete,
     }
 
@@ -4455,9 +4581,7 @@ def dispatch(ctx) -> None:
     except store.CexLocked as exc:
         ctx["err"](str(exc), 409)
     except store.CexSourceError as exc:
-        ctx["err"](f"Файл Excel недоступен: {exc}", 503)
-    except PermissionError:
-        ctx["err"]("Файл занят другой программой. Закройте Excel и повторите.", 409)
+        ctx["err"](f"Книга цеха недоступна: {exc}", 503)
     except KeyError as exc:
         ctx["err"](f"В книге не хватает листа: {exc}", 500)
 
@@ -4499,7 +4623,7 @@ def _dispatch(ctx) -> None:
                                                              "storekeeper", "cutter", "designer", "supply"} else [],
             "клиенты": _client_list(),
             "поставщики": _all_suppliers(),
-            "источник": str(store.source_path()),
+            "источник": "база данных",
         }
         _ok(ctx, data)
         return
@@ -4514,6 +4638,13 @@ def _dispatch(ctx) -> None:
             _deny(ctx, "cex.create")
             return
         _ok(ctx, model_stock(_s(((ctx.get("query") or {}).get("модель") or [""])[0])))
+        return
+
+    if path == "/api/cex/production" and method == "GET":  # «Новый заказ»: сколько уже шьётся по модели
+        if not _can(me, "cex.create"):
+            _deny(ctx, "cex.create")
+            return
+        _ok(ctx, model_production(_s(((ctx.get("query") or {}).get("модель") or [""])[0])))
         return
 
     if path == "/api/cex/orders" and method == "POST":

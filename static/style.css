@@ -1262,3 +1262,29 @@ input[list]::-webkit-calendar-picker-indicator { opacity: .35; }
 .ad-unit:last-child { border-bottom: 0; }
 .ad-rack { flex-wrap: wrap; }
 details.card > summary { list-style: none; }
+
+/* ---------- фильтры склада как в Excel: несколько значений галочками ---------- */
+.xf { position: relative; }
+.xf > summary {
+  list-style: none; cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  min-height: 44px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.xf > summary::-webkit-details-marker { display: none; }
+.xf > summary::after {
+  content: ""; width: 7px; height: 7px; flex: none;
+  border-right: 1.7px solid var(--ink-3); border-bottom: 1.7px solid var(--ink-3);
+  transform: rotate(45deg) translate(-2px, -2px);
+}
+.xf[open] > summary { border-color: var(--blue); box-shadow: 0 0 0 4px var(--blue-soft); }
+.xf-pop {
+  position: absolute; z-index: 90; top: calc(100% + 8px); left: 0; right: 0; min-width: 240px;
+  padding: 10px; border-radius: 20px; display: grid; gap: 6px;
+  background: var(--glass-strong); border: 1px solid var(--glass-brd);
+  box-shadow: var(--shadow-lg), var(--glass-edge);
+  -webkit-backdrop-filter: var(--blur-heavy); backdrop-filter: var(--blur-heavy);
+}
+.xf-list { max-height: 260px; overflow: auto; overscroll-behavior: contain; }
+.xf-row { display: flex; align-items: center; gap: 9px; padding: 7px 6px; border-radius: 10px; cursor: pointer; font-size: 15px; }
+.xf-row:hover { background: var(--fill-1, rgba(120, 120, 128, .08)); }
+.xf-row input { width: 18px; height: 18px; flex: none; }
+.xf-all { border-bottom: 1px solid var(--line-2); border-radius: 10px 10px 0 0; }

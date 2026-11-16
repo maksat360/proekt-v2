@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Склад — работа с файлом «цех_склад для apk.xlsm».
+"""Склад — справочники из книги цеха (бывший файл «цех_склад для apk.xlsm», теперь лист в базе, sheets.py).
 
-Структура файла (как есть, не меняем):
+Структура книги (как есть, не меняем):
   «главный»            — каталог + фактический остаток (колонка R «ф.к»)
   «Вспомогательный лист» — A наименование, B модель, C цвет, D размер,
                            G категория, I поставщики, J полный адрес
@@ -12,8 +12,7 @@
   «паставка ЖСК/ККМ/ААТ» — отгрузки
 
 Остаток = «ф.к» + приходы − отгрузки (по операциям портала).
-Операции пишутся и в Excel (для истории), и в локальный реестр data/склад_реестр.json.
-Перед каждой записью делается резервная копия файла.
+Операции пишутся и в книгу цеха (для истории), и в локальный реестр data/склад_реестр.json.
 """
 from __future__ import annotations
 
@@ -29,18 +28,14 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from cex_store import BOOK_LOCK, guard as cex_guard  # общий с цехом замок записи; проверка «открыт в Excel»
+import sheets
+from cex_store import BOOK, BOOK_LOCK  # книга цеха в базе; общий с цехом замок записи
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 BASE = Path(__file__).resolve().parent
 DATA = BASE / "data"
-BACKUP = DATA / "склад_бэкапы"
 LEDGER = DATA / "склад_реестр.json"
-SOURCE_HINT = DATA / "склад_источник.txt"
-
-DEFAULT_SOURCE = Path("/Users/temp/швейный цех приложение/цех_склад для apk.xlsm")
-
 TARGETS = ["ЖСК", "ККМ", "ААТ"]
 SHIP_SHEET = {"ЖСК": "паставка ЖСК", "ККМ": "паставка ККМ", "ААТ": "паставка ААТ"}
 
@@ -53,11 +48,8 @@ _SMALL = {}  # лёгкие выборки из книги (сотрудники
 
 
 def _cached_by_file(key: str, build):
-    """Пересчитывает build() только когда файл книги изменился."""
-    try:
-        sig = _signature(source_path())
-    except OSError:
-        sig = None
+    """Пересчитывает build() только когда книга в базе изменилась."""
+    sig = sheets.version(BOOK)
     hit = _SMALL.get(key)
     if sig is not None and hit and hit[0] == sig:
         return hit[1]
@@ -68,26 +60,6 @@ def _cached_by_file(key: str, build):
 
 
 # ---------------------------------------------------------------- служебное
-def source_path() -> Path:
-    if SOURCE_HINT.exists():
-        raw = SOURCE_HINT.read_text(encoding="utf-8").strip()
-        if raw:
-            return Path(raw).expanduser()
-    return DEFAULT_SOURCE
-
-
-def set_source(path: str | Path) -> Path:
-    p = Path(path).expanduser().resolve()
-    if str(p).startswith(("/tmp", "/private/tmp")) and os.environ.get("V2_ALLOW_TMP") != "1":
-        raise ValueError("временный путь нельзя использовать как источник склада")
-    DATA.mkdir(parents=True, exist_ok=True)
-    SOURCE_HINT.write_text(str(p), encoding="utf-8")
-    _CACHE["sig"] = None
-    _SMALL.clear()
-    _STOCK["key"] = None
-    return p
-
-
 def _op_key() -> str:
     import uuid as _uuid
     return _uuid.uuid4().hex
@@ -134,11 +106,11 @@ def _barcode_text(v) -> list[str]:
 def article_index() -> dict:
     """Лист «главный»: B — артикул, C — размер, L — наименование, T — баркоды WB.
     pairs: (артикул, размер) → наименование; barcodes: баркод → наименование."""
-    key = _signature(source_path())
+    key = sheets.version(BOOK)
     if _ART_CACHE["key"] == key and _ART_CACHE["data"] is not None:
         return _ART_CACHE["data"]
     data = {"pairs": {}, "barcodes": {}}
-    wb = load_workbook(source_path(), data_only=True, read_only=True)
+    wb = sheets.View(BOOK)
     try:
         for row in list(wb["главный"].iter_rows(values_only=True))[4:]:
             if not row or len(row) < 12 or not _clean(row[11]):
@@ -172,11 +144,8 @@ def import_barcodes(path: str | Path) -> dict:
     for r in rows:
         if r and len(r) > 12 and _clean(r[1]) and _clean(r[11]):
             want.setdefault((_norm(r[1]), _size(r[12])), []).append(_clean(r[11]))
-    p = source_path()
     with BOOK_LOCK:
-        cex_guard(p)
-        _backup(p)
-        wb = load_workbook(p, keep_vba=True)
+        wb = sheets.workbook(BOOK)
         ws = wb["главный"]
         ws.cell(row=4, column=BARCODE_COL, value="баркод WB")
         used, rows_done = set(), 0
@@ -189,7 +158,7 @@ def import_barcodes(path: str | Path) -> dict:
             ws.cell(r, BARCODE_COL, value="; ".join(merged))
             used.add(k)
             rows_done += 1
-        _save_atomic(wb, p)
+        sheets.save(BOOK, wb)
     _ART_CACHE["key"] = None
     miss = sorted((k, v) for k, v in want.items() if k not in used)
     return {"баркодов": sum(len(v) for v in want.values()), "строк_заполнено": rows_done,
@@ -281,12 +250,8 @@ def import_barcodes_by_model(path, dry: bool = False, aliases: dict | None = Non
         for k in alias_keys(r["ключ"], aliases):
             want.setdefault(k, []).extend(b for b in r["баркоды"] if b not in want.get(k, []))
             labels[k] = r["wb"]
-    p = source_path()
     with BOOK_LOCK:
-        if not dry:
-            cex_guard(p)
-            _backup(p)
-        wb = load_workbook(p, keep_vba=not dry, read_only=dry, data_only=dry)
+        wb = sheets.View(BOOK) if dry else sheets.workbook(BOOK)
         try:
             ws = wb["главный"]
             used, rows_done, added = set(), 0, 0
@@ -304,7 +269,7 @@ def import_barcodes_by_model(path, dry: bool = False, aliases: dict | None = Non
                     ws.cell(r, BARCODE_COL, value="; ".join(have + new))
             if not dry:
                 ws.cell(row=4, column=BARCODE_COL, value="баркод WB")
-                _save_atomic(wb, p)
+                sheets.save(BOOK, wb)
         finally:
             if dry:
                 wb.close()
@@ -322,23 +287,6 @@ def _num(v, default=0.0) -> float:
         return float(str(v).replace(",", ".").replace(" ", ""))
     except Exception:
         return default
-
-
-def _signature(p: Path):
-    st = p.stat()
-    return (int(st.st_mtime), int(st.st_size))
-
-
-def _backup(p: Path) -> None:
-    try:
-        BACKUP.mkdir(parents=True, exist_ok=True)
-        dst = BACKUP / f"{datetime.now():%Y-%m-%d_%H%M%S}_{p.name}"
-        shutil.copyfile(p, dst)
-        old = sorted(BACKUP.glob("*.xlsm"))
-        for f in old[:-12]:
-            f.unlink(missing_ok=True)
-    except Exception as exc:  # noqa: BLE001
-        print("резервная копия не создана:", exc)
 
 
 # ------------------------------------------------------------------ реестр
@@ -386,13 +334,11 @@ def _save_ledger(data: dict) -> None:
 
 # ------------------------------------------------------------------ чтение
 def load_master(force: bool = False) -> dict:
-    p = source_path()
-    sig = _signature(p)
+    sig = sheets.version(BOOK)
     if not force and _CACHE["sig"] == sig and _CACHE["data"]:
         return _CACHE["data"]
 
-    # read_only: читаем только нужные листы потоком (≈0,2 с вместо ≈6 с на всю книгу)
-    wb = load_workbook(p, data_only=True, read_only=True)
+    wb = sheets.View(BOOK)
     data = {"items": [], "suppliers": [], "addresses": [], "item_address": {},
             "barcodes": {}, "categories": [], "ship_sheets": {}}
     # листы отгрузок: «паставка ЖСК» → клиент «ЖСК»
@@ -529,11 +475,7 @@ def load_master(force: bool = False) -> dict:
 
 # ------------------------------------------------------------------ расчёт
 def _stock_key():
-    try:
-        st = source_path().stat()
-        mt = (int(st.st_mtime), int(st.st_size))
-    except OSError:
-        mt = (0, 0)
+    mt = sheets.version(BOOK)
     try:
         lm = int(LEDGER.stat().st_mtime) if LEDGER.exists() else 0
     except OSError:
@@ -626,7 +568,7 @@ def meta() -> dict:
         "позиций": len(items),
         "штук": round(sum(i["остаток"] for i in items), 2),
         "вес": "не задан в файле",
-        "источник": source_path().name,
+        "источник": "база данных",
     }
 
 
@@ -890,22 +832,6 @@ def _sheet(wb, name: str, headers: list[str], widths: list[int]):
 
 
 
-def _save_atomic(wb, path: Path) -> None:
-    """Сохраняет книгу во временный файл и подменяет исходный — защита от обрыва.
-
-    Если процесс упадёт во время записи, рабочий файл останется целым.
-    """
-    tmp = path.with_name(path.stem + ".wh.tmp" + path.suffix)  # своё имя: у цеха другое
-    try:
-        wb.save(tmp)
-        os.replace(tmp, path)
-    finally:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
-
 def _append_shipment_row(ws, date: str, name: str, qty: float) -> int:
     """Вставляет строку отгрузки в таблицу листа «паставка …».
 
@@ -979,60 +905,50 @@ def _fill_staff_sheet(wb, counts: dict) -> None:
         return hashlib.sha256(("v2salt::" + raw).encode("utf-8")).hexdigest()
 
     default_hash = hashpw("123456")
-    users_path = DATA / "users.xlsx"
     ws = _sheet(wb, "сотрудники",
                 ["логин", "пароль", "ФИО", "роль", "должность", "цех",
                  "ставка за час", "активен"],
                 [12, 12, 26, 14, 14, 8, 12, 9])
     n = 0
-    if users_path.exists():
-        src = load_workbook(users_path, data_only=True)
-        try:
-            sheet = src["users"] if "users" in src.sheetnames else src[src.sheetnames[0]]
-            head = [str(c.value or "").strip() for c in sheet[1]]
-            idx = {h: i for i, h in enumerate(head)}
-            for raw in list(sheet.iter_rows(values_only=True))[1:]:
-                if not raw or not raw[idx.get("логин", 0)]:
-                    continue
-                stored = str(raw[idx.get("пароль", 1)] or "")
-                pw = "123456" if stored == default_hash else "изменён"
-                role = str(raw[idx.get("роль", 3)] or "")
-                values = [raw[idx.get("логин", 0)], pw, raw[idx.get("фио", 2)],
-                          role, ROLE_RU.get(role, role), raw[idx.get("цех", 4)],
-                          raw[idx.get("ставка_час", 5)] or 0,
-                          "да" if str(raw[idx.get("активен", 6)]) in ("1", "True", "true") else "нет"]
-                for c, v in enumerate(values, start=1):
-                    ws.cell(row=n + 2, column=c, value=v)
-                n += 1
-        finally:
-            src.close()
+    grid = sheets.grid("data", "users")
+    if grid:
+        head = [str(c or "").strip() for c in grid[0]]
+        idx = {h: i for i, h in enumerate(head)}
+        for raw in grid[1:]:
+            if not raw or not raw[idx.get("логин", 0)]:
+                continue
+            stored = str(raw[idx.get("пароль", 1)] or "")
+            pw = "123456" if stored == default_hash else "изменён"
+            role = str(raw[idx.get("роль", 3)] or "")
+            values = [raw[idx.get("логин", 0)], pw, raw[idx.get("фио", 2)],
+                      role, ROLE_RU.get(role, role), raw[idx.get("цех", 4)],
+                      raw[idx.get("ставка_час", 5)] or 0,
+                      "да" if str(raw[idx.get("активен", 6)]) in ("1", "True", "true") else "нет"]
+            for c, v in enumerate(values, start=1):
+                ws.cell(row=n + 2, column=c, value=v)
+            n += 1
     counts["сотрудники"] = n
 
 
 def _fill_rates_sheet(wb, counts: dict) -> None:
-    proc_path = DATA / "processes.xlsx"
     ws = _sheet(wb, "расценки", ["код", "операция", "расценка за шт", "порядок", "обязательная", "отключён"],
                 [12, 30, 15, 10, 13, 11])
     m = 0
-    if proc_path.exists():
-        src = load_workbook(proc_path, data_only=True)
-        try:
-            sheet = src["processes"] if "processes" in src.sheetnames else src[src.sheetnames[0]]
-            head = [str(c.value or "").strip() for c in sheet[1]]
-            idx = {h: i for i, h in enumerate(head)}
-            for raw in list(sheet.iter_rows(values_only=True))[1:]:
-                if not raw or not raw[idx.get("код", 0)]:
-                    continue
-                values = [raw[idx.get("код", 0)], raw[idx.get("название", 1)],
-                          raw[idx.get("тариф", 3)] or 0, raw[idx.get("порядок", 2)] or 0,
-                          "да" if str(raw[idx.get("обязательный", 5)]) in ("1", "True", "true") else "нет",
-                          # отключённый в цехе этап — колонки может не быть в старом processes.xlsx
-                          "да" if "отключён" in idx and str(raw[idx["отключён"]]) in ("1", "True", "true") else ""]
-                for c, v in enumerate(values, start=1):
-                    ws.cell(row=m + 2, column=c, value=v)
-                m += 1
-        finally:
-            src.close()
+    grid = sheets.grid("data", "processes")
+    if grid:
+        head = [str(c or "").strip() for c in grid[0]]
+        idx = {h: i for i, h in enumerate(head)}
+        for raw in grid[1:]:
+            if not raw or not raw[idx.get("код", 0)]:
+                continue
+            values = [raw[idx.get("код", 0)], raw[idx.get("название", 1)],
+                      raw[idx.get("тариф", 3)] or 0, raw[idx.get("порядок", 2)] or 0,
+                      "да" if str(raw[idx.get("обязательный", 5)]) in ("1", "True", "true") else "нет",
+                      # отключённый в цехе этап — колонки может не быть в старом processes.xlsx
+                      "да" if "отключён" in idx and str(raw[idx["отключён"]]) in ("1", "True", "true") else ""]
+            for c, v in enumerate(values, start=1):
+                ws.cell(row=m + 2, column=c, value=v)
+            m += 1
     counts["расценки"] = m
 
 
@@ -1055,9 +971,7 @@ def _export_to_excel(who: str = "") -> dict:
     if not (led.get("приход") or led.get("адрес") or led.get("отгрузки") or led.get("orders")):
         return {"приход": 0, "адрес": 0, "отгрузки": 0, "заказы": 0,
                 "сотрудники": 0, "расценки": 0}
-    p = source_path()
-    _backup(p)
-    wb = load_workbook(p, keep_vba=True)
+    wb = sheets.workbook(BOOK)
     counts = {"приход": 0, "адрес": 0, "отгрузки": 0, "заказы": 0, "сотрудники": 0, "расценки": 0}
     done = {"приход": set(), "адрес": set(), "отгрузки": set()}
     try:
@@ -1115,7 +1029,7 @@ def _export_to_excel(who: str = "") -> dict:
                     counts["ошибок"] = counts.get("ошибок", 0) + 1
         _write_orders_sheet(wb, led, counts)
         _write_staff_sheets(wb, counts)
-        _save_atomic(wb, p)
+        sheets.save(BOOK, wb)
     finally:
         wb.close()
     _CACHE["sig"] = None
@@ -1370,11 +1284,7 @@ def order_ship(order_id: int, name: str, qty: float, who: str = "",
 
 # ------------------------------------------------------------------ синхронизация
 def _version() -> str:
-    try:
-        st = source_path().stat()
-        file_part = f"{int(st.st_mtime)}-{int(st.st_size)}"
-    except OSError:
-        file_part = "0-0"
+    file_part = sheets.version(BOOK)
     try:
         led_part = str(int(LEDGER.stat().st_mtime)) if LEDGER.exists() else "0"
     except OSError:
@@ -1483,8 +1393,7 @@ def staff_rows(force: bool = False) -> list[dict]:
 
 def _read_staff_rows() -> list[dict]:
     try:
-        p = source_path()
-        wb = load_workbook(p, data_only=True, read_only=True)
+        wb = sheets.View(BOOK)
         try:
             if "сотрудники" not in wb.sheetnames:
                 return []
@@ -1548,8 +1457,7 @@ def brand() -> dict:
 def _read_brand() -> dict:
     out = {"название": "Швейный цех", "подзаголовок": "", "логотип": ""}
     try:
-        p = source_path()
-        wb = load_workbook(p, data_only=True, read_only=True)
+        wb = sheets.View(BOOK)
         try:
             if "настройки" not in wb.sheetnames:
                 return out
@@ -1574,9 +1482,7 @@ def save_brand(data: dict) -> dict:
 
 
 def _save_brand(data: dict) -> dict:
-    p = source_path()
-    _backup(p)
-    wb = load_workbook(p, keep_vba=True)
+    wb = sheets.workbook(BOOK)
     try:
         ensure_settings_sheet(wb)
         ws = wb["настройки"]
@@ -1587,7 +1493,7 @@ def _save_brand(data: dict) -> dict:
                 ws.cell(row=row, column=2, value=wanted.pop(key))
         for key, value in wanted.items():
             ws.append([key, value])
-        _save_atomic(wb, p)
+        sheets.save(BOOK, wb)
     finally:
         wb.close()
     _CACHE["sig"] = None
@@ -1761,6 +1667,37 @@ def full_xlsx() -> bytes:
     finally:
         con.close()
     wb.remove(wb.active)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def model_xlsx(cat=(), model=(), color=(), size=()) -> bytes:
+    """Все цвета и размеры выбранных моделей (фильтры как на Главной склада, по нескольку значений),
+    с нулевыми остатками. Пустой фильтр — без ограничения."""
+    import io
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+    want = {"категория": set(cat), "модель": set(model), "цвет": set(color), "размер": set(size)}
+    rows = [i for i in stock_items() if all(not v or i[k] in v for k, v in want.items())]
+    if not rows:
+        raise ValueError("По выбранным фильтрам товаров нет")
+    rows.sort(key=lambda i: (i["категория"], i["модель"], i["цвет"], _size_key(i["размер"])))
+    wb = Workbook()
+    ws = wb.active
+    ws.title = (", ".join(model or cat) or "Склад")[:31].replace("/", "-")
+    ws.append(["Полное наименование", "Категория", "Модель", "Цвет", "Размер", "Остаток", "Адрес"])
+    for c in ws[1]:
+        c.font = Font(bold=True)
+    for i in rows:
+        ws.append([i["наименование"], i["категория"], i["модель"], i["цвет"], i["размер"], i["остаток"], i["адрес"]])
+    ws.append([])
+    ws.append(["Итого", "", "", "", f"{len(rows)} поз.", round(sum(i["остаток"] for i in rows), 2)])
+    ws.cell(ws.max_row, 1).font = ws.cell(ws.max_row, 6).font = Font(bold=True)
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:G{len(rows) + 1}"
+    for col, w in zip("ABCDEFG", (44, 14, 18, 24, 10, 10, 16)):
+        ws.column_dimensions[col].width = w
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()

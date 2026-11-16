@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Анализ WB</title>
+<style>
+:root { --bg:#f6f6f4; --card:#fff; --text:#1d1d1f; --muted:#6e6e73; --line:#e5e5e2; --accent:#7b2cbf; --bar:#b388eb; }
+@media (prefers-color-scheme: dark) { :root { --bg:#151517; --card:#1f1f22; --text:#f2f2f2; --muted:#9a9aa0; --line:#2e2e33; --accent:#c49bff; --bar:#8a5cd6; } }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--text); font:15px/1.45 -apple-system, system-ui, sans-serif; }
+main { max-width:980px; margin:0 auto; padding:24px 16px 48px; }
+h1 { font-size:22px; margin:0 0 16px; }
+form { display:flex; gap:8px; }
+input { flex:1; min-width:0; padding:12px 14px; font-size:16px; border:1px solid var(--line); border-radius:10px; background:var(--card); color:var(--text); }
+button { padding:12px 18px; font-size:15px; border:0; border-radius:10px; background:var(--accent); color:#fff; cursor:pointer; }
+button:disabled { opacity:.6; cursor:wait; }
+.chips { display:flex; flex-wrap:wrap; gap:6px; margin:12px 0 0; }
+.chip { font-size:13px; padding:5px 10px; border:1px solid var(--line); border-radius:999px; background:var(--card); color:var(--text); cursor:pointer; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; margin-top:16px; }
+.head { display:flex; gap:16px; }
+.head img { width:96px; height:128px; object-fit:cover; border-radius:8px; background:var(--line); flex:none; }
+.head h2 { font-size:18px; margin:0 0 4px; }
+.muted { color:var(--muted); font-size:13px; }
+.stats { display:grid; grid-template-columns:repeat(3, 1fr); gap:12px; }
+.stat .big { font-size:24px; font-weight:600; margin:2px 0; }
+.err { color:#d33; margin-top:12px; }
+svg { width:100%; height:auto; display:block; }
+table { width:100%; border-collapse:collapse; font-size:14px; }
+td { padding:6px 0; border-top:1px solid var(--line); }
+td:last-child { text-align:right; }
+a { color:var(--accent); cursor:pointer; }
+@media (max-width:640px) { .stats { grid-template-columns:1fr; } .head img { width:72px; height:96px; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Анализ товара Wildberries</h1>
+  <form id="f"><input id="nm" inputmode="numeric" placeholder="Артикул WB, например 227657342" autofocus><button id="go">Анализ</button></form>
+  <div class="chips" id="hist"></div>
+  <div class="err" id="err"></div>
+  <div id="out"></div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const fmt = n => n.toLocaleString('ru-RU');
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+async function loadHist() {
+  const list = await fetch('/api/list').then(r => r.json());
+  $('#hist').innerHTML = list.map(t => `<button class="chip" data-nm="${t.nm}" title="${esc(t.name)}">${t.nm} · ${esc(t.name || '')}</button>`).join('');
+}
+$('#hist').onclick = e => { const nm = e.target.dataset.nm; if (nm) run(nm); };
+
+$('#f').onsubmit = e => { e.preventDefault(); run($('#nm').value.replace(/\D/g, '')); };
+
+async function run(nm) {
+  if (!nm) return;
+  $('#nm').value = nm; $('#err').textContent = ''; $('#go').disabled = true; $('#go').textContent = 'Считаю…';
+  try {
+    const r = await fetch('/api/track?nm=' + nm);
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error);
+    render(d); history.replaceState(null, '', '#' + nm); loadHist();
+  } catch (e) { $('#err').textContent = 'Ошибка: ' + e.message; }
+  finally { $('#go').disabled = false; $('#go').textContent = 'Анализ'; }
+}
+
+function chart(days) {
+  const all = Object.entries(days).slice(-366, -1); // без сегодняшнего неполного дня
+  if (!all.length) return '<p class="muted">Нет данных</p>';
+  const W = 900, H = 200, max = Math.max(1, ...all.map(x => x[1])), bw = W / all.length;
+  const bars = all.map(([d, c], i) => {
+    const h = c / max * (H - 30);
+    return `<rect x="${i * bw + 1}" y="${H - 20 - h}" width="${Math.max(1, bw - 2)}" height="${h}" fill="var(--bar)"><title>${d.slice(8)}.${d.slice(5, 7)}: ${c} отз. ≈ ${c * 10}–${c * 20} шт.</title></rect>`;
+  }).join('');
+  const labels = all.map(([d], i) => i % 15 === 0 ? `<text x="${i * bw}" y="${H - 4}" font-size="11" fill="var(--muted)">${d.slice(8)}.${d.slice(5, 7)}</text>` : '').join('');
+  return `<svg viewBox="0 0 ${W} ${H}">${bars}${labels}<text x="${W}" y="12" font-size="11" text-anchor="end" fill="var(--muted)">макс ${max} отз./день</text></svg>`;
+}
+
+function render(d) {
+  const per = d.periods.map(p => p.reviews == null
+    ? `<div class="stat"><div class="muted">${p.label}</div><div class="big">—</div><div class="muted">мало истории</div></div>`
+    : `<div class="stat"><div class="muted">${p.label} · ${p.reviews} отз.</div><div class="big">${fmt(p.sales[0])}–${fmt(p.sales[1])} шт</div><div class="muted">${fmt(p.revenue[0])}–${fmt(p.revenue[1])} ₽</div></div>`).join('');
+  const totalC = d.colors.reduce((a, c) => a + c[1], 0);
+  const colors = d.colors.map(([nm, c]) => `<tr><td>${nm == d.nm ? `<b>${nm}</b> (этот)` : `<a data-nm="${nm}">${nm}</a>`}</td><td>${Math.round(c / totalC * 100)}%</td></tr>`).join('');
+  const first = Object.keys(d.days)[0];
+  $('#out').innerHTML = `
+  <div class="card head">
+    <img src="${esc(d.photo)}" alt="">
+    <div><h2>${esc(d.name)}</h2>
+      <div class="muted">Продавец: ${esc(d.seller || '—')}${d.brand ? ' · ' + esc(d.brand) : ''}</div>
+      <div style="margin-top:8px">Цена ~<b>${fmt(Math.round(d.price))} ₽</b> · рейтинг ${esc(d.rating)} · ${fmt(d.feedbackCount || 0)} отзывов у карточки</div>
+      <div class="muted"><a href="https://www.wildberries.ru/catalog/${d.nm}/detail.aspx" target="_blank" rel="noopener">Открыть на WB ↗</a></div>
+    </div>
+  </div>
+  <div class="card"><div class="stats">${per}</div>
+    <p class="muted">Продажи ≈ отзывы × ${d.k[0]}–${d.k[1]} (отзыв оставляют ~5–10% покупателей), выручка = продажи × цена. Процент выкупа по открытым данным не узнать.</p></div>
+  <div class="card"><b>Отзывы по дням</b> <span class="muted">· история с ${first ? first.split('-').reverse().join('.') : '—'}, наведите на столбик</span>${chart(d.days)}</div>
+  <div class="card"><b>Цвета этой карточки</b> <span class="muted">· доля в последних отзывах</span><table>${colors}</table></div>`;
+  $('#out').querySelectorAll('a[data-nm]').forEach(a => a.onclick = () => run(a.dataset.nm));
+}
+
+loadHist();
+if (location.hash.length > 1) run(location.hash.slice(1));
+</script>
+</body>
+</html>

@@ -625,3 +625,29 @@ body.ux-dirty .ux-badge { opacity: 1; transform: none; }
   .cx-hero-actions .btn { flex: 1 1 auto; justify-content: center; }
   .cx-main { overflow-x: hidden; }
 }
+
+/* ---------- новый заказ: одна широкая колонка, состав заказа внизу ---------- */
+.cx-new { max-width: 1280px; }
+.cx-new > .cx-card { margin-bottom: 14px; }
+.cx-new .cx-formgrid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.cx-new .cx-gwrap { max-height: 62vh; }
+.cx-gstk { display: flex; flex-direction: column; align-items: center; gap: 1px; }
+.cx-gstk .cx-gtot { color: var(--ink-2); }
+.cx-glegend { font-size: 12px; color: var(--ink-3); }
+.cx-glegend b { color: var(--ink-2); }
+#cx-cart .cx-btn-row, #cx-cart #cx-submit { max-width: 420px; }
+@media (max-width: 1000px) {
+  .cx-new .cx-formgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 620px) {
+  .cx-new .cx-formgrid { grid-template-columns: 1fr; }
+  .cx-new .cx-field[style*="span 2"] { grid-column: auto !important; }
+  .cx-gtools { padding: 12px 12px 8px; }
+  .cx-gtools .input { max-width: none; flex: 1 1 100%; }
+  .cx-gtable .cx-gcolor { min-width: 96px; padding: 6px 8px 6px 12px; white-space: normal; }
+  .cx-gin { min-width: 44px; height: 40px; font-size: 16px; }  /* 16px — iPhone не приближает поле при вводе */
+  .cx-new .cx-gwrap { max-height: 70vh; }
+  .cx-gfoot { padding: 12px; }
+  .cx-gfoot .btn { flex: 1 1 auto; }
+  #cx-cart #cx-submit { max-width: none; }
+}
