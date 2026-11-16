@@ -1,5 +1,5 @@
 // Кэш оболочки приложения: позволяет открыть приложение без сети.
-const CACHE = 'v2-shell-v121';
+const CACHE = 'v2-shell-v123';
 const ASSETS = ['/', '/static/app.js?v=20261114a', '/static/style.css?v=20261114a', '/static/accounts.js?v=20261106f'];
 
 self.addEventListener('install', (e) => {

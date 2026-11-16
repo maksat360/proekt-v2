@@ -344,7 +344,7 @@
       const res = await fetch('/api/assistant', {
         method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ текст: text, разделы: sections().map((s) => ({ id: s.id, label: s.label })),
-          история: AS.hist.slice(-8) }),
+          история: AS.hist.slice(-8), подтверждение: AS.confirm || null }),
       });
       const data = (await res.json()).data || {};
       AS.hist.push({ role: 'user', content: text }, { role: 'assistant', content: data.ответ || '' });
@@ -359,7 +359,12 @@
       }
       AS.busy = false;
       speak(data.ответ || '', data.аудио || '');
-      if (data.открыть) go(data.открыть);
+      AS.confirm = data.подтвердить || null;  // ждём «да» — следующая фраза уйдёт с этим действием
+      if (data.скачать) location.href = data.скачать;  // файл скачивается, страница остаётся
+      if (data.фильтр && data.открыть === 'wh') {  // «покажи 477 на складе»: склад сразу с фильтром
+        if (window.assistStockFilter) window.assistStockFilter(data.фильтр);
+        else { try { sessionStorage.setItem('jv-filter', JSON.stringify(data.фильтр)); } catch (e) { /* без памяти */ } go('wh'); }
+      } else if (data.открыть) go(data.открыть);
     } catch (e) {
       typing(false);
       addMsg('bot', 'Связь прервалась, сэр. Попробуйте ещё раз.');

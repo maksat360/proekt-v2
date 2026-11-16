@@ -14,6 +14,16 @@ import assistant  # noqa: E402
 MENU = [{"id": "shop", "label": "Магазин"}, {"id": "orders", "label": "Мои заказы"}]
 
 
+def setUpModule():  # старый путь (шаблоны слов): агент ходит в облако, его проверяет test_assistant_agent
+    assistant.AGENT = False
+
+
+def tearDownModule():
+    assistant.AGENT = True
+
+
+
+
 def reply(obj):
     content = obj if isinstance(obj, str) else json.dumps(obj, ensure_ascii=False)
     body = json.dumps({"message": {"content": content}}).encode()

@@ -201,6 +201,7 @@ const NAV = [
   { id: 'users', label: 'Сотрудники', icon: 'users', roles: ['admin', 'manager'] },
   { id: 'ann', label: 'Объявления', icon: 'ann', roles: ['admin', 'manager', 'technologist', 'storekeeper', 'accountant', 'prod'] },
   { id: 'report', label: 'Отчёт', icon: 'report', roles: ['admin', 'manager', 'accountant'] },
+  { id: 'karta', label: 'Карта портала', icon: 'analytics', roles: ['admin'], href: '/karta' },  // только начальник
 ];
 
 const TITLES = {
@@ -405,6 +406,7 @@ function homeRoute(allowed) { return allowed.find((id) => id !== 'cex') || allow
 
 async function go(route, param) {
   if (route === 'cex') { location.href = '/cex/'; return; }
+  if (route === 'karta') { location.href = '/karta'; return; }
   if (STATE.me) {
     const allowed = visibleNav(STATE.me.роль).map((n) => n.id);
     if (route !== 'batch' && !allowed.includes(route)) {
@@ -3080,7 +3082,19 @@ function bindRev() {
 }
 
 // ---------- Главная: остатки с каскадными фильтрами ----------
+// Джарвис: «покажи 477 серый на складе» — ставим фильтры и открываем Главную склада
+function applyStockFilter(f) {
+  WH.ф = { ...WH.ф, cat: f.cat || [], model: f.model || [], color: f.color || [], size: f.size || [], only: false };
+  WH.tab = 'stock';
+  if (location.hash.startsWith('#/wh')) go('wh'); else location.hash = '#/wh';
+}
+window.assistStockFilter = applyStockFilter;
+
 async function whStock(meta) {
+  try {  // фильтр, оставленный Джарвисом с другой страницы (цеха)
+    const f = JSON.parse(sessionStorage.getItem('jv-filter') || 'null');
+    if (f) { sessionStorage.removeItem('jv-filter'); WH.ф = { ...WH.ф, cat: f.cat || [], model: f.model || [], color: f.color || [], size: f.size || [], only: false }; }
+  } catch (e) { /* без памяти */ }
   const q = '?только=' + (WH.ф.only ? '1' : '0');
   try {
     const res = await api('/api/wh/stock' + q);

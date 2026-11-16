@@ -236,6 +236,18 @@ def as_num(v, default=0.0) -> float:
         return default
 
 
+def render_karta() -> bytes:
+    """Карта портала: шаблон karta.html + справка.json — каждый раз свежая, как и ответы Джарвиса."""
+    data = json.loads((BASE / "справка.json").read_text(encoding="utf-8"))
+    page = (BASE / "karta.html").read_text(encoding="utf-8")
+    page = page.replace("__BACK__", '<a class="back" href="/">← В портал</a>').replace(
+        "__DATA__", json.dumps(data, ensure_ascii=False).replace("</", "<\\/"))
+    return ('<!doctype html><html lang="ru"><head><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">'
+            '<style>[hidden]{display:none!important}body{margin:0}</style></head><body>'
+            + page + "</body></html>").encode("utf-8")
+
+
 def month_key(day: str) -> str:
     m = re.match(r"(\d{2})\.(\d{2})\.(\d{4})", str(day))
     return f"{m.group(3)}-{m.group(2)}" if m else ""
@@ -872,6 +884,18 @@ class Handler(BaseHTTPRequestHandler):
             if path in ("/cex/items", "/cex/items/"):
                 self._static("cex/items.html")
                 return
+            if path in ("/karta", "/karta/"):  # карта портала — только начальнику, справка из справка.json
+                me = self._session()
+                if not me:
+                    self.send_response(302)
+                    self.send_header("Location", "/")
+                    self.end_headers()
+                    return
+                if str(me.get("роль")) != "admin":
+                    self._send("Карта портала — только для начальника".encode("utf-8"), "text/plain; charset=utf-8", 403)
+                    return
+                self._send(render_karta(), "text/html; charset=utf-8")
+                return
             if path in ("/ca", "/ca/"):  # как поставить сертификат на телефон (для https и микрофона)
                 self._static("ca.html")
                 return
@@ -940,96 +964,12 @@ class Handler(BaseHTTPRequestHandler):
         self._send(target.read_bytes(), ctype, extra={"Cache-Control": cache})
 
     def _assistant_tools(self, me: dict) -> dict:
-        """Инструменты Джарвиса — строго по правам сотрудника (как у кнопок на сайте)."""
-        import assistant
-        tools = {}
-
-        def capabilities():
-            return assistant.capabilities_summary(self._assistant_knowledge(me))
-
-        tools["capabilities"] = ("что может этот сотрудник: его доступы и возможности на портале",
-                                 {}, capabilities)
-        if can(me, "wh.view"):
-            def stock(запрос: str = ""):
-                import warehouse
-                return assistant.stock_summary(warehouse.stock_items(), str(запрос))
-
-            def wb_orders():
-                import wb_sync
-                return assistant.wb_summary(wb_sync.counts(), wb_sync.list_orders(None, None),
-                                            datetime.now().strftime("%Y-%m-%d"))
-
-            tools["stock"] = ("остатки готовой продукции на складе: сколько есть, чего больше или меньше всего, "
-                              "что закончилось; запрос — модель, цвет, размер или категория",
-                              {"запрос": {"type": "string", "description": "например «477 чёрный 46» или пусто — весь склад"}},
-                              stock)
-            tools["wb_orders"] = ("заказы Wildberries FBS: сколько всего, новых, сегодня, по кабинетам и что заказали", {},
-                                  wb_orders)
-        if can(me, "wb.manage"):
-            def wb_refresh():
-                import wb_sync
-                with WRITE_LOCK:  # как кнопка «Обновить из WB» — пишет заказы
-                    res = wb_sync.sync(actor=str(me.get("фио", "")))
-                err = "; ".join(str(e) for e in res.get("ошибки") or [])
-                return f"обновлено из WB: новых {res.get('создано', 0)}, изменено {res.get('обновлено', 0)}" + (
-                    f"; ошибки: {err}" if err else "")
-
-            tools["wb_refresh"] = ("обновить заказы из Wildberries по API (как кнопка «Обновить из WB» в «Заказы WB»)", {},
-                                   wb_refresh)
-        if can(me, "cex.view"):
-            def cex_status():
-                import cex_api
-                return assistant.cex_summary(cex_api.summary(me))
-
-            tools["cex_status"] = ("состояние цеха: сколько партий и заказов в пошиве, что ждёт по этапам, "
-                                   "недостачи кроя", {}, cex_status)
-        if can(me, "cex.work"):
-            def my_work():
-                import cex_api
-                return assistant.my_work_summary(cex_api.work_state(me, as_worker=True))
-
-            tools["my_work"] = ("моя работа в цехе: что у меня в работе, что можно взять, сколько я сдал сегодня",
-                                {}, my_work)
-        if can(me, "cex.pay") or can(me, "cex.work"):  # payroll_data сама режет «только своё» без права cex.pay
-            def salary():
-                import cex_api
-                return assistant.payroll_summary(cex_api.payroll_data(datetime.now().strftime("%Y-%m"), me))
-
-            tools["salary"] = ("зарплата за текущий месяц: своя; у бухгалтера и начальника — всего цеха",
-                               {}, salary)
-        if can(me, "orders.view"):
-            def shop_orders():
-                import warehouse
-                return assistant.shop_orders_summary(warehouse.orders())
-
-            tools["shop_orders"] = ("заказы магазина от клиентов: сколько новых, собрано, отменено, по клиентам",
-                                    {}, shop_orders)
-        elif can(me, "orders.create"):  # клиент и все, кто заказывает от себя, — только свои заказы
-            def my_orders():
-                import warehouse
-                return assistant.shop_orders_summary(warehouse.orders(author=str(me.get("фио") or "")), "ваших ")
-
-            tools["my_orders"] = ("мои заказы в магазине: статусы моих заказов", {}, my_orders)
-        if can(me, "staff.view"):
-            def staff():
-                import cex_api
-                people = cex_api.staff_people(str(me.get("цех") or ""))
-                for p in people:
-                    p["должность"] = perms.role_label(str(p.get("должность") or ""))
-                return assistant.staff_summary(people)
-
-            tools["staff"] = ("сотрудники: кто работает и в какой должности", {}, staff)
-        return tools
+        import jarvis_tools
+        return jarvis_tools.tools_for(me, can, WRITE_LOCK)
 
     def _assistant_knowledge(self, me: dict) -> list[str]:
-        """Что может этот сотрудник — из каталога прав (perms.CATALOG): ответы на «как…» и «где…»
-        только в рамках его доступов. Скрытый старый учёт партий не рассказываем."""
-        groups: dict[str, list[str]] = {}
-        for code, group, label, _roles in perms.CATALOG:
-            if group == "Старый учёт партий" or not can(me, code):
-                continue
-            groups.setdefault(group, []).append(label[0].lower() + label[1:])
-        return [f"{g}: {', '.join(items)}" for g, items in groups.items()]
+        import jarvis_tools
+        return jarvis_tools.knowledge_for(me, can)
 
     # -- api --------------------------------------------------------------
     def _api(self, method: str, path: str, query: dict):
@@ -1259,7 +1199,8 @@ class Handler(BaseHTTPRequestHandler):
             role = str(me.get("роль") or "")
             res = assistant.ask(str(me.get("фио") or ""), ROLE_LABELS.get(role, role),
                                 str(body.get("текст") or ""), body.get("разделы"), body.get("история"),
-                                self._assistant_tools(me), self._assistant_knowledge(me))
+                                self._assistant_tools(me), self._assistant_knowledge(me),
+                                body.get("подтверждение"))  # «да» на предложенное действие — права проверяются заново
             res["аудио"] = voice.clip_b64(str(res.get("клип") or "")) or voice.tts(res.get("ответ", ""))
             # клип из пакета (настоящий голос Джарвиса) важнее синтеза; цифры всегда синтезом
             self._json({"ok": True, "data": res})

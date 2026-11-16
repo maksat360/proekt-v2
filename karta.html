@@ -1,0 +1,160 @@
+<title>Карта портала SHARQ</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&family=Unbounded:wght@500;700&display=swap">
+<style>
+/* Layout: тетрадь закройщика — узлы-кластеры сеткой, путь заказа как ряд стежков, справка списком с поиском */
+:root {
+  --bg: #F3F4F7; --paper: #FFFFFF; --ink: #1B2333; --ink-2: #4A5468; --ink-3: #7A8396;
+  --line: #DDE1E9; --thread: #3346A8; --thread-soft: #E4E8FA; --chalk: #C2762E; --chalk-soft: #F7EADB; --on-thread: #FFFFFF;
+  --f-display: 'Unbounded', 'Arial Black', sans-serif; --f-body: 'Golos Text', -apple-system, 'Segoe UI', Arial, sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #11151D; --paper: #1A202B; --ink: #E8ECF4; --ink-2: #B4BCCB; --ink-3: #8790A2;
+  --line: #2C3442; --thread: #8FA0FF; --thread-soft: #232C4A; --chalk: #E6A462; --chalk-soft: #3A2C1E; --on-thread: #11151D; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #11151D; --paper: #1A202B; --ink: #E8ECF4; --ink-2: #B4BCCB; --ink-3: #8790A2;
+  --line: #2C3442; --thread: #8FA0FF; --thread-soft: #232C4A; --chalk: #E6A462; --chalk-soft: #3A2C1E; --on-thread: #11151D; color-scheme: dark }
+body { background: var(--bg); color: var(--ink); font-family: var(--f-body); font-size: 16px; line-height: 1.5; }
+.wrap { max-width: 1120px; margin: 0 auto; padding-block: 28px 64px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+h1, h2 { font-family: var(--f-display); letter-spacing: -.01em; text-wrap: balance; margin: 0; }
+h1 { font-size: clamp(26px, 4.4vw, 40px); font-weight: 700; }
+h2 { font-size: clamp(19px, 2.6vw, 24px); font-weight: 500; }
+.lead { color: var(--ink-2); max-width: 64ch; margin: 10px 0 0; }
+.tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 24px 0 18px; }
+.tab { border: 1px solid var(--line); background: var(--paper); color: var(--ink-2); font: 500 15px var(--f-body);
+  padding: 9px 16px; border-radius: 999px; cursor: pointer; }
+.tab[aria-selected="true"] { background: var(--thread); border-color: var(--thread); color: var(--on-thread); }
+.tab:focus-visible, .node:focus-visible, .step:focus-visible, .q summary:focus-visible { outline: 3px solid var(--chalk); outline-offset: 2px; }
+.panel { display: grid; gap: 16px; }
+/* карта */
+.map { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.node { text-align: left; background: var(--paper); border: 1.5px solid var(--line); border-radius: 14px; padding: 16px;
+  cursor: pointer; color: var(--ink); font: inherit; display: grid; gap: 6px; min-width: 0; }
+.node b { font-family: var(--f-display); font-weight: 500; font-size: 17px; }
+.node small { color: var(--ink-3); font-size: 13px; }
+.node.on { border-color: var(--thread); box-shadow: 0 0 0 3px var(--thread-soft); }
+.node.rel { border-style: dashed; border-color: var(--chalk); }
+.detail { background: var(--paper); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; }
+.detail p { margin: 6px 0 0; color: var(--ink-2); }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.chip { font-size: 13px; padding: 4px 10px; border-radius: 999px; background: var(--chalk-soft); color: var(--ink); border: 0; cursor: pointer; font-family: inherit; }
+.hint { color: var(--ink-3); font-size: 13px; }
+/* путь заказа: стежки */
+.path { display: grid; gap: 0; }
+.step { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 14px; text-align: left; background: none; border: 0;
+  padding: 0; color: var(--ink); font: inherit; cursor: pointer; }
+.step .dot { width: 34px; display: flex; flex-direction: column; align-items: center; }
+.step .dot i { width: 30px; height: 30px; border-radius: 50%; border: 2px solid var(--thread); display: grid; place-items: center;
+  font-style: normal; font-weight: 600; font-size: 14px; color: var(--thread); background: var(--paper); font-variant-numeric: tabular-nums; }
+.step .dot::after { content: ""; flex: 1; width: 0; border-left: 2px dashed var(--line); min-height: 18px; }
+.step:last-child .dot::after { display: none; }
+.step .body { padding: 3px 0 18px; min-width: 0; }
+.step .body b { font-size: 17px; }
+.step .who { color: var(--ink-3); font-size: 14px; }
+.step .more { display: none; margin-top: 8px; background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+.step.open .more { display: grid; gap: 6px; }
+.step.open .dot i { background: var(--thread); color: var(--on-thread); }
+.more .k { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-3); }
+.where { font-weight: 500; color: var(--thread); }
+/* справка */
+.search { width: 100%; box-sizing: border-box; font: 16px var(--f-body); padding: 12px 14px; border-radius: 12px;
+  border: 1.5px solid var(--line); background: var(--paper); color: var(--ink); }
+.search:focus { outline: none; border-color: var(--thread); box-shadow: 0 0 0 3px var(--thread-soft); }
+.filters { display: flex; gap: 6px; flex-wrap: wrap; }
+.qs { display: grid; gap: 8px; }
+.q { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; }
+.q summary { cursor: pointer; padding: 13px 16px; font-weight: 500; list-style: none; display: flex; gap: 10px; align-items: baseline; }
+.q summary::-webkit-details-marker { display: none; }
+.q summary::before { content: "+"; color: var(--chalk); font-weight: 700; width: 12px; flex: none; }
+.q[open] summary::before { content: "–"; }
+.q .a { padding: 0 16px 14px 38px; color: var(--ink-2); }
+.tag { font-size: 12px; color: var(--ink-3); margin-left: auto; white-space: nowrap; }
+.empty { color: var(--ink-3); padding: 12px 0; }
+.back { display: inline-block; margin-bottom: 14px; color: var(--thread); text-decoration: none; font-weight: 500; }
+.foot { margin-top: 32px; color: var(--ink-3); font-size: 13px; max-width: 70ch; }
+@media (max-width: 760px) { .map { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 440px) { .map { grid-template-columns: 1fr; } .tag { display: none; } }
+@media (prefers-reduced-motion: no-preference) { .node, .tab { transition: border-color .15s, box-shadow .15s, background .15s; } }
+</style>
+
+<div class="wrap">
+  __BACK__
+  <h1>Карта портала SHARQ</h1>
+  <p class="lead">Как связаны разделы, как заказ проходит по цеху от идеи до склада и что делать, если что-то не получается. Тот же текст знает Джарвис — можно спросить его голосом.</p>
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" id="t-map" data-v="map">Разделы и связи</button>
+    <button class="tab" role="tab" id="t-path" data-v="path">Путь заказа</button>
+    <button class="tab" role="tab" id="t-faq" data-v="faq">Почему не получается</button>
+  </div>
+  <section class="panel" id="v-map" role="tabpanel">
+    <div class="map" id="map"></div>
+    <div class="detail" id="detail"></div>
+  </section>
+  <section class="panel" id="v-path" role="tabpanel" hidden>
+    <p class="hint">Нажмите на шаг — откроется, кто делает, где кнопка и что нужно, чтобы шаг прошёл.</p>
+    <div class="path" id="path"></div>
+  </section>
+  <section class="panel" id="v-faq" role="tabpanel" hidden>
+    <label class="hint" for="q">Напишите своими словами: «снабженец не может подтвердить», «нет модели», «карман»</label>
+    <input class="search" id="q" type="search" placeholder="Поиск по вопросам" autocomplete="off">
+    <div class="filters" id="filters"></div>
+    <div class="qs" id="qs"></div>
+  </section>
+  <p class="foot" id="foot"></p>
+</div>
+
+<script id="data" type="application/json">__DATA__</script>
+<script>
+const D = JSON.parse(document.getElementById('data').textContent);
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const byId = Object.fromEntries(D.кластеры.map((c) => [c.id, c]));
+let sel = 'cex', flt = '';
+
+function drawMap() {
+  const cur = byId[sel];
+  $('#map').innerHTML = D.кластеры.map((c) => `<button class="node ${c.id === sel ? 'on' : cur.связи.includes(c.id) ? 'rel' : ''}" data-id="${c.id}">
+    <b>${esc(c.название)}</b><small>${esc(c.кто)}</small></button>`).join('');
+  const qs = D.вопросы.filter((q) => q.кластер === sel);
+  $('#detail').innerHTML = `<h2>${esc(cur.название)}</h2><p>${esc(cur.что)}</p>
+    <div class="chips">${cur.связи.map((r) => `<button class="chip" data-id="${r}">связан с: ${esc(byId[r].название)}</button>`).join('')}</div>
+    ${qs.length ? `<p class="hint" style="margin-top:12px">Частые вопросы: ${qs.slice(0, 3).map((q) => esc(q.вопрос)).join(' · ')}</p>` : ''}`;
+}
+function drawPath() {
+  $('#path').innerHTML = D.путь_заказа.map((s, i) => `<button class="step" aria-expanded="false">
+    <span class="dot"><i>${i + 1}</i></span>
+    <span class="body"><b>${esc(s.шаг)}</b><br><span class="who">${esc(s.кто)}</span>
+      <span class="more"><span class="k">Где</span><span class="where">${esc(s.где)}</span>
+        <span class="k">Что делает</span><span>${esc(s.что)}</span>
+        <span class="k">Чтобы шаг прошёл</span><span>${esc(s.нужно)}</span></span></span></button>`).join('');
+}
+const norm = (t) => String(t).toLowerCase().replace(/ё/g, 'е');
+function drawFaq() {
+  $('#filters').innerHTML = [['', 'Все']].concat(D.кластеры.map((c) => [c.id, c.название]))
+    .map(([id, l]) => `<button class="tab" data-f="${id}" aria-selected="${flt === id}">${esc(l)}</button>`).join('');
+  const words = norm($('#q').value).split(/\s+/).filter((w) => w.length > 2);
+  const list = D.вопросы.filter((q) => (!flt || q.кластер === flt) && words.every((w) => {
+    const hay = norm(q.вопрос + ' ' + q.ответ + ' ' + q.слова.join(' '));
+    return hay.includes(w) || hay.includes(w.slice(0, 5));
+  }));
+  $('#qs').innerHTML = list.map((q) => `<details class="q"><summary>${esc(q.вопрос)}<span class="tag">${esc(byId[q.кластер].название)}</span></summary>
+    <div class="a">${esc(q.ответ)}</div></details>`).join('') || '<div class="empty">Ничего не нашлось. Спросите Джарвиса или напишите иначе.</div>';
+}
+function show(v) {
+  ['map', 'path', 'faq'].forEach((x) => { $('#v-' + x).hidden = x !== v; $('#t-' + x).setAttribute('aria-selected', x === v); });
+  if (location.hash.slice(1) !== v) history.replaceState(null, '', '#' + v);
+}
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('[data-v]'); if (t) return show(t.dataset.v);
+  const n = e.target.closest('[data-id]'); if (n) { sel = n.dataset.id; return drawMap(); }
+  const f = e.target.closest('[data-f]'); if (f) { flt = f.dataset.f; return drawFaq(); }
+  const s = e.target.closest('.step'); if (s) { s.classList.toggle('open'); s.setAttribute('aria-expanded', s.classList.contains('open')); }
+});
+$('#q').addEventListener('input', drawFaq);
+$('#foot').textContent = `${D.кластеры.length} разделов · ${D.путь_заказа.length} шагов заказа · ${D.вопросы.length} вопросов. Справка обновляется вместе с порталом.`;
+drawMap(); drawPath(); drawFaq();
+show(['map', 'path', 'faq'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'map');
+addEventListener('hashchange', () => { const h = location.hash.slice(1); if (['map', 'path', 'faq'].includes(h)) show(h); });
+</script>
