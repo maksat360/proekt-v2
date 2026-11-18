@@ -303,6 +303,37 @@ def sync(cabinet_id: str | None = None, actor: str = "wb-api") -> dict:
     return result
 
 
+# Комплекты: одна карточка WB = несколько штук со склада. Артикул WB → цвета той же модели и того же размера.
+# Заказ «264-ч-ф-ссм» 52 размера списывает фуме 52, чёрный 52 и гримеланж 52.
+KITS = {"264-ч-ф-ссм": ("фуме", "чёрный", "гримеланж")}
+
+
+def _kit(con, title: str | None, product_id: str | None) -> list[str] | None:
+    """product_id составляющих комплекта (по артикулу заказа и размеру сопоставленного товара) или None."""
+    colors = KITS.get(str(title or "").strip().lower())
+    if not colors or not product_id:
+        return None
+    row = con.execute("SELECT name FROM products WHERE id=?", (product_id,)).fetchone()
+    parts = str(row["name"] if row else "").split("/")
+    if len(parts) != 4:
+        return None
+    ids = []
+    for c in colors:
+        name = "/".join([parts[0], parts[1], c, parts[3]])
+        r = con.execute("SELECT id FROM products WHERE lower(name)=lower(?)", (name,)).fetchone()
+        if not r:
+            return None  # составляющей нет в каталоге — списываем как обычный товар
+        ids.append(r["id"])
+    return ids
+
+
+def _have(con, fn, title, product_id) -> float:
+    """Остаток для заказа: у комплекта — по самой маленькой составляющей.
+    shortcut: резерв собранных комплектов не вычитается из составляющих, пока комплектов мало."""
+    kit = _kit(con, title, product_id)
+    return min(fn(con, k) for k in kit) if kit else fn(con, product_id)
+
+
 def _stock_sql(con, product_id: str | None) -> float:
     """Остаток товара по данным SQL: размещено минус отгружено."""
     if not product_id:
@@ -343,7 +374,7 @@ def pickable() -> list[dict]:
         for r in rows:
             name = r["product_name"] or ""
             # собранный заказ уже держит свою единицу в резерве — ему показываем полный остаток
-            have = (_stock_sql if r["status"] == "picking" else _free_sql)(con, r["product_id"])
+            have = _have(con, _stock_sql if r["status"] == "picking" else _free_sql, r["title"], r["product_id"])
             out.append({
                 "id": r["id"],
                 "external_id": r["external_id"],
@@ -370,25 +401,29 @@ def _deduct(con, order_id: str, actor: str = "", subs: dict | None = None,
     subs: {id позиции WB: product_id} — отправлен другой товар (замена), списываем его.
     ts — время списания (день поставки), по умолчанию сейчас."""
     items = con.execute(
-        "SELECT id, external_id, product_id, shipped FROM order_items WHERE order_id=?",
+        "SELECT id, external_id, product_id, title, shipped FROM order_items WHERE order_id=?",
         (order_id,)).fetchall()
     done = 0
     for it in items:
         if only is not None and str(it["external_id"]) not in only:
             continue  # позицию не подтверждали — не списываем
-        pid = (subs or {}).get(str(it["external_id"])) or it["product_id"]
+        sub = (subs or {}).get(str(it["external_id"]))
+        pid = sub or it["product_id"]
         if not pid:
             continue
         ext = f"fbs:{it['external_id'] or it['id']}"
-        exists = con.execute("SELECT 1 FROM shipments WHERE external_uuid=?", (ext,)).fetchone()
-        if exists:
+        kit = None if sub else _kit(con, it["title"], pid)
+        # комплект — по штуке каждой составляющей: fbs:<id>:1, :2, :3
+        lines = [(f"{ext}:{n}", k) for n, k in enumerate(kit, 1)] if kit else [(ext, pid)]
+        if con.execute("SELECT 1 FROM shipments WHERE external_uuid=?", (lines[0][0],)).fetchone():
             continue
-        con.execute(
-            """INSERT INTO shipments(id, ts, target, product_id, qty, order_ref, user,
-                    external_uuid, source_sheet)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
-            (_id("sh", ext), ts or _now(), "WB", pid, 1, order_id,
-             actor or "склад", ext, "FBS"))
+        for e, k in lines:
+            con.execute(
+                """INSERT INTO shipments(id, ts, target, product_id, qty, order_ref, user,
+                        external_uuid, source_sheet)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (_id("sh", e), ts or _now(), "WB", k, 1, order_id,
+                 actor or "склад", e, "FBS"))
         con.execute("UPDATE order_items SET shipped=1 WHERE id=?", (it["id"],))
         done += 1
     return done
@@ -399,7 +434,7 @@ def pick(order_id: str, actor: str = "") -> dict:
     con = sqldb.connect()
     try:
         row = con.execute(
-            """SELECT o.id, o.status, i.product_id, p.name AS product_name
+            """SELECT o.id, o.status, i.product_id, i.title, p.name AS product_name
                FROM orders o JOIN order_items i ON i.order_id = o.id
                LEFT JOIN products p ON p.id = i.product_id
                WHERE o.id = ? AND o.type='fbs'""", (order_id,)).fetchone()
@@ -412,7 +447,7 @@ def pick(order_id: str, actor: str = "") -> dict:
         warn = ""
         if not row["product_id"]:
             warn = "товар не сопоставлен с каталогом"
-        elif _free_sql(con, row["product_id"]) < 1:
+        elif _have(con, _free_sql, row["title"], row["product_id"]) < 1:
             warn = f"нет в наличии: {row['product_name']} — отправим на сборку без остатка"
         con.execute("BEGIN IMMEDIATE")
         try:
@@ -492,6 +527,20 @@ def list_orders(status: str | None = None, cabinet_id: str | None = None,
         con.close()
 
 
+def _route_addr(names: list[str]) -> dict:
+    """Наименование → {адрес, маршрут}: первое место по маршруту обхода (P → N, стеллаж → этаж → ячейка)
+    и его номер в обходе. Без адреса — в конец. shortcut: у комплекта адрес только первой составляющей."""
+    try:
+        import addresses
+        wm = addresses.where_map()
+    except Exception:  # noqa: BLE001 — без адресного хранения сборка работает как раньше
+        return {}
+    key = lambda a: addresses.route_key(a.split("@")[-1])  # коробка «K-0016@P1-3-08» — по её ячейке
+    first = {n: min(wm[n], key=key) for n in set(names) if wm.get(n)}
+    rank = {a: i for i, a in enumerate(sorted(set(first.values()), key=key))}
+    return {n: {"адрес": a, "маршрут": rank[a]} for n, a in first.items()}
+
+
 def aggregate_order(cabinet_id: str | None = None) -> dict | None:
     """Новые FBS-позиции кабинета как ОДИН заказ — для массовой сборки сканером.
     Каждый кабинет собирается отдельно: у него своя поставка в WB."""
@@ -508,6 +557,7 @@ def aggregate_order(cabinet_id: str | None = None) -> dict | None:
                ORDER BY o.ts""", args).fetchall()
         if not rows:
             return None
+        addr = _route_addr([r["product_name"] for r in rows if r["product_name"]])
         positions = [{
             "наименование": r["product_name"] or (r["title"] or r["external_sku"] or "—"),
             "количество": 1,
@@ -517,6 +567,7 @@ def aggregate_order(cabinet_id: str | None = None) -> dict | None:
             "item_id": r["wb_item"] or r["item_id"],
             "кабинет": r["cabinet_id"],
             "номер_wb": r["wb_order"],
+            **addr.get(r["product_name"] or "", {"адрес": "", "маршрут": 10**6}),
         } for r in rows]
         name = next((c["name"] for c in cabinets_store.cabinets() if c["id"] == cabinet_id), cabinet_id)
         return {
@@ -767,11 +818,12 @@ def supply_lines(day: str, cabinet_id: str = "", names: dict | None = None) -> l
         con.close()
     out = []
     for r in rows:
-        it = items.get(r["external_uuid"])
+        ext = str(r["external_uuid"]).split(":")
+        it = items.get(":".join(ext[:2]))  # у комплекта — fbs:<задание>:<штука>
         out.append({
             "кабинет": names.get(r["cabinet_id"], r["cabinet_id"]),
             "заказ": str(r["order_ext"] or ""),
-            "задание": str(r["external_uuid"]).removeprefix("fbs:"),
+            "задание": ext[1] if len(ext) > 1 else "",
             "отправлено": r["sent_name"] or r["product_id"],
             "заказано": (it["ordered_name"] or it["title"] or "") if it else "",
             "кол-во": float(r["qty"] or 0),

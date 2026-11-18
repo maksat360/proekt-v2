@@ -47,6 +47,25 @@ class BossReportTests(unittest.TestCase):
         self.assertEqual(s["остаток"], 11)
         hoodie = next(c for c in s["категории"] if c["категория"] == "Худи")
         self.assertEqual((hoodie["штук"], hoodie["остаток"]), (0, 4))
+        # ревизия — не поставка; «АЛТЫН» (отгрузка с портала) — тот же ИП Алтын
+        con.execute("INSERT INTO shipments(id, ts, target, product_id, qty) VALUES ('r1', '2026-11-12', 'РЕВИЗИЯ', 'p1', 5)")
+        con.execute("INSERT INTO shipments(id, ts, target, product_id, qty) VALUES ('a1', '2026-11-04', 'АЛТЫН', 'p3', 2)")
+        r = boss_report.build(con, stock)
+        self.assertEqual([(x["неделя"], x["ип"], x["итог"]) for x in r["поставки"]][-1], ("2026-11-02", "Алтын", 3))
+        self.assertEqual(r["продажи"]["всего"], 22)
+        import io
+        from openpyxl import load_workbook
+        wb = load_workbook(io.BytesIO(boss_report.supply_xlsx(["2026-11-09"], ["ЖСК", "Садык"], con, stock)))
+        self.assertEqual(wb.sheetnames, ["Поставки по неделям", "По товарам", "Каждая отгрузка"])
+        t = [list(r) for r in wb["Поставки по неделям"].iter_rows(values_only=True)]
+        # как на сайте: неделя, ИП / покупатель, категории столбцами, итог; внизу «Всего» и остаток
+        self.assertEqual(t[0], ["Неделя", "ИП / покупатель", "Брюки", "Постель", "Худи", "Итог"])
+        self.assertEqual(t[1], ["9–15 нояб.", "ЖСК", 3, 3, None, 6])
+        self.assertEqual(t[2], ["9–15 нояб.", "Садык · покупатель", 9, None, None, 9])
+        self.assertEqual(t[3], ["Всего", None, 12, 3, None, 15])
+        self.assertEqual(t[4], ["Остаток на складе", None, 7, 0, 4, 11])
+        with self.assertRaises(ValueError):
+            boss_report.supply_xlsx(["2020-01-06"], [], con, stock)
 
 
 if __name__ == "__main__":

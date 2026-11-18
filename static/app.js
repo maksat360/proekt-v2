@@ -190,7 +190,7 @@ const NAV = [
   { id: 'batches', label: 'Партии', icon: 'batches', roles: ['admin', 'manager', 'technologist', 'storekeeper', 'accountant', 'prod'] },
   { id: 'cex', label: 'Цех', icon: 'tasks', roles: ['admin', 'manager', 'technologist', 'cutter', 'packer', 'prod', 'accountant', 'storekeeper', 'designer', 'supply'], href: '/cex/' },
   { id: 'orders', label: 'Мои заказы', icon: 'receipt', roles: ['*'], cap: 'orders.create' },
-  { id: 'fbs', label: 'Заказы WB', icon: 'receipt', roles: ['admin', 'manager', 'storekeeper'] },
+  { id: 'fbs', label: 'Заказы WB', short: 'WB', icon: 'receipt', roles: ['admin', 'manager', 'storekeeper'] },
   { id: 'wh', label: 'Склад', icon: 'wh', roles: ['admin', 'manager', 'storekeeper', 'accountant', 'technologist', 'prod'], cap: 'wh.view' },
   { id: 'materials', label: 'Материалы', icon: 'materials', roles: ['admin', 'manager', 'storekeeper', 'accountant', 'technologist'] },
   { id: 'finished', label: 'Готовая продукция', icon: 'finished', roles: ['admin', 'manager', 'storekeeper', 'accountant'] },
@@ -211,29 +211,20 @@ const TITLES = {
   shop: 'Магазин', sales: 'Продажи', wh: 'Склад', orders: 'Мои заказы', fbs: 'Заказы WB',
 };
 
+// на телефоне в нижней панели 4 места: ежедневная работа — первой, остальное в «Ещё»
+const TAB_FIRST = ['dash', 'tasks', 'wh', 'fbs'];
+
 function tabbarHtml(nav, active) {
+  const rank = (n) => { const i = TAB_FIRST.indexOf(n.id); return i < 0 ? 99 : i; };
+  nav = nav.map((n, i) => [n, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map((x) => x[0]);
   const primary = nav.slice(0, 4);
   const rest = nav.slice(4);
+  STATE.navRest = rest;  // эти разделы на телефоне — ещё и кнопками на главной, чтобы не прятались
   const item = (n) => `<a href="${n.href || '#/' + n.id}" class="tabbtn ${n.id === active ? 'on' : ''}" data-tab="${n.id}">
       <svg viewBox="0 0 16 16" stroke-linecap="round" stroke-linejoin="round">${ICONS[n.icon]}</svg>
-      <span>${n.label}</span></a>`;
-  return `<nav class="tabbar" id="tabbar">
-    ${primary.map(item).join('')}
-    ${rest.length ? `<button type="button" class="tabbtn" id="tab-more">
-      <svg viewBox="0 0 16 16" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="3.4" cy="8" r="1.3"/><circle cx="8" cy="8" r="1.3"/><circle cx="12.6" cy="8" r="1.3"/>
-      </svg><span>Ещё</span></button>` : ''}
-  </nav>
-  ${rest.length ? `<div class="sheet-wrap" id="sheet-more" hidden>
-    <div class="sheet-scrim" data-sheet-close></div>
-    <div class="sheet">
-      <div class="sheet-grab"></div>
-      ${rest.map((n) => `<a class="sheet-row" href="${n.href || '#/' + n.id}">
-        <svg viewBox="0 0 16 16" stroke-linecap="round" stroke-linejoin="round">${ICONS[n.icon]}</svg>
-        <span>${n.label}</span></a>`).join('')}
-      <button class="sheet-row danger" id="sheet-logout">Выйти из аккаунта</button>
-    </div>
-  </div>` : ''}`;
+      <span>${n.short || n.label}</span></a>`;
+  // «Ещё» нет: остальные разделы — кнопками на главной, выход — в меню под именем вверху
+  return `<nav class="tabbar" id="tabbar">${primary.map(item).join('')}</nav>`;
 }
 
 function bindTabbar() {
@@ -516,6 +507,8 @@ PAGES.dash = async () => {
         <div class="sub">${new Date().toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' })} · ${esc(STATE.company['название'])}</div>
       </div>
     </div>
+    ${(STATE.navRest || []).length ? `<div class="quick-links">${STATE.navRest.map((n) => `<a class="quick-link" href="${n.href || '#/' + n.id}">
+      <svg viewBox="0 0 16 16" stroke-linecap="round" stroke-linejoin="round">${ICONS[n.icon]}</svg><span>${n.label}</span></a>`).join('')}</div>` : ''}
     <div class="kpis">${kpis}</div>
     <div class="split">
       <div class="card">
@@ -724,12 +717,32 @@ function renderWbAn() {
 
 
 // отчёты начальника (бывшие листы «отчет» и «Дашборд» книги цеха)
+document.addEventListener('change', (e) => {  // фильтры «Поставки по неделям» — перерисовать только эту карточку
+  const sel = e.target.closest && e.target.closest('[data-supf]');
+  if (!sel || !window.SUPPLY_R) return;
+  window.SUPPLY_F[sel.dataset.supf] = sel.value;
+  const t = document.createElement('div');
+  t.innerHTML = bossReport(window.SUPPLY_R);
+  const card = document.getElementById('supply-card');
+  if (card) card.replaceWith(t.querySelector('#supply-card'));
+});
 function bossReport(r) {
   const sales = r['продажи'] || {};
   const left = Object.fromEntries((sales['категории'] || []).map((c) => [c['категория'], num(c['остаток'])]));
   // колонки: что отгружали на ИП, плюс категории, которые только лежат на складе
   const cats = [...(r['категории'] || []), ...Object.keys(left).filter((c) => left[c] && !(r['категории'] || []).includes(c))];
-  const rows = r['поставки'] || [];
+  const all = r['поставки'] || [];
+  // фильтры: неделя и ИП / покупатель (пусто — все); «Скачать Excel» берёт те же фильтры
+  const SF = (window.SUPPLY_F = window.SUPPLY_F || { wk: '', ip: '' });
+  const rows = all.filter((x) => (!SF.wk || x['неделя'] === SF.wk)
+    && (!SF.ip || (SF.ip === '*ип' ? !x['покупатель'] : SF.ip === '*пок' ? x['покупатель'] : x['ип'] === SF.ip)));
+  const wks = [...new Set(all.map((x) => x['неделя']))];
+  const ips = [...new Set(all.map((x) => x['ип']))].sort((a, b) => a.localeCompare(b, 'ru'));
+  const xq = new URLSearchParams();
+  if (SF.wk) xq.append('неделя', SF.wk);
+  (SF.ip === '*ип' ? ips.filter((i) => all.some((x) => x['ип'] === i && !x['покупатель']))
+    : SF.ip === '*пок' ? ips.filter((i) => all.some((x) => x['ип'] === i && x['покупатель'])) : SF.ip ? [SF.ip] : [])
+    .forEach((i) => xq.append('ип', i));
   const sum = (c) => rows.reduce((t, x) => t + num((x['по_категориям'] || {})[c]), 0);
   // неделя понедельник–воскресенье: «9–15 нояб.», текущая помечена
   const week = (iso) => {
@@ -740,9 +753,19 @@ function bossReport(r) {
     const now = new Date();
     return now >= a && now < new Date(b.getTime() + 864e5) ? `<b>${txt}</b> <span class="muted">· эта неделя</span>` : txt;
   };
+  window.SUPPLY_R = r;
   return `
-    <div class="card">
+    <div class="card" id="supply-card">
       <div class="card-h"><h3>Поставки по неделям</h3><div class="spacer"></div><span class="hint">штук на каждый ИП и покупателям (заказы сотрудников), неделя пн–вс</span></div>
+      <div class="card-b btn-row" style="padding-bottom:0">
+        <select class="input" data-supf="wk" style="max-width:220px"><option value="">Все недели</option>
+          ${wks.map((w) => `<option value="${esc(w)}" ${SF.wk === w ? 'selected' : ''}>${week(w).replace(/<[^>]+>/g, '')}</option>`).join('')}</select>
+        <select class="input" data-supf="ip" style="max-width:220px"><option value="">Все ИП и покупатели</option>
+          <option value="*ип" ${SF.ip === '*ип' ? 'selected' : ''}>Только ИП</option>
+          <option value="*пок" ${SF.ip === '*пок' ? 'selected' : ''}>Только покупатели</option>
+          ${ips.map((i) => `<option value="${esc(i)}" ${SF.ip === i ? 'selected' : ''}>${esc(i)}</option>`).join('')}</select>
+        <a class="btn sm" href="/api/dashboard/supply.xlsx?${xq}" download>Скачать Excel</a>
+      </div>
       <div class="card-b tight tablescroll">
         <table class="resp">
           <thead><tr><th>Неделя</th><th>ИП / покупатель</th>${cats.map((c) => `<th class="num">${esc(c)}</th>`).join('')}<th class="num">Итог</th></tr></thead>
@@ -1606,6 +1629,7 @@ function shopFiltered() {  // карточки: [{key, items:[размеры]}]
     g.items.sort(sizeSort);
     if (f.размер && !g.items.some((it) => String(it['размер']) === f.размер)) return false;
     if (f.только && !g.items.some((it) => stockOf(it) > 0)) return false;
+    if (f.безфото && shopPhotos(g.items).list.length) return false;  // найти карточки, которым нужно фото
     return true;
   });
 }
@@ -1836,6 +1860,7 @@ PAGES.shop = async () => {
       </div>
       <div class="btn-row" style="margin-top:10px">
         <label class="checkline"><input type="checkbox" id="shop-only" ${SHOP.ф.только ? 'checked' : ''}> только в наличии</label>
+        ${STATE.caps['shop.price'] ? `<label class="checkline"><input type="checkbox" id="shop-nophoto" ${SHOP.ф.безфото ? 'checked' : ''}> без фото</label>` : ''}
         <span class="hint" id="shop-count" style="margin-left:auto"></span>
       </div>
     </div>
@@ -2111,6 +2136,8 @@ function bindShop() {
   if (fsize) fsize.addEventListener('change', () => { SHOP.ф.размер = fsize.value; refreshShopGrid(); });
   const only = $('#shop-only');
   if (only) only.addEventListener('change', () => { SHOP.ф.только = only.checked; refreshShopGrid(); });
+  const nophoto = $('#shop-nophoto');
+  if (nophoto) nophoto.addEventListener('change', () => { SHOP.ф.безфото = nophoto.checked; refreshShopGrid(); });
 
   const fab = $('#cart-fab');
   if (fab) fab.addEventListener('click', openCart);
@@ -2330,7 +2357,7 @@ PAGES.fbs = async () => {
   const pulled = (await api('/api/fbs/pulled' + (cab ? '?кабинет=' + encodeURIComponent(cab) : '')).catch(() => ({ data: [] }))).data || [];
 
   return `
-    <div class="hero">
+    <div class="hero fbs-hero">
       <div><h1>Заказы Wildberries</h1>
         <div class="sub">FBS${cab ? ' · ' + esc(FBSPAGE.names[cab] || cab) : ''} · ${nf(counts['всего'])} заказов · новые ${nf(st['new'] || 0)}</div>
         <div class="hint">Заказы берутся из раздела «Новые» кабинета WB, сопоставление — по артикулу продавца</div></div>
@@ -2339,17 +2366,43 @@ PAGES.fbs = async () => {
       </div>
     </div>
     <div class="card"><div class="card-b" style="padding-top:12px">
-      <div class="tabs" style="margin:0 0 8px;flex-wrap:wrap" aria-label="Кабинет">
+      <div class="tabs" style="margin:0 0 8px" aria-label="Кабинет">
         <button class="tab ${cab ? '' : 'on'}" data-fbs="cab" data-v="">Все кабинеты</button>
         ${cabs.map((c) => `<button class="tab ${cab === c.id ? 'on' : ''}" data-fbs="cab" data-v="${esc(c.id)}">${esc(c.name)}${(byCab[c.id] || {}).новых ? ' · ' + byCab[c.id].новых + ' нов.' : ''}</button>`).join('')}
       </div>
-      <div class="tabs" style="margin:0;flex-wrap:wrap">
+      <div class="tabs" style="margin:0">
         ${statuses.map(([v, l]) => `<button class="tab ${status === v ? 'on' : ''}" data-fbs="filter" data-v="${v}">${l}${st[v] ? ' · ' + st[v] : ''}</button>`).join('')}
       </div>
     </div></div>
     ${fbsPulledHtml(pulled, canManage)}
     <div id="fbs-list">${fbsListHtml(rows, canManage)}</div>
-    ${fbsSuppliesHtml(res['поставки'] || [])}`;
+    ${fbsSuppliesHtml(res['поставки'] || [])}
+    ${canManage ? `      <details class="card" id="cabinets-card">
+        <summary class="card-h" style="cursor:pointer"><h3>Кабинеты и ключи WB</h3><div class="spacer"></div>
+          <span class="hint">ключи хранятся только на этом Mac</span></summary>
+        <div class="card-b" id="cab-list"><span class="muted">загружаю…</span></div>
+        <div class="card-b" id="cab-form" style="border-top:1px solid var(--line-2)">
+          <div class="hint" style="margin-bottom:8px">
+            Нажмите «Вставить токен» у нужного кабинета — поля заполнятся сами.
+          </div>
+          <div class="grid2">
+            <div class="field"><label>Название кабинета</label>
+              <input class="input" id="cab-name" placeholder="например ЖСК"></div>
+            <div class="field"><label>Код <span class="muted">(внутренний, латиницей)</span></label>
+              <input class="input" id="cab-id" placeholder="заполнится сам" autocomplete="off">
+              <div class="hint" id="cab-id-hint">Нужен только внутри системы, к WB отношения не имеет.</div></div>
+            <div class="field" style="grid-column:1/-1"><label>Токен Wildberries</label>
+              <input class="input" id="cab-token" type="password" autocomplete="new-password"
+                     placeholder="вставьте токен — он сохранится и больше не покажется"></div>
+            <div class="field" style="grid-column:1/-1"><label>Ключ для аналитики <span class="muted">(только чтение: Статистика, Аналитика, Контент, Поставки — без Маркетплейса)</span></label>
+              <input class="input" id="cab-analytics" type="password" autocomplete="new-password"
+                     placeholder="отдельный ключ для отчётов о продажах и запасах"></div>
+          </div>
+          <button type="button" class="btn primary" onclick="cabSave()" style="margin-top:10px">Сохранить кабинет</button>
+          <div class="hint" style="margin-top:8px">Токен нужен для FBS: заказы из кабинета подтягиваются автоматически.</div>
+        </div>
+      </details>
+` : ''}`;
 };
 
 // заказ перевели в поставку в кабинете WB раньше, чем его подтвердили у нас: товар со склада не списан
@@ -2443,6 +2496,8 @@ document.addEventListener('click', (e) => {
         <tr><td colspan="3"><b>Итого</b></td><td class="num"><b>${nf(rows.reduce((a, x) => a + x['кол-во'], 0))}</b></td></tr></tbody></table></div>` });
     }).catch((err) => toast(err.message, 'err'));
   }
+  const re = e.target.closest('[data-rcptedit]');
+  if (re) receiptEdit(re.dataset.sup, re.dataset.batch).catch((err) => toast(err.message, 'err'));
   const b = e.target.closest('[data-supedit]');
   if (b) supplyEdit(b.dataset.supedit, b.dataset.cab).catch((err) => toast(err.message, 'err'));
   const pb = e.target.closest('[data-fbs-pulled]');
@@ -2511,22 +2566,22 @@ function fbsListHtml(rows, canManage) {
     </div></div>`;
   }
   return `<div class="card"><div class="card-b tight tablescroll">
-    <table class="resp">
+    <table class="resp fbsl">
       <thead><tr>
         ${canManage ? '<th></th>' : ''}
         <th>Заказ</th><th>Кабинет</th><th>Товар (артикул продавца)</th>
         <th class="num">Цена</th><th>Дата</th><th>Статус</th>
       </tr></thead>
       <tbody>${rows.map((o) => `<tr>
-        ${canManage ? `<td><input type="checkbox" class="fbs-check" value="${esc(o['id'])}"
+        ${canManage ? `<td class="c-chk"><input type="checkbox" class="fbs-check" value="${esc(o['id'])}"
             ${o['status'] === 'new' ? '' : 'disabled'}></td>` : ''}
-        <td data-l="Заказ"><b>${esc(o['external_id'])}</b>${o['items'] > 1 ? ' · ' + o['items'] + ' поз.' : ''}</td>
-        <td data-l="Кабинет"><span class="pill grey">${esc((FBSPAGE.names || {})[o['cabinet_id']] || o['cabinet_id'])}</span></td>
-        <td data-l="Товар">${(o['items_detail'] || []).map((i) =>
+        <td data-l="Заказ" class="c-ord"><b>${esc(o['external_id'])}</b>${o['items'] > 1 ? ' · ' + o['items'] + ' поз.' : ''}</td>
+        <td data-l="Кабинет" class="c-cab"><span class="pill grey">${esc((FBSPAGE.names || {})[o['cabinet_id']] || o['cabinet_id'])}</span></td>
+        <td data-l="Товар" class="c-prod">${(o['items_detail'] || []).map((i) =>
             `${esc(i['title'] || '')}${i['product_id'] ? '' : ' <span class="pill orange">нет в каталоге</span>'}`).join('<br>')}</td>
-        <td data-l="Цена" class="num">${o['amount'] ? money(o['amount']) : '—'}</td>
-        <td data-l="Дата">${esc(o['ts'])}</td>
-        <td data-l="Статус">${pill(o['status_label'], o['status'] === 'new' ? 'orange' : (o['status'] === 'processing' ? 'blue' : 'green'))}</td>
+        <td data-l="Цена" class="num c-price">${o['amount'] ? money(o['amount']) : '—'}</td>
+        <td data-l="Дата" class="c-date">${esc(String(o['ts']).slice(0, 16))}</td>
+        <td data-l="Статус" class="c-stat">${pill(o['status_label'], o['status'] === 'new' ? 'orange' : (o['status'] === 'processing' ? 'blue' : 'green'))}</td>
       </tr>`).join('')}</tbody>
     </table>
   </div>
@@ -2753,7 +2808,8 @@ function syncChipHtml() {
     return `<span class="sync-chip off" id="sync-chip"><i></i>офлайн${n ? ' · ' + n + ' в очереди' : ''}</span>`;
   }
   if (n) return `<span class="sync-chip wait" id="sync-chip"><i></i>${n} на отправку</span>`;
-  return `<span class="sync-chip ok" id="sync-chip"><i></i>${SYNC.last ? 'обновлено ' + SYNC.last : 'онлайн'}</span>`;
+  // всё в порядке — значок не нужен (страницы и так берут данные с сервера); место оставляем для «офлайн»
+  return '<span id="sync-chip" hidden></span>';
 }
 
 function syncPaint() {
@@ -2926,9 +2982,9 @@ const WH_F = [['cat', 'категория'], ['model', 'модель'], ['color'
 const WH_TABS = [['stock', 'Главная'], ['in', 'Приход'], ['addr', 'Адрес'], ['out', 'Поставка'], ['rev', 'Ревизия'], ['log', 'Журнал']];
 
 function whTabs(active) {
-  return `<div class="tabs">${WH_TABS.map(([id, label]) => `
-    <a href="#/wh${id === 'stock' ? '' : '/' + id}" class="tab ${active === id ? 'on' : ''}">${label}</a>`).join('')}
-    ${active !== 'stock' ? '<a href="#/wh" class="tab back">← Главная</a>' : ''}</div>`;
+  // все вкладки видны сразу: на телефоне — сеткой в два ряда (прокрутка вбок прятала Ревизию и Журнал)
+  return `<div class="tabs wh-tabs">${WH_TABS.map(([id, label]) => `
+    <a href="#/wh${id === 'stock' ? '' : '/' + id}" class="tab ${active === id ? 'on' : ''}">${label}</a>`).join('')}</div>`;
 }
 
 async function whMeta(force) {
@@ -2949,8 +3005,8 @@ PAGES.wh = async (param) => {
   const tab = param || 'stock';
   WH.tab = tab;
   const meta = await whMeta();
-  const head = `
-    <div class="hero">
+  const head = tab !== 'stock' ? whTabs(tab) : `
+    <div class="hero wh-hero">
       <div><h1>Склад</h1>
         <div class="sub">${nf(meta['позиций'])} позиций · ${nf(meta['штук'])} шт на складе · источник: ${esc(meta['источник'] || '')}</div></div>
       <div class="actions"><a class="btn sm" href="/api/wh/full.xlsx" download title="Остатки, приход, размещение и отгрузки — одной книгой">Скачать весь склад</a>
@@ -2971,7 +3027,10 @@ PAGES.wh = async (param) => {
 };
 
 // ---------- Ревизия: пересчёт товара и проведение разницы ----------
-const REV = { q: '', only: false };
+const REV = { q: '', only: false, focus: '' };
+
+// «2026-11-18 20:09:27» → «18.11, 20:09»
+const revWhen = (t) => { const m = String(t || '').match(/^\d{4}-(\d\d)-(\d\d)[ T](\d\d:\d\d)/); return m ? `${m[2]}.${m[1]}, ${m[3]}` : String(t || ''); };
 
 async function revHtml(meta) {
   const res = await api('/api/wh/revision');
@@ -2981,13 +3040,14 @@ async function revHtml(meta) {
   const histHtml = hist.length ? `<div class="card"><div class="card-h"><h3>Прошлые ревизии</h3></div>
     <div class="card-b tight tablescroll"><table class="resp"><thead><tr><th>Дата</th><th>Категория</th><th>Статус</th><th class="num">Позиций</th><th class="num">Излишек</th><th class="num">Недостача</th></tr></thead>
     <tbody>${hist.map((h) => `<tr>
-      <td data-l="Дата">${esc(h['закрыта'] || h['начата'])}<div class="cell-sub">${esc(h['кто'] || '')}</div></td>
+      <td data-l="Дата">${esc(revWhen(h['закрыта'] || h['начата']))}<div class="cell-sub">${esc(h['кто'] || '')}</div></td>
       <td data-l="Категория">${esc(h['категория'] || 'весь склад')}</td>
-      <td data-l="Статус"><span class="pill ${h['статус'] === 'проведена' ? 'green' : 'grey'}">${esc(h['статус'])}</span></td>
+      <td data-l="Статус"><span class="pill ${h['статус'] === 'проведена' ? 'green' : 'grey'}">${esc(h['статус'])}</span>${h['статус'] === 'проведена' && (STATE.caps || {})['wh.fix']
+        ? ` <button class="btn tiny danger-text" data-rev-undo="${esc(h['id'])}">Откатить</button>` : ''}</td>
       <td data-l="Позиций" class="num">${nf(h['позиций'])}</td>
       <td data-l="Излишек" class="num">${h['излишек'] ? '+' + nf(h['излишек']) : '0'}</td>
       <td data-l="Недостача" class="num">${h['недостача'] ? '−' + nf(h['недостача']) : '0'}</td></tr>
-      ${h['расхождения'].length ? `<tr><td colspan="6" class="cell-sub">${h['расхождения'].map((d) => `${esc(d['наименование'])}: ${nf(d['система'])} → ${nf(d['факт'])}`).join(' · ')}</td></tr>` : ''}`).join('')}</tbody></table></div></div>` : '';
+      ${h['расхождения'].length ? `<tr><td colspan="6" class="cell-sub">${h['расхождения'].map((d) => `${esc(d['наименование'])}: ${nf(d['система'])} → ${nf(d['факт'])} (${d['разница'] > 0 ? '+' : ''}${nf(d['разница'])})`).join(' · ')}</td></tr>` : ''}`).join('')}</tbody></table></div></div>` : '';
 
   if (!cur) {
     return `<div class="card"><div class="card-h"><h3>Новая ревизия</h3></div><div class="card-b">
@@ -2995,38 +3055,38 @@ async function revHtml(meta) {
         <select class="input" id="rev-cat"><option value="">Весь склад</option>
           ${meta['категории'].map((c) => `<option>${esc(c)}</option>`).join('')}</select></div>
       <button class="btn primary big" data-rev="start">Начать ревизию</button>
-      <div class="hint" style="margin-top:10px">Сканируйте или вводите, сколько товара на полке. При проведении остаток в базе станет равен факту — только по пересчитанным позициям.</div>
+      <div class="hint" style="margin-top:10px">Сканируйте товар и впишите поправку: +1 — нашлась лишняя штука, −2 — не хватает двух. Пустое поле — без изменений.</div>
     </div></div>` + histHtml;
   }
   const items = cur['товары'];
-  const done = items.filter((i) => i['факт'] != null);
+  const done = items.filter((i) => i['поправка'] != null);
   const q = REV.q.toLowerCase();
-  const rows = items.filter((i) => (!q || i['наименование'].toLowerCase().includes(q)) && (!REV.only || i['факт'] != null));
+  const rows = items.filter((i) => (!q || i['наименование'].toLowerCase().includes(q)) && (!REV.only || i['поправка'] != null));
   const shown = rows.slice(0, 300);
-  const plus = done.reduce((a, i) => a + Math.max(0, i['разница']), 0);
-  const minus = done.reduce((a, i) => a + Math.max(0, -i['разница']), 0);
+  const plus = done.reduce((a, i) => a + Math.max(0, i['поправка']), 0);
+  const minus = done.reduce((a, i) => a + Math.max(0, -i['поправка']), 0);
   return `<div class="card"><div class="card-h"><h3>Ревизия · ${esc(cur['категория'] || 'весь склад')}</h3><div class="spacer"></div>
-      <span class="hint">начата ${esc(cur['начата'])} · ${esc(cur['кто'] || '')}</span></div>
+      <span class="hint">начата ${esc(revWhen(cur['начата']))} · ${esc(cur['кто'] || '')}</span></div>
     <div class="card-b">
-      <div class="field"><label>Скан товара (+1)</label>
+      <div class="field"><label>Скан товара — затем впишите поправку ±</label>
         <input class="input scan" id="rev-scan" placeholder="штрихкод или наименование" autocomplete="off"></div>
-      <div class="wh-found" id="rev-found">Пересчитано ${nf(done.length)} из ${nf(items.length)} позиций · излишек +${nf(plus)} · недостача −${nf(minus)}</div>
+      <div class="wh-found" id="rev-found">С поправкой ${nf(done.length)} поз. · прибавится +${nf(plus)} · спишется −${nf(minus)}</div>
       <div class="btn-row" style="margin-top:12px">
         <input class="input" id="rev-q" placeholder="поиск по названию" value="${esc(REV.q)}" style="max-width:260px">
-        <button class="btn sm ${REV.only ? 'primary' : ''}" data-rev="only">Только пересчитанные</button>
+        <button class="btn sm ${REV.only ? 'primary' : ''}" data-rev="only">Только с поправкой</button>
         <span style="margin-left:auto"></span>
         <button class="btn sm" data-rev="cancel">Отменить ревизию</button>
         <button class="btn primary sm" data-rev="apply" ${done.length ? '' : 'disabled'}>Провести ревизию</button>
       </div>
     </div></div>
     <div class="card"><div class="card-b tight tablescroll"><table class="resp">
-      <thead><tr><th>Товар</th><th class="num">По базе</th><th class="num">Факт</th><th class="num">Разница</th></tr></thead>
+      <thead><tr><th>Товар</th><th class="num">По базе</th><th class="num">Поправка ±</th><th class="num">Станет</th></tr></thead>
       <tbody>${shown.map((i) => `<tr>
         <td data-l="Товар"><div class="cell-main">${esc(i['наименование'])}</div></td>
         <td data-l="По базе" class="num">${nf(i['система'])}</td>
-        <td data-l="Факт" class="num"><input class="input" type="number" min="0" inputmode="numeric" style="width:90px;text-align:right"
-            data-rev-qty="${esc(i['наименование'])}" value="${i['факт'] == null ? '' : i['факт']}" placeholder="—"></td>
-        <td data-l="Разница" class="num">${sign(i['разница'])}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">Ничего не найдено</td></tr>'}</tbody>
+        <td data-l="Поправка ±" class="num"><input class="input" type="text" style="width:90px;text-align:right"
+            data-rev-qty="${esc(i['наименование'])}" value="${i['поправка'] == null ? '' : (i['поправка'] > 0 ? '+' : '') + i['поправка']}" placeholder="+1 / −1"></td>
+        <td data-l="Станет" class="num">${i['станет'] == null ? '' : `${sign(i['поправка'])} → <b>${nf(i['станет'])}</b>`}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">Ничего не найдено</td></tr>'}</tbody>
     </table>${rows.length > shown.length ? `<div class="hint" style="padding:10px 14px">Показано ${shown.length} из ${rows.length} — уточните поиск</div>` : ''}</div></div>` + histHtml;
 }
 
@@ -3047,6 +3107,12 @@ function bindRev() {
     await post('start', { 'категория': $('#rev-cat').value });
     await revRefresh(true);
   })())));
+  $$('[data-rev-undo]', box).forEach((b) => b.addEventListener('click', () => guard((async () => {
+    if (!confirm('Откатить ревизию? Её излишки и недостачи уберутся, остаток станет как до неё. Запись останется в истории.')) return;
+    const r = await post('undo', { id: b.dataset.revUndo });
+    toast(`Ревизия откатена: ${nf(r['позиций'])} поз.`, 'ok');
+    await revRefresh();
+  })())));
   $$('[data-rev="only"]', box).forEach((b) => b.addEventListener('click', () => { REV.only = !REV.only; guard(revRefresh()); }));
   $$('[data-rev="cancel"]', box).forEach((b) => b.addEventListener('click', () => guard((async () => {
     if (!confirm('Отменить ревизию? Пересчёт не попадёт в остатки.')) return;
@@ -3054,7 +3120,8 @@ function bindRev() {
     await revRefresh();
   })())));
   $$('[data-rev="apply"]', box).forEach((b) => b.addEventListener('click', () => guard((async () => {
-    if (!confirm('Провести ревизию? Остаток пересчитанных позиций станет равен факту.')) return;
+    const f = $('#rev-found');
+    if (!confirm(`Провести ревизию? ${f ? f.textContent : ''}`)) return;
     const r = await post('apply', { id: await rid() });
     toast(`Ревизия проведена: ${nf(r['позиций'])} поз., излишек +${nf(r['излишек'])}, недостача −${nf(r['недостача'])}`);
     WH.meta = null;
@@ -3068,17 +3135,29 @@ function bindRev() {
     e.preventDefault();
     const v = scan.value.trim();
     scan.value = '';
-    guard((async () => {
-      const r = await post('count', { id: await rid(), 'товар': v, 'добавить': 1 });
-      await revRefresh(true);
-      const f = $('#rev-found');
-      if (f) { f.className = 'wh-found good'; f.textContent = `${r['наименование']} — факт ${nf(r['факт'])}`; }
+    guard((async () => {  // скан только находит товар: курсор встаёт в его поправку
+      const r = await post('count', { id: await rid(), 'товар': v });
+      REV.q = ''; REV.focus = r['наименование'];
+      await revRefresh();
     })());
   });
-  $$('[data-rev-qty]', box).forEach((inp) => inp.addEventListener('change', () => guard((async () => {
-    await post('count', { id: await rid(), 'товар': inp.dataset.revQty, 'факт': inp.value.trim() });
-    await revRefresh();
-  })())));
+  $$('[data-rev-qty]', box).forEach((inp) => {
+    inp.addEventListener('change', () => guard((async () => {
+      await post('count', { id: await rid(), 'товар': inp.dataset.revQty, 'поправка': inp.value.trim() });
+      await revRefresh(true);
+    })()));
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); inp.blur(); } });
+  });
+  if (REV.focus) {  // найденный сканом товар: строку наверх списка и курсор в поправку
+    const inp = $$('[data-rev-qty]', box).find((x) => x.dataset.revQty === REV.focus);
+    REV.focus = '';
+    if (inp) {
+      const tr = inp.closest('tr');
+      tr.parentNode.prepend(tr);
+      tr.style.background = '#fff7d6';
+      inp.focus(); inp.select();
+    }
+  }
 }
 
 // ---------- Главная: остатки с каскадными фильтрами ----------
@@ -3134,20 +3213,23 @@ async function whStock(meta) {
   for (const [key] of WH_F) f[key].forEach((v) => xlsxQ.append(key, v));
   const xlsxLabel = (f.model.length ? f.model : f.cat).join(', ');
 
+  const nf_ = WH_F.filter(([key]) => f[key].length).length;
   return `
     <div class="card" style="overflow:visible;z-index:5">
       <div class="card-b" style="padding-top:16px">
+        <input class="input scan" id="wh-q" placeholder="поиск: 477 черн 42 или штрихкод" autocomplete="off" value="${esc(WH.q || '')}">
+        <details class="wh-filters" ${nf_ ? 'open' : ''}><summary>Фильтры${nf_ ? ' · ' + nf_ : ''}</summary>
         <div class="grid2">
           ${xf('cat', 'Категория', 'Все категории')}
           ${xf('model', 'Модель', 'Все модели')}
           ${xf('color', 'Цвет', 'Все цвета')}
           ${xf('size', 'Размер', 'Все размеры')}
         </div>
+        <div class="btn-row" style="margin-top:10px"><a class="btn sm" download title="Все цвета и размеры по выбранным фильтрам, с полным наименованием и остатком"
+             href="/api/wh/model.xlsx?${xlsxQ}">Скачать Excel${xlsxLabel ? ' · ' + esc(xlsxLabel.length > 30 ? xlsxLabel.slice(0, 30) + '…' : xlsxLabel) : ''}</a></div></details>
         <div class="btn-row" style="margin-top:12px">
           <button class="btn ${WH.ф.only ? 'primary' : ''} sm" data-wh="only">Только с остатком</button>
           <button class="btn ${WH.ф.only ? '' : 'primary'} sm" data-wh="all">Все товары</button>
-          <a class="btn sm" download title="Все цвета и размеры по выбранным фильтрам, с полным наименованием и остатком"
-             href="/api/wh/model.xlsx?${xlsxQ}">Скачать Excel${xlsxLabel ? ' · ' + esc(xlsxLabel.length > 30 ? xlsxLabel.slice(0, 30) + '…' : xlsxLabel) : ''}</a>
           <span class="hint" id="wh-count" style="margin-left:auto"></span>
         </div>
       </div>
@@ -3155,24 +3237,39 @@ async function whStock(meta) {
     <div id="wh-list">${whListHtml()}</div>`;
 }
 
+// ячейка, где лежит: «K-0016@P1-3-08» → «P1-3-08», у мешка/ячейки — сам код
+const whPlace = (c) => String(c).split('@').pop();
+const whNormQ = (s) => String(s || '').toLowerCase().replace(/ё/g, 'е');
+
 function whListHtml() {
   const f = WH.ф;
+  const words = whNormQ(WH.q).split(/\s+/).filter(Boolean);
   const rows = WH.stock.filter((i) =>
     WH_F.every(([key, col]) => !f[key].length || f[key].includes(i[col])) &&
-    (!f.only || i['остаток'] > 0));
+    (!f.only || i['остаток'] > 0) &&
+    (!words.length || words.every((w) => whNormQ(i['наименование'] + ' ' + (i['места'] || []).join(' ')).includes(w))));
   if (!rows.length) return '<div class="card"><div class="empty">Ничего не найдено</div></div>';
-  const shown = rows.slice(0, 120);
+  const shown = rows.slice(0, 1000);  // строки короткие — показываем весь склад, а не первые 120
   return `<div class="card"><div class="card-b tight tablescroll">
-    <table class="resp">
-      <thead><tr><th></th><th>Товар</th><th class="num">Остаток на складе</th><th class="num">В размещении</th><th class="num">Отгружено</th></tr></thead>
-      <tbody>${shown.map((i) => `<tr>
+    <table class="resp whl">
+      <thead><tr><th></th><th>Товар</th><th class="num">Остаток · на местах</th><th class="num">В размещении</th><th class="num">Отгружено</th></tr></thead>
+      <tbody>${shown.map((i) => {
+        // адресное хранение: остаток — то, что уже лежит по адресам; в размещении — без адреса (всего = сумма)
+        const addr = i['по_адресам'] != null;
+        const placed = addr ? i['по_адресам'] : i['остаток'];
+        const wait = addr ? i['без_адреса'] : i['ожидает'];
+        const pl = (i['места'] || []).map(whPlace);
+        return `<tr>
         <td data-l=""><div class="wh-art" style="background:${colorOf(i['цвет'])}22">${productArt(iconFor(i['категория']), colorOf(i['цвет']))}</div></td>
         <td data-l="Товар"><div class="cell-main">${esc(i['модель'])} · ${esc(i['размер'])}</div>
-          <div class="cell-sub">${esc(i['категория'])} · ${esc(i['цвет'])}</div></td>
-        <td data-l="Остаток" class="num"><b style="font-size:16px;${i['остаток'] < 0 ? 'color:#d12e2e' : ''}">${nf(i['остаток'])}</b>${i['остаток'] < 0 ? '<div class="cell-sub" style="color:#d12e2e">пересорт</div>' : ''}</td>
-        <td data-l="В размещении" class="num muted">${i['ожидает'] > 0 ? '<b style="color:var(--orange)">' + nf(i['ожидает']) + '</b>' : '0'}</td>
-        <td data-l="Отгружено" class="num muted">${nf(i['отгружено'])}</td>
-      </tr>`).join('')}</tbody>
+          <div class="cell-sub">${esc(i['категория'])} · ${esc(i['цвет'])}${pl.length ? ` · <b>${esc(pl[0])}</b>${pl.length > 1 ? ' +' + (pl.length - 1) : ''}` : ''}</div></td>
+        <td data-l="Остаток · на местах" class="num">${i['остаток'] < 0
+          ? `<b style="font-size:16px;color:#d12e2e">${nf(i['остаток'])}</b><div class="cell-sub" style="color:#d12e2e">пересорт</div>`
+          : `<b style="font-size:16px">${nf(placed)}</b>${addr ? `<div class="cell-sub">всего ${nf(i['остаток'])}</div>` : ''}`}${wait > 0 ? `<div class="cell-sub m-only" style="color:var(--orange)">+${nf(wait)} без адреса</div>` : ''}</td>
+        <td data-l="В размещении" class="num muted c-more">${wait > 0 ? '<b style="color:var(--orange)">' + nf(wait) + '</b>' : '0'}</td>
+        <td data-l="Отгружено" class="num muted c-more">${nf(i['отгружено'])}</td>
+      </tr>`;
+      }).join('')}</tbody>
     </table>
     ${rows.length > shown.length ? `<div class="hint" style="padding:10px 14px">Показано ${shown.length} из ${rows.length}</div>` : ''}
   </div></div>`;
@@ -3190,11 +3287,12 @@ function iconFor(cat) {
 // ---------- Приход: шаг 1 — выбор, шаг 2 — сетка размеров ----------
 function whIn(meta) {
   const st = WH.in || (WH.in = { cat: '', model: '', color: '', supplier: '', batch: '', defect: 0, sizes: {} });
+  editPrefill(st);
   const today = new Date().toLocaleDateString('ru-RU');
   const head = `
     <div class="card">
-      <div class="card-h"><h3>Приход на склад</h3><div class="spacer"></div><span class="hint">${esc(today)}</span></div>
-      <div class="card-b">`;
+      <div class="card-h"><h3>${st.edit ? 'Изменение принятой партии' : 'Приход на склад'}</h3><div class="spacer"></div><span class="hint">${esc(today)}</span></div>
+      <div class="card-b">${editBanner(st)}`;
 
   // упаковано в цехе, ждёт приёмщика: «Принять» подставит партию, модель, цвет и размеры
   const cex = WH.fromCex || [];
@@ -3212,12 +3310,12 @@ function whIn(meta) {
     return cexCard + head + `
         <div class="grid2">
           <div class="field"><label>Поставщик</label>
-            <select class="input scan" id="in-supplier">
+            <select class="input scan" id="in-supplier" ${st.edit ? 'disabled' : ''}>
               <option value="">Выберите</option>
               ${meta['поставщики'].map((x) => `<option ${st.supplier === x ? 'selected' : ''}>${esc(x)}</option>`).join('')}
             </select></div>
           <div class="field"><label>Партия (если свой цех)</label>
-            <input class="input scan" id="in-batch" placeholder="например 75" value="${esc(st.batch || '')}"></div>
+            <input class="input scan" id="in-batch" placeholder="например 75" value="${esc(st.batch || '')}" ${st.edit ? 'disabled' : ''}></div>
           <div class="field"><label>Категория</label>
             <select class="input scan" id="in-cat">
               <option value="">Выберите</option>
@@ -3257,10 +3355,10 @@ function whIn(meta) {
             </label>`).join('') || '<div class="empty">У этой модели нет размеров в справочнике</div>'}
         </div>
         <div class="wh-total">Итого к приёму: <b id="in-total">${nf(Object.values(st.sizes).reduce((a, b) => a + (num(b) || 0), 0))}</b> шт</div>
-        <label class="check" style="display:flex;gap:8px;align-items:center;margin:10px 0">
-          <input type="checkbox" id="in-direct" ${whDirect() ? 'checked' : ''}>
-          <span>Сразу на склад, без адреса <span class="muted">— товар сразу в остатке; коробку можно указать позже</span></span></label>
-        <button class="btn primary big" data-wh="accept">Принять товар</button>
+        ${st.edit ? `<button class="btn primary big" data-wh="edit-save" style="margin-top:10px">Сохранить изменения</button>
+        <div class="hint" style="margin-top:8px">Плюс — добавится на склад, минус — уберётся (не ниже уже отгруженного). Очистите клетку — размер уйдёт из партии.</div>` : `
+        <div class="hint" style="margin:10px 0">Товар сразу в остатке «без адреса» — потом разложите его по адресам.</div>
+        <button class="btn primary big" data-wh="accept">Принять товар</button>`}
         <div class="hint" style="margin-top:10px">Пустые ячейки пропускаются — заполняйте только те размеры, что пришли.</div>
       </div></div>`;
 }
@@ -3272,22 +3370,54 @@ function whReceiptsHtml(list) {
   const dmy = (d) => d.slice(8, 10) + '.' + d.slice(5, 7);
   return `<div class="card"><div class="card-h"><h3>Принято</h3><div class="spacer"></div>
       <span class="muted">приёмки через портал · по партиям</span></div>
-    <div class="card-b tight tablescroll"><table class="resp">
+    <div class="card-b tight tablescroll"><table class="resp rcpt">
       <thead><tr><th>Партия</th><th>Поставщик</th><th>Даты</th><th class="num">Штук</th><th></th></tr></thead>
       <tbody>${list.map((x) => `<tr>
-          <td data-l="Партия"><b>${esc(x['партия'] || '—')}</b></td>
-          <td data-l="Поставщик">${esc(x['поставщик'] || '—')}</td>
-          <td data-l="Даты">${esc(x['даты'].map(dmy).join(', '))}</td>
-          <td data-l="Штук" class="num">${nf(x['штук'])}</td>
-          <td><a class="btn tiny" href="/api/wh/receipt.xlsx?${q(x['поставщик'], x['партия'])}" download>Excel</a>
-            <button class="btn tiny" data-rcptview="" data-sup="${esc(x['поставщик'])}" data-batch="${esc(x['партия'])}">Смотреть</button></td>
+          <td data-l="Партия" class="r-b"><span class="m-only-i">Партия </span><b>${esc(x['партия'] || '—')}</b></td>
+          <td data-l="Поставщик" class="r-s">${esc(x['поставщик'] || '—')}</td>
+          <td data-l="Даты" class="r-d">${esc(x['даты'].map(dmy).join(', '))}</td>
+          <td data-l="Штук" class="num r-n">${nf(x['штук'])}<span class="m-only-i"> шт</span></td>
+          <td class="r-a"><a class="btn tiny" href="/api/wh/receipt.xlsx?${q(x['поставщик'], x['партия'])}" download>Excel</a>
+            <button class="btn tiny" data-rcptview="" data-sup="${esc(x['поставщик'])}" data-batch="${esc(x['партия'])}">Смотреть</button>
+            <button class="btn tiny" data-rcptedit="" data-sup="${esc(x['поставщик'])}" data-batch="${esc(x['партия'])}">Изменить</button></td>
         </tr>`).join('')}</tbody>
     </table></div></div>`;
 }
 
-// «сразу на склад» — пока в цехе нет адресного хранения; по умолчанию включено, выбор запоминаем
-function whDirect() {
-  try { return localStorage.getItem('wh.direct') !== '0'; } catch (e) { return true; }
+// ---------- Правка принятой партии — тот же экран «Приход», что и при приёмке ----------
+// Поставщик и партия подставлены; выбираете модель и цвет — в размерах уже стоит принятое количество
+async function receiptLoad(sup, batch) {
+  const res = await api('/api/wh/receipt?поставщик=' + encodeURIComponent(sup) + '&партия=' + encodeURIComponent(batch));
+  const have = {};
+  (res.data || []).forEach((x) => { have[x['товар']] = (have[x['товар']] || 0) + x['кол-во']; });
+  return have;
+}
+async function receiptEdit(sup, batch) {
+  const have = await receiptLoad(sup, batch);
+  WH.in = { cat: '', model: '', color: '', supplier: sup, batch, defect: 0, sizes: {}, edit: { sup, batch, have } };
+  const keys = [...new Set(Object.keys(have).filter((n) => have[n]).map((n) => n.split('/').slice(0, 3).join('/')))];
+  if (keys.length === 1) { const [c, m, col] = keys[0].split('/'); Object.assign(WH.in, { cat: c, model: m, color: col }); }
+  await go('wh', 'in');
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+// в режиме правки размеры выбранного цвета заполняются принятым количеством (один раз на цвет)
+function editPrefill(st) {
+  if (!st.edit || !st.cat || !st.model || !st.color) return;
+  const key = `${st.cat}/${st.model}/${st.color}`;
+  if (st.editKey === key) return;
+  st.editKey = key;
+  st.sizes = {};
+  Object.entries(st.edit.have).forEach(([n, q]) => { if (n.startsWith(key + '/') && q) st.sizes[n.slice(key.length + 1)] = q; });
+}
+function editBanner(st) {
+  if (!st.edit) return '';
+  const groups = {};
+  Object.entries(st.edit.have).forEach(([n, q]) => { if (!q) return; const k = n.split('/').slice(0, 3).join('/'); groups[k] = (groups[k] || 0) + q; });
+  const cur = `${st.cat}/${st.model}/${st.color}`;
+  return `<div class="notice" style="margin-bottom:12px"><b>Изменение партии ${esc(st.edit.batch || '—')} · ${esc(st.edit.sup || '—')}</b>
+      — выберите модель и цвет: в размерах уже стоит принятое. Меняйте числа или выберите новый цвет и размер, затем «Сохранить изменения».
+      <div class="btn-row" style="margin-top:8px">${Object.entries(groups).map(([k, q]) => `<button class="btn sm ${k === cur ? 'primary' : ''}" data-wh-editpick="${esc(k)}">${esc(k.split('/').slice(1).join(' · '))} — ${nf(q)} шт</button>`).join('')}
+        <span style="margin-left:auto"></span><button class="btn sm" data-wh="edit-exit">Готово, выйти</button></div></div>`;
 }
 
 // ---------- Адрес ----------
@@ -3358,7 +3488,6 @@ async function whOut(meta) {
               <b>№${esc(o['external_id'] || o['id'])} · ${esc(o['клиент'])}</b>
               ${o['fbs'] ? '<span class="pill blue">FBS</span>' : ''}
               <span class="muted">${esc(o['дата'])}</span>
-              <button class="btn tiny" data-wh="cancel" data-id="${o['id']}">Отменить</button>
             </div>
             ${o['позиции'].map((pos) => {
               const left = num(pos['количество']) - num(pos['отгружено']);
@@ -3369,6 +3498,8 @@ async function whOut(meta) {
               </div>`;
             }).join('')}
             <div class="order-actions">
+              <button class="btn ghost sm danger-text" data-wh="cancel" data-id="${o['id']}">Отменить заказ</button>
+              <div class="spacer"></div>
               <a class="btn primary sm" href="#/wh/pick/${o['id']}">Собрать заказ</a>
             </div>
           </div>`).join('') : '<div class="empty">Новых заказов нет</div>'}
@@ -3429,31 +3560,6 @@ async function whLog() {
         <span class="hint" style="margin-left:10px" id="wh-sync-line">запись в книгу цеха пачкой раз в несколько минут</span>
       </div>
       <div id="sync-bar"></div>
-      <div class="card" id="cabinets-card">
-        <div class="card-h"><h3>Кабинеты Wildberries</h3><div class="spacer"></div>
-          <span class="hint">токены хранятся только на этом Mac</span></div>
-        <div class="card-b" id="cab-list"><span class="muted">загружаю…</span></div>
-        <div class="card-b" id="cab-form" style="border-top:1px solid var(--line-2)">
-          <div class="hint" style="margin-bottom:8px">
-            Нажмите «Вставить токен» у нужного кабинета — поля заполнятся сами.
-          </div>
-          <div class="grid2">
-            <div class="field"><label>Название кабинета</label>
-              <input class="input" id="cab-name" placeholder="например ЖСК"></div>
-            <div class="field"><label>Код <span class="muted">(внутренний, латиницей)</span></label>
-              <input class="input" id="cab-id" placeholder="заполнится сам" autocomplete="off">
-              <div class="hint" id="cab-id-hint">Нужен только внутри системы, к WB отношения не имеет.</div></div>
-            <div class="field" style="grid-column:1/-1"><label>Токен Wildberries</label>
-              <input class="input" id="cab-token" type="password" autocomplete="new-password"
-                     placeholder="вставьте токен — он сохранится и больше не покажется"></div>
-            <div class="field" style="grid-column:1/-1"><label>Ключ для аналитики <span class="muted">(только чтение: Статистика, Аналитика, Контент, Поставки — без Маркетплейса)</span></label>
-              <input class="input" id="cab-analytics" type="password" autocomplete="new-password"
-                     placeholder="отдельный ключ для отчётов о продажах и запасах"></div>
-          </div>
-          <button type="button" class="btn primary" onclick="cabSave()" style="margin-top:10px">Сохранить кабинет</button>
-          <div class="hint" style="margin-top:8px">Токен нужен для FBS: заказы из кабинета подтягиваются автоматически.</div>
-        </div>
-      </div>
       <div class="card-b" id="negatives-box" style="padding-top:6px"></div>
       <div class="card-b" style="padding-top:6px">
         <div class="btn-row">
@@ -3481,11 +3587,10 @@ async function whLog() {
 
 // ---------- экран сборки заказа: слева штрихкод, справа количество ----------
 // qty/subs живут вне DOM — фильтр и сортировка не сбрасывают собранное; subs: строка → отправленная замена
-const PICK = { order: null, sort: 'left', filter: '', qty: {}, subs: {}, hide: new Set(), xfq: '' };
-const pickModel = (name) => String(name).split('/').slice(0, 2).join('/');
+const PICK = { order: null, filter: '', qty: {}, subs: {} };
 
 function pickReset(order) {
-  Object.assign(PICK, { order, filter: '', qty: {}, subs: {}, hide: new Set(), xfq: '' });
+  Object.assign(PICK, { order, filter: '', qty: {}, subs: {} });
 }
 
 // все строки сборки (одинаковые товары агрегата — одной строкой), без фильтров
@@ -3506,53 +3611,28 @@ function pickAllRows() {
     нужно: num(p['количество']),
     собрано: num(p['отгружено']),
     осталось: num(p['количество']) - num(p['отгружено']),
+    адрес: p['адрес'] || '',
+    маршрут: p['маршрут'] == null ? 1e6 : p['маршрут'],
   }));
 }
 
-// панель как автофильтр Excel: сортировка А→Я / Я→А, поиск и галочки по моделям
+// панель: только поиск по товару — порядок всегда по маршруту обхода склада
 function pickToolsHtml() {
-  const models = [...new Set(pickAllRows().map((r) => pickModel(r.наименование)))]
-    .sort((a, b) => a.localeCompare(b, 'ru', { numeric: true }));
-  const q = PICK.xfq.trim().toLowerCase();
-  const hidden = PICK.hide.size;
-  const sorts = [['left', 'Сначала несобранные'], ['name-asc', 'Название А → Я'], ['name-desc', 'Название Я → А'],
-    ['qty-desc', 'Количество: больше → меньше'], ['qty-asc', 'Количество: меньше → больше']];
   return `<div class="pick-tools">
       <input class="input" id="pick-filter" placeholder="Фильтр по товару" value="${esc(PICK.filter)}">
-      <details class="pick-xf" id="pick-xf">
-        <summary class="btn">Фильтр ▾${hidden ? ` <span class="pill orange">скрыто моделей: ${hidden}</span>` : ''}</summary>
-        <div class="pick-xf-pop">
-          <button class="btn sm" data-xf="sort" data-v="name-asc">⬆ Сортировка от А до Я</button>
-          <button class="btn sm" data-xf="sort" data-v="name-desc">⬇ Сортировка от Я до А</button>
-          <select class="input" id="pick-sort">${sorts.map(([v, l]) => `<option value="${v}" ${PICK.sort === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
-          <input class="input" id="pick-xf-q" placeholder="Поиск модели" value="${esc(PICK.xfq)}">
-          <div class="pick-xf-list">
-            <label><input type="checkbox" data-xf="all" ${hidden ? '' : 'checked'}> <b>(Выделить всё)</b></label>
-            ${models.filter((m) => !q || m.toLowerCase().includes(q)).map((m) => `<label>
-              <input type="checkbox" data-xf="model" data-v="${esc(m)}" ${PICK.hide.has(m) ? '' : 'checked'}> ${esc(m)}</label>`).join('')
-              || '<div class="hint">Нет совпадений</div>'}
-          </div>
-          ${hidden ? '<button class="btn sm" data-xf="clear">Снять фильтр</button>' : ''}
-        </div>
-      </details>
     </div>`;
 }
 
+// обход склада один раз: несобранные по порядку адресов (P → N, стеллаж → этаж → ячейка),
+// без адреса — в конце, собранные — вниз
 function pickSortRows(rows) {
-  const r = rows.slice();
-  if (PICK.sort === 'name-asc') r.sort((a, b) => a.наименование.localeCompare(b.наименование, 'ru'));
-  if (PICK.sort === 'name-desc') r.sort((a, b) => b.наименование.localeCompare(a.наименование, 'ru'));
-  if (PICK.sort === 'qty-desc') r.sort((a, b) => b.осталось - a.осталось);
-  if (PICK.sort === 'qty-asc') r.sort((a, b) => a.осталось - b.осталось);
-  if (PICK.sort === 'left') r.sort((a, b) => (a.осталось > 0 ? 0 : 1) - (b.осталось > 0 ? 0 : 1));
-  return r;
+  return rows.slice().sort((a, b) => (a.осталось > 0 ? 0 : 1) - (b.осталось > 0 ? 0 : 1) || a.маршрут - b.маршрут);
 }
 
 function pickRowsHtml() {
   const rows = pickSortRows(pickAllRows());
   const f = PICK.filter.trim().toLowerCase();
-  const shown = rows.filter((r) => (!f || r.наименование.toLowerCase().includes(f))
-    && !PICK.hide.has(pickModel(r.наименование)));
+  const shown = rows.filter((r) => (!f || r.наименование.toLowerCase().includes(f)));
   if (!shown.length) return '<div class="empty">Ничего не найдено</div>';
   return shown.map((r, i) => `
     <div class="pick-row ${r.осталось <= 0 ? 'done' : ''}" data-name="${esc(r.наименование)}">
@@ -3561,7 +3641,7 @@ function pickRowsHtml() {
       <div class="pick-name">${esc(r.наименование)}</div>
       <input class="input pick-qty" type="number" min="0" inputmode="numeric"
              max="${r.осталось}" placeholder="0" value="${esc(PICK.qty[r.наименование] || '')}" ${r.осталось <= 0 ? 'disabled' : ''}>
-      <div class="pick-meta">${r.осталось > 0 ? 'осталось ' + nf(r.осталось) : 'собрано'}</div>
+      <div class="pick-meta">${r.адрес ? `<b>${esc(r.адрес.replace('@', ' в '))}</b> · ` : ''}${r.осталось > 0 ? 'осталось ' + nf(r.осталось) : 'собрано'}</div>
     </div>`).join('');
 }
 
@@ -3801,9 +3881,7 @@ function bindPickPage() {
 
 function pickRerender(tools) {
   if (tools && $('#pick-tools-box')) {
-    const open = $('#pick-xf') && $('#pick-xf').open;
     $('#pick-tools-box').innerHTML = pickToolsHtml();
-    if (open) $('#pick-xf').open = true;
     bindPickTools();
   }
   $('#pick-list').innerHTML = pickRowsHtml();
@@ -3811,9 +3889,6 @@ function pickRerender(tools) {
 }
 
 function bindPickTools() {
-  const box = $('#pick-tools-box') || $('#page');
-  const sortEl = $('#pick-sort');
-  if (sortEl) sortEl.addEventListener('change', (e) => { PICK.sort = e.target.value; pickRerender(); });
   const filterEl = $('#pick-filter');
   if (filterEl) filterEl.addEventListener('input', (e) => {
     PICK.filter = e.target.value;
@@ -3821,24 +3896,6 @@ function bindPickTools() {
     pickRerender();
     filterEl.focus();  // перерисовка ставит фокус на скан — возвращаем в поле фильтра
     filterEl.setSelectionRange(pos, pos);
-  });
-  $$('[data-xf="sort"]', box).forEach((b) => b.addEventListener('click', () => { PICK.sort = b.dataset.v; pickRerender(true); }));
-  $$('[data-xf="model"]', box).forEach((c) => c.addEventListener('change', () => {
-    if (c.checked) PICK.hide.delete(c.dataset.v); else PICK.hide.add(c.dataset.v);
-    pickRerender(true);
-  }));
-  $$('[data-xf="all"]', box).forEach((c) => c.addEventListener('change', () => {
-    PICK.hide = c.checked ? new Set() : new Set(pickAllRows().map((r) => pickModel(r.наименование)));
-    pickRerender(true);
-  }));
-  $$('[data-xf="clear"]', box).forEach((b) => b.addEventListener('click', () => { PICK.hide = new Set(); pickRerender(true); }));
-  const q = $('#pick-xf-q');
-  if (q) q.addEventListener('input', () => {
-    PICK.xfq = q.value;
-    const pos = q.selectionStart;
-    pickRerender(true);
-    const q2 = $('#pick-xf-q');
-    if (q2) { q2.focus(); q2.setSelectionRange(pos, pos); }
   });
 }
 
@@ -3892,6 +3949,7 @@ function bindPickRows() {
 
 // ---------- события склада ----------
 function bindFbs() {
+  if ($('#cab-list')) loadCabinets();
   const page = $('#page');
   $$('[data-fbs="filter"]', page).forEach((b) => b.addEventListener('click', async () => {
     FBSPAGE.status = b.dataset.v;
@@ -3965,6 +4023,23 @@ function bindWh() {
       await go('wh');
     });
   });
+  const whQ = $('#wh-q', page);
+  if (whQ) {
+    const redraw = () => { const l = $('#wh-list'); if (l) l.innerHTML = whListHtml(); };
+    let t = null;
+    whQ.addEventListener('input', () => { clearTimeout(t); t = setTimeout(() => { WH.q = whQ.value; redraw(); }, 150); });
+    whQ.addEventListener('keydown', async (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      WH.q = whQ.value.trim();
+      redraw();
+      if (!WH.q || !$('#wh-list .empty')) return;
+      try {
+        const it = (await api('/api/wh/find?q=' + encodeURIComponent(WH.q))).data;
+        if (it) { WH.q = it['наименование']; whQ.value = WH.q; redraw(); }
+      } catch (err) { /* не штрихкод — остаётся «ничего не найдено» */ }
+    });
+  }
   $$('[data-wh="only"]', page).forEach((b) => b.addEventListener('click', async () => { WH.ф.only = true; await go('wh'); }));
   $$('[data-wh="all"]', page).forEach((b) => b.addEventListener('click', async () => { WH.ф.only = false; await go('wh'); }));
 
@@ -4015,6 +4090,32 @@ function bindWh() {
     if (t) t.textContent = nf(total);
   }));
 
+  $$('[data-wh-editpick]', page).forEach((b) => b.addEventListener('click', async () => {
+    const [c, m, col] = b.dataset.whEditpick.split('/');
+    WH.in = { ...st(), cat: c, model: m, color: col, sizes: {}, editKey: '' };
+    await go('wh', 'in');
+  }));
+  $$('[data-wh="edit-exit"]', page).forEach((b) => b.addEventListener('click', async () => {
+    WH.in = { cat: '', model: '', color: '', supplier: '', batch: '', defect: 0, sizes: {} };
+    await go('wh', 'in');
+  }));
+  $$('[data-wh="edit-save"]', page).forEach((b) => b.addEventListener('click', async () => {
+    const x = st();
+    const key = `${x.cat}/${x.model}/${x.color}`;
+    const sizes = [...new Set($$('input[data-size]', page).map((i) => i.dataset.size))];
+    const rows = sizes.map((z) => ({ 'наименование': `${key}/${z}`, 'количество': num(x.sizes[z] || 0), was: x.edit.have[`${key}/${z}`] || 0 }))
+      .filter((r) => r['количество'] !== r.was).map(({ was, ...r }) => r);
+    if (!rows.length) return toast('По этому цвету ничего не изменилось');
+    b.disabled = true;
+    try {
+      const r = await api('/api/wh/receipt/edit', { method: 'POST', body: JSON.stringify({ 'поставщик': x.edit.sup, 'партия': x.edit.batch, 'позиции': rows }) });
+      toast(`Партия ${x.edit.batch || '—'}: ${x.model} ${x.color} — +${nf(r['плюс'])} / −${nf(r['минус'])} шт`, 'ok');
+      x.edit.have = await receiptLoad(x.edit.sup, x.edit.batch);  // остаёмся в правке с обновлёнными цифрами
+      x.editKey = '';
+      WH.meta = null;
+      await go('wh', 'in');
+    } catch (e) { toast(e.message, 'err'); b.disabled = false; }
+  }));
   $$('[data-wh="accept"]', page).forEach((b) => b.addEventListener('click', async () => {
     const x = st();
     const позиции = Object.entries(x.sizes).map(([size, qty]) => ({
@@ -4024,9 +4125,8 @@ function bindWh() {
     if (!позиции.length) return toast('Заполните количество хотя бы по одному размеру', 'err');
     b.disabled = true;
     try {
-      const direct = !!($('#in-direct') && $('#in-direct').checked);
-      try { localStorage.setItem('wh.direct', direct ? '1' : '0'); } catch (e) { /* без памяти */ }
-      const payload = { 'поставщик': x.supplier, 'партия': x.batch, 'неликвид': 0, 'позиции': позиции, 'сразу_на_склад': direct };
+      // приход всегда в остаток «без адреса», дальше — адресное хранение (без этого товар не виден в остатке)
+      const payload = { 'поставщик': x.supplier, 'партия': x.batch, 'неликвид': 0, 'позиции': позиции, 'сразу_на_склад': true };
       if (x.cex) payload['из_цеха'] = { 'партия': x.cex['партия'], 'цвет': x.cex['цвет'] };
       const res = await sendOrQueue('/api/wh/receive_multi', payload, 'приход', payload, 'приход');
       if (!res.offline) toast(`Принято ${res['строк']} размеров · ${nf(res['штук'])} шт → ${res['сразу_на_склад'] ? 'сразу на склад' : 'в размещение'}`, 'ok');
@@ -4432,10 +4532,10 @@ async function loadCabinets() {
         <td data-l="Кабинет"><b>${esc(c['name'])}</b></td>
         <td data-l="Код"><span class="mono">${esc(c['id'])}</span></td>
         <td data-l="Токен">${c['token_set']
-          ? `<span class="pill green">задан ${esc(c['token_hint'])}</span>`
+          ? '<span class="pill green">задан</span>'
           : '<span class="pill orange">не задан</span>'}</td>
         <td data-l="Аналитика">${c['analytics_set']
-          ? `<span class="pill green">задан ${esc(c['analytics_hint'])}</span>`
+          ? '<span class="pill green">задан</span>'
           : '<span class="pill">не задан</span>'}</td>
         <td data-l="Статус">${c['active'] ? 'включён' : 'выключен'}</td>
         <td><button class="btn tiny ${c['token_set'] ? '' : 'primary'}" data-cab-edit="${esc(c['id'])}"

@@ -88,7 +88,7 @@ def _write_status(payload: dict) -> None:
 
 # ------------------------------------------------------------------- sync
 def sync_from_excel(force: bool = False) -> dict:
-    """Пересобирает таблицу products из листа «главный» книги цеха (в базе). Книга не изменяется."""
+    """Пересобирает таблицу products из остатков склада. Цены, фото и описания берутся из прежней таблицы."""
     import sheets
     from server import read_table, write_table  # импорт здесь, чтобы не было цикла
 
@@ -101,7 +101,6 @@ def sync_from_excel(force: bool = False) -> dict:
                 return prev
 
         wb = sheets.View("цех")
-        rows = list(wb["главный"].iter_rows(values_only=True))
 
         # сверка с листом «каробки» (только для отчёта)
         boxes: dict[str, float] = defaultdict(float)
@@ -133,40 +132,36 @@ def sync_from_excel(force: bool = False) -> dict:
             elif kind == "корректировка":
                 adjust[name] += qty
 
-        # берём фактические остатки склада (адрес − отгрузки), чтобы магазин и склад совпадали
-        wh_stock = {}
-        try:
-            import warehouse
-            wh_stock = {i["наименование"]: i["остаток"] for i in warehouse.stock_items()}
-        except Exception:
-            wh_stock = {}
-
+        # список товаров — из остатков склада (тот же, что на «Главной» склада), а не из листа «главный»:
+        # лист могли затереть, а магазин обязан показывать ровно то, что есть на складе
         catalog: dict[str, dict] = {}
         fk_sum = 0.0
         mismatch = 0
-        for row in rows[4:]:
-            if not row or not row[11]:
-                continue
-            name = _clean(row[11])
+        try:
+            import warehouse
+            stock = warehouse.stock_items()
+        except Exception:  # noqa: BLE001 — без склада каталог не трогаем
+            stock = []
+        if not stock:
+            raise RuntimeError("склад не ответил — каталог магазина не пересобран")
+        for it in stock:
+            name = _clean(it.get("наименование"))
             if not name:
                 continue
-            parts = [p.strip() for p in name.split("/")]
             cat = _category(name)
-            cached = float(row[17]) if isinstance(row[17], (int, float)) else 0.0
-            qty = wh_stock.get(name, cached)
+            qty = float(it.get("остаток") or 0.0)
             fk_sum += qty
             old_item = old.get(name, {})
-            price = _price_for(cat, {name: old_item.get("цена")}, name)
             if abs(qty - boxes.get(name, 0.0)) > 1e-9:
                 mismatch += 1
             catalog[name] = {
                 "категория": cat,
-                "модель": (parts[1] if len(parts) > 1 else "") or _clean(row[12]),
-                "цвет": parts[2] if len(parts) > 2 else "",
-                "размер": (parts[3] if len(parts) > 3 else "") or _clean(row[14]),
-                "код": _clean(row[4]),
+                "модель": _clean(it.get("модель")),
+                "цвет": _clean(it.get("цвет")),
+                "размер": _clean(it.get("размер")),
+                "код": _clean(it.get("код")),
                 "количество": qty,
-                "цена": price,
+                "цена": _price_for(cat, {name: old_item.get("цена")}, name),
                 "фото": _clean(old_item.get("фото")),
                 "название": _clean(old_item.get("название")),
                 "описание": _clean(old_item.get("описание")),

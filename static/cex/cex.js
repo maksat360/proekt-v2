@@ -463,7 +463,7 @@ function gridHtml(colors, sizes, own) {
       ${sizes.map((s) => {
         const k = gridKey(c.цвет, s.размер);
         const v = ST.grid[k];
-        return `<td><input class="cx-gin" type="number" min="0" step="1" inputmode="numeric"
+        return `<td><span class="cx-gsz">${esc(s.размер)}</span><input class="cx-gin" type="number" min="0" step="1" inputmode="numeric"
           data-grid="${esc(k)}" value="${v ? esc(v) : ''}" placeholder="·"
           aria-label="${esc(c.цвет)}, размер ${esc(s.размер)}">${stockLine(k)}</td>`;
       }).join('')}

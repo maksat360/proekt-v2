@@ -29,8 +29,10 @@ async function whAddrPage(meta) {
       <div class="card-h"><h3>Сканер</h3><div class="spacer"></div><span class="hint">ячейка, коробка, мешок или товар</span></div>
       <div class="card-b">
         <input class="input scan big" id="ad-scan" placeholder="сканируйте код" autocomplete="off" autocapitalize="characters">
-        <div id="ad-ctx" class="ad-ctx"><span class="hint">Коробка → ячейка снаружи: переставить. Коробка → ячейка внутри: вскрыть.
-          Мешок → сколько взяли → ячейка. Ячейка/коробка/мешок → товар → количество: положить. Товар без места — покажу, где лежит.</span></div>
+        <div id="ad-ctx" class="ad-ctx"><span class="hint">Готов: сканируйте код</span></div>
+        <details class="hint" style="margin-top:8px"><summary style="cursor:pointer">Как работать</summary>
+          Коробка → ячейка снаружи: переставить. Коробка → ячейка внутри: вскрыть.
+          Мешок → сколько взяли → ячейка. Ячейка/коробка/мешок → товар → количество: положить. Товар без места — покажу, где лежит.</details>
       </div>
     </div>
     <div class="card">
@@ -88,10 +90,17 @@ function adRender() {
     body = f['содержимое'].length ? `<table class="table ad-items"><thead><tr><th>Товар</th><th class="num">Есть</th><th class="num">Взял</th></tr></thead><tbody>
       ${f['содержимое'].map((x, i) => `<tr><td>${esc(x['наименование'])}</td><td class="num">${nf(x['количество'])}</td>
         <td class="num"><input class="input ad-take" type="number" min="0" max="${x['количество']}" data-i="${i}" style="width:80px" inputmode="numeric"></td></tr>`).join('')}
-      </tbody></table><div class="hint">${f['тип'] === 'M' ? 'Введите, сколько взяли, и сканируйте ячейку' : 'Чтобы переложить — введите количество и сканируйте, куда'}. Товар — положить сюда.</div>`
+      </tbody></table><div class="hint">${f['тип'] === 'M' ? 'Введите, сколько взяли, и сканируйте ячейку' : 'Чтобы переложить — введите количество и сканируйте, куда'}. Товар — положить сюда.</div>
+      ${adCan() ? '<div class="btn-row" style="margin-top:6px"><button class="btn sm" data-ad="out">Убрать в размещение</button><span class="hint">ошиблись при скане — вписанное количество снова будет без адреса</span></div>' : ''}`
       : '<div class="hint">Пусто. Сканируйте товар — положить сюда.</div>';
   } else if (f['тип'] === 'K') {
-    body = `${f['где'] ? `<div class="hint">стоит в <b>${esc(f['где'])}</b></div>` : ''}${adItems(f['содержимое'])}
+    // коробка: количество можно исправить (ошиблись при раскладке) — разница уходит/берётся «без адреса»
+    body = `${f['где'] ? `<div class="hint">стоит в <b>${esc(f['где'])}</b></div>` : ''}${adCan() && f['содержимое'].length
+      ? `<table class="table ad-items"><tbody>${f['содержимое'].map((x, i) => `<tr><td>${esc(x['наименование'])}</td>
+          <td class="num"><input class="input ad-set" type="number" min="0" value="${x['количество']}" data-i="${i}" style="width:80px" inputmode="numeric"> шт</td></tr>`).join('')}
+        </tbody></table><div class="btn-row" style="margin-top:6px"><button class="btn sm" data-ad="set">Сохранить количество</button>
+        <span class="hint">меньше — лишнее снова без адреса; больше — возьмётся из без адреса</span></div>`
+      : adItems(f['содержимое'])}
       <div class="hint">Сканируйте ячейку (или товар — добавить в коробку)</div>`;
   } else if (f['тип'] === 'N') {
     body = f['коробки'].length ? `<div class="hint">Коробки: ${f['коробки'].map((b) => `<b>${esc(b['код'])}</b> (${nf(b['штук'])} шт)`).join(', ')}</div>`
@@ -186,6 +195,28 @@ function adMount() {
     const run = (p) => p.catch((err) => toast(err.message, 'err'));
     if (act === 'reset') adReset();
     if (act === 'put') run(adPut());
+    if (act === 'out') run((async () => {  // ошибочно положили — вернуть «без адреса»
+      const f = AD.first;
+      const items = [...document.querySelectorAll('.ad-take')]
+        .map((inp) => ({ 'наименование': f['содержимое'][Number(inp.dataset.i)]['наименование'], 'количество': num(inp.value) }))
+        .filter((x) => x['количество'] > 0);
+      if (!items.length) { toast('Впишите в «Взял», сколько убрать', 'err'); return; }
+      const r = await adPost('out', { 'код': f['код'], 'позиции': items });
+      toast(`${r['код']}: убрано ${nf(r['штук'])} шт — снова в размещении`, 'ok');
+      await adRefresh(); adRender(); adFocus();
+    })());
+    if (act === 'set') run((async () => {  // исправить количество в коробке
+      const f = AD.first;
+      const ch = $$('.ad-set').map((inp) => ({ x: f['содержимое'][Number(inp.dataset.i)], q: num(inp.value) }))
+        .filter((c) => c.q !== c.x['количество']);
+      if (!ch.length) { toast('Количество не изменилось', 'err'); return; }
+      try {
+        for (const c of ch) {
+          await adPost('set', { 'код': f['код'], 'наименование': c.x['наименование'], 'количество': c.q });
+          toast(`${f['код']}: ${c.x['наименование']} ${nf(c.x['количество'])} → ${nf(c.q)} шт`, 'ok');
+        }
+      } finally { await adRefresh(); adRender(); adFocus(); }
+    })());
     if (act === 'rack') run((async () => {
       const zone = $('#ad-zone').value, rack = num($('#ad-rack').value);
       const r = await adPost('rack', { 'зона': zone, 'стеллаж': rack, 'этажей': num($('#ad-floors').value), 'ячеек': num($('#ad-cells').value) });

@@ -297,12 +297,71 @@ def put(actor: str, place, product: str, qty: float) -> dict:
     try:
         def run():
             row = _need(con, place, "PKM", "ячейка внутри, коробка или мешок")
-            free = _free(con, product)
-            if qty > free:
-                raise ValueError(f"Без адреса только {max(free, 0):g} шт «{product}» — остальное уже лежит по адресам")
+            _check_free(con, product, qty)
             _add(con, row["code"], product, qty)
             sqldb.audit(con, actor, "addr_put", "wh_places", row["code"], {"товар": product, "шт": qty})
             return {"код": row["code"], "содержимое": _contents(con, row["code"])}
+        return _tx(con, run)
+    finally:
+        con.close()
+
+
+def _check_free(con, product: str, qty: float) -> None:
+    free = _free(con, product)
+    if qty > free:
+        placed = round(_stock().get(product, 0.0) - free, 3)
+        raise ValueError(
+            f"Без адреса только {max(free, 0):g} шт «{product}»: ещё {placed:g} шт уже лежит по адресам" if placed > 0
+            else f"По базе на складе всего {max(free, 0):g} шт «{product}». Если на полке больше — "
+                 "сначала проведите ревизию (Склад → Ревизия), потом размещайте")
+
+
+def set_qty(actor: str, place, product: str, qty: float) -> dict:
+    """Исправить, сколько товара лежит в коробке/ячейке/мешке (ошиблись при раскладке).
+    Меньше — разница снова «без адреса»; больше — берётся из «без адреса». Остаток склада не меняется."""
+    product = str(product or "").strip()
+    if not product:
+        raise ValueError("Не выбран товар")
+    if qty < 0:
+        raise ValueError("Количество не может быть меньше нуля")
+    con = _con()
+    try:
+        def run():
+            row = _need(con, place, "PKM", "ячейка внутри, коробка или мешок")
+            have = con.execute("SELECT qty FROM wh_contents WHERE place=? AND product=?", (row["code"], product)).fetchone()
+            was = round(have["qty"] if have else 0.0, 3)
+            diff = round(qty - was, 3)
+            if diff > 0:
+                _check_free(con, product, diff)
+            if diff:
+                _add(con, row["code"], product, diff)
+                _free_box_if_empty(con, row["code"])
+                sqldb.audit(con, actor, "addr_set", "wh_places", row["code"], {"товар": product, "было": was, "стало": qty})
+            return {"код": row["code"], "было": was, "стало": qty, "содержимое": _contents(con, row["code"])}
+        return _tx(con, run)
+    finally:
+        con.close()
+
+
+def take_out(actor: str, place, items: list[dict]) -> dict:
+    """Убрать товар из ячейки/коробки/мешка обратно «без адреса» (ошибочно отсканировали).
+    Остаток склада не меняется — меняется только где он лежит."""
+    con = _con()
+    try:
+        def run():
+            row = _need(con, place, "PKM", "ячейка внутри, коробка или мешок")
+            total = 0.0
+            for it in items:
+                product, qty = str(it.get("наименование") or "").strip(), float(it.get("количество") or 0)
+                if not product or qty <= 0:
+                    continue
+                _add(con, row["code"], product, -qty)  # не даст убрать больше, чем лежит
+                total += qty
+            if not total:
+                raise ValueError("Укажите, сколько убрать")
+            _free_box_if_empty(con, row["code"])
+            sqldb.audit(con, actor, "addr_out", "wh_places", row["code"], {"позиции": items})
+            return {"код": row["code"], "штук": total, "содержимое": _contents(con, row["code"])}
         return _tx(con, run)
     finally:
         con.close()

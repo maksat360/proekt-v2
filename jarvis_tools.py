@@ -120,7 +120,7 @@ def tools_for(me: dict, can, WRITE_LOCK) -> dict:
             cats = assistant.stock_filter(warehouse.stock_items(), str(запрос))["cat"]
             with WRITE_LOCK:
                 revision.start(cats[0] if cats else "", str(me.get("фио") or me.get("логин") or ""))
-            return f"ревизия начата: {cats[0] if cats else 'весь склад'}. Откройте Склад → Ревизия и сканируйте товар"
+            return f"ревизия начата: {cats[0] if cats else 'весь склад'}. Откройте Склад → Ревизия, сканируйте товар и впишите поправку +1 или −1"
 
         def revision_question(запрос: str = ""):
             import warehouse

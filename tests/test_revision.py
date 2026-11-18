@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Ревизия: факт сканом и вручную, проведение доводит остаток до факта, повтор невозможен."""
+"""Ревизия: скан находит товар, поправка ±N, проведение прибавляет/списывает её, повтор невозможен."""
 from __future__ import annotations
 
 import sys
@@ -51,27 +51,58 @@ class RevisionTests(unittest.TestCase):
         cur = revision.current()
         self.assertEqual([i["наименование"] for i in cur["товары"]],
                          ["Постель/сакура/голубой, белый/1 сп", "Постель/сирень/белый, сиреневый/1 сп"])
-        revision.count(rid, "Постель/сакура/голубой, белый/1 сп", "склад", qty=8)      # недостача 2
-        for _ in range(6):                                                             # излишек 2 сканом
-            revision.count(rid, "Постель/сирень/белый, сиреневый/1 сп", "склад", add=1)
-        revision.count(rid, "Брюки/477/чёрный/42", "склад", qty=7)                    # чужая категория, совпало
+        # скан только находит товар — ничего не меняет (раньше один скан = «всего 1 шт» и списание остального)
+        self.assertEqual(revision.count(rid, "Постель/сакура/голубой, белый/1 сп", "склад")["поправка"], None)
+        revision.count(rid, "Постель/сакура/голубой, белый/1 сп", "склад", delta=-2)
+        revision.count(rid, "Постель/сирень/белый, сиреневый/1 сп", "склад", delta=1)
+        revision.count(rid, "Постель/сирень/белый, сиреневый/1 сп", "склад", delta=2)    # исправил: +2
+        revision.count(rid, "Брюки/477/чёрный/42", "склад", delta=3)
+        revision.count(rid, "Брюки/477/чёрный/42", "склад", delta=0)                     # 0 — убрать
+        with self.assertRaisesRegex(ValueError, "всего 10"):
+            revision.count(rid, "Постель/сакура/голубой, белый/1 сп", "склад", delta=-11)
+        cur = {i["наименование"]: i for i in revision.current()["товары"]}
+        self.assertEqual(cur["Постель/сакура/голубой, белый/1 сп"]["станет"], 8)
         res = revision.apply(rid, "склад")
-        self.assertEqual(res, {"позиций": 3, "излишек": 2.0, "недостача": 2.0})
+        self.assertEqual(res, {"позиций": 2, "излишек": 2.0, "недостача": 2.0})
         self.assertEqual((self.stock("a"), self.stock("b"), self.stock("c")), (8, 6, 7))
         with self.assertRaises(ValueError):
             revision.apply(rid, "склад")
         self.assertIsNone(revision.current())
         h = revision.history()[0]
-        self.assertEqual((h["статус"], h["позиций"], len(h["расхождения"])), ("проведена", 3, 2))
+        self.assertEqual((h["статус"], h["позиций"], len(h["расхождения"])), ("проведена", 2, 2))
+        self.assertEqual({(d["система"], d["факт"]) for d in h["расхождения"]}, {(10, 8), (4, 6)})
 
     def test_cancel_changes_nothing(self):
         rid = revision.start("", "склад")["id"]
-        revision.count(rid, "Брюки/477/чёрный/42", "склад", qty=1)
-        revision.count(rid, "Постель/сакура/голубой, белый/1 сп", "склад", qty=3)
-        revision.count(rid, "Постель/сакура/голубой, белый/1 сп", "склад")  # убрать из ревизии
+        revision.count(rid, "Брюки/477/чёрный/42", "склад", delta=-1)
+        revision.count(rid, "Постель/сакура/голубой, белый/1 сп", "склад", delta=3)
+        revision.count(rid, "Постель/сакура/голубой, белый/1 сп", "склад", delta=None)  # стёр поле
         revision.cancel(rid, "склад")
         self.assertEqual(self.stock("c"), 7)
         self.assertEqual(revision.history()[0]["позиций"], 1)
+
+    def test_undo_restores_stock(self):
+        rid = revision.start("", "склад")["id"]
+        revision.count(rid, "Брюки/477/чёрный/42", "склад", delta=-2)
+        revision.count(rid, "Постель/сирень/белый, сиреневый/1 сп", "склад", delta=3)
+        revision.apply(rid, "склад")
+        self.assertEqual((self.stock("c"), self.stock("b")), (5, 7))
+        self.assertEqual(revision.undo(rid, "начальник")["позиций"], 2)
+        self.assertEqual((self.stock("c"), self.stock("b")), (7, 4), "остаток — как до ревизии")
+        self.assertEqual(revision.history()[0]["статус"], "откатена")
+        with self.assertRaises(ValueError):
+            revision.undo(rid, "начальник")  # второй раз — нельзя
+
+    def test_undo_refuses_when_surplus_already_shipped(self):
+        rid = revision.start("", "склад")["id"]
+        revision.count(rid, "Постель/сирень/белый, сиреневый/1 сп", "склад", delta=3)
+        revision.apply(rid, "склад")
+        con = sqldb.connect()
+        con.execute("INSERT INTO shipments(id, ts, target, product_id, qty) VALUES ('s1', ?, 'WB', 'b', 6)", (sqldb.now(),))
+        con.close()
+        with self.assertRaisesRegex(ValueError, "излишек ревизии уже ушёл"):
+            revision.undo(rid, "начальник")
+        self.assertEqual(self.stock("b"), 1, "ничего не тронуто")
 
 
 if __name__ == "__main__":

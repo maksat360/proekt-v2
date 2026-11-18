@@ -1027,7 +1027,18 @@ class Handler(BaseHTTPRequestHandler):
                 self._err("файл логотипа не найден", 404)
                 return
             ctype = _mt.guess_type(str(target))[0] or "image/png"
-            self._send(target.read_bytes(), ctype)
+            body = target.read_bytes()
+            # логотип — маленький значок: отдаём копию 256 px (оригинал 1 МБ+ грузил телефоны), кэш на сутки
+            if target.suffix.lower() in (".png", ".jpg", ".jpeg") and len(body) > 200_000:
+                thumb = BASE / "data" / f"logo_{int(target.stat().st_mtime)}_256.png"
+                if not thumb.is_file():
+                    import subprocess
+                    thumb.parent.mkdir(parents=True, exist_ok=True)
+                    subprocess.run(["sips", "-Z", "256", "-s", "format", "png", str(target), "--out", str(thumb)],
+                                   capture_output=True, timeout=30)
+                if thumb.is_file():
+                    body, ctype = thumb.read_bytes(), "image/png"
+            self._send(body, ctype, extra={"Cache-Control": "public, max-age=86400"})
             return
 
         if path == "/api/brand" and method == "GET":
@@ -1287,6 +1298,24 @@ class Handler(BaseHTTPRequestHandler):
                 return
             import boss_report
             self._json({"ok": True, "data": boss_report.build()})
+            return
+
+        if path == "/api/dashboard/supply.xlsx":  # поставки по неделям: фильтр недель и ИП/покупателей
+            if not can(me, "report.build"):
+                self._err("нет прав", 403)
+                return
+            import boss_report
+            try:
+                body = boss_report.supply_xlsx([v for v in query.get("неделя", []) if v],
+                                               [v for v in query.get("ип", []) if v])
+            except ValueError as exc:
+                self._err(str(exc))
+                return
+            fname = f"Поставки по неделям {datetime.now():%Y-%m-%d}.xlsx"
+            disp = (f"attachment; filename=\"supply_{datetime.now():%Y%m%d}.xlsx\"; "
+                    "filename*=UTF-8''" + quote(fname))
+            self._send(body, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                       200, {"Content-Disposition": disp})
             return
 
         if path == "/api/dashboard/wb":  # аналитика WB: кабинет или все вместе
@@ -2050,6 +2079,11 @@ class Handler(BaseHTTPRequestHandler):
                     elif sub == "move":
                         self._json({"ok": True, **addresses.move(who, body.get("откуда"), body.get("куда"),
                                                                  body.get("позиции") or [])})
+                    elif sub == "set":  # исправить количество в коробке/ячейке/мешке
+                        self._json({"ok": True, **addresses.set_qty(who, body.get("код"), str(body.get("наименование", "")),
+                                                                    as_num(body.get("количество")))})
+                    elif sub == "out":  # убрать из ячейки обратно «без адреса» (ошибочный скан)
+                        self._json({"ok": True, **addresses.take_out(who, body.get("код"), body.get("позиции") or [])})
                     elif sub == "relabel":
                         self._json({"ok": True, **addresses.relabel(who, body.get("старый"), body.get("новый"))})
                     else:
@@ -2079,6 +2113,14 @@ class Handler(BaseHTTPRequestHandler):
                     items = warehouse.stock_items()
                     if query.get("только", ["1"])[0] == "1":
                         items = [i for i in items if i["остаток"] != 0]  # минус (пересорт) тоже показываем
+                    try:  # адресное хранение: сколько уже на местах, сколько ещё ждёт размещения
+                        import addresses
+                        loc, wm = addresses.located(), addresses.where_map()
+                    except Exception:  # noqa: BLE001 — без адресов просто не показываем разбивку
+                        loc, wm = {}, {}
+                    items = [{**i, "по_адресам": loc.get(i["наименование"], 0.0), "места": wm.get(i["наименование"], []),
+                              "без_адреса": round(max(0.0, i["остаток"] - loc.get(i["наименование"], 0.0)), 2)}
+                             for i in items]  # копии: кэш склада не трогаем
                     self._json({"ok": True, "data": items,
                                 "итоги": {"позиций": len(items),
                                           "штук": round(sum(i["остаток"] for i in items), 2)}})
@@ -2232,17 +2274,26 @@ class Handler(BaseHTTPRequestHandler):
                         item = warehouse.resolve_product(str(body.get("товар", "")))  # штрихкод, код или наименование
                         if not item:
                             raise ValueError(f"Не нашёл товар: {body.get('товар', '')}")
-                        qty = body.get("факт")
+                        d = body.get("поправка")  # +N / −N; без поля — только найти товар
                         res = revision.count(rid, item["наименование"], who,
-                                             qty=None if qty in (None, "") else as_num(qty),
-                                             add=as_num(body.get("добавить")) or 0)
+                                             delta=None if d is None else as_num(str(d).replace("−", "-")) or 0)
                     elif act == "apply":
                         res = revision.apply(rid, who)
                     elif act == "cancel":
                         res = revision.cancel(rid, who)
+                    elif act == "undo":  # откат проведённой — отдельное право
+                        if not can(me, "wh.fix"):
+                            self._err("Нет права «Исправления склада»", 403)
+                            return
+                        res = revision.undo(rid, who)
                     else:
                         self._err("неизвестный запрос", 404)
                         return
+                    self._json({"ok": True, **res})
+                    return
+                if path == "/api/wh/receipt/edit":  # правка принятой партии: новые итоги, пишется разница
+                    res = warehouse.receipt_edit(str(body.get("поставщик", "")), str(body.get("партия", "")),
+                                                 body.get("позиции") or [], str(me.get("фио", "") or me.get("логин", "")))
                     self._json({"ok": True, **res})
                     return
                 if path == "/api/wh/export":

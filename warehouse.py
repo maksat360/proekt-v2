@@ -378,6 +378,9 @@ def load_master(force: bool = False) -> dict:
                     if len(row) > 6:
                         defect[name_key] += _num(row[6])
 
+        # приход по товарам, которых нет на «главном» (заведены в цехе) — для «ждёт размещения»
+        data["bought"], data["defect"], data["addr_qty"] = dict(bought), dict(defect), dict(addr_qty)
+
         # каталог и остатки
         ws = wb["главный"]
         seen = set()
@@ -460,8 +463,11 @@ def load_master(force: bool = False) -> dict:
                     continue
                 code, sku, color, size = _clean(row[6]), _clean(row[2]), _clean(row[4]), _clean(row[5])
                 if re.fullmatch(r"\d{8,14}", code) and sku:
+                    parts = [x.strip() for x in sku.split("-")]
+                    # «477-ч-сред» → 477; «S-1-тс», «j-12-тс» → S-1, j-12 (номер после буквы — часть модели)
+                    model = "-".join(parts[:2]) if len(parts) > 2 and parts[1].isdigit() else parts[0]
                     data["barcodes"][code] = {
-                        "модель": sku.split("-")[0].strip(),
+                        "модель": model,
                         "цвет": color.lower(),
                         "размер": size,
                     }
@@ -517,10 +523,13 @@ def stock_items() -> list[dict]:
     out = []
     items = list(data["items"])
     known = {it["наименование"] for it in items}
-    for name in sorted(set(sql_fact or {}) - known):  # товары, заведённые в цехе (нет в «главном»)
+    bought_sheet = data.get("bought", {})
+    for name in sorted((set(sql_fact or {}) | set(bought_sheet)) - known):  # заведённые в цехе (нет в «главном»)
         parts = [x.strip() for x in name.split("/")] + ["", "", "", ""]
         items.append({"наименование": name, "категория": parts[0], "модель": parts[1], "цвет": parts[2],
-                      "размер": parts[3], "фк": 0.0, "приобретено": 0.0, "неликвид": 0.0, "размещено": 0.0})
+                      "размер": parts[3], "фк": 0.0, "приобретено": bought_sheet.get(name, 0.0),
+                      "неликвид": data.get("defect", {}).get(name, 0.0),
+                      "размещено": data.get("addr_qty", {}).get(name, 0.0)})
     for it in items:
         name = it["наименование"]
         # «до KB»: куплено − размещено − неликвид (по листам) + ещё не выгруженные операции
@@ -597,15 +606,19 @@ def resolve_product(value: str) -> dict | None:
     items = stock_items()
     if re.fullmatch(r"\d{8,14}", v):
         info = load_master()["barcodes"].get(v)
-        if not info:
-            return None
-        model = info["модель"].lower()
-        for it in items:
-            if (it["модель"].lower() == model
-                    and (not info["цвет"] or info["цвет"] in it["цвет"].lower())
-                    and (not info["размер"] or info["размер"] == it["размер"])):
-                return it
-        return None
+        if info:
+            model, color = info["модель"].lower(), info["цвет"]
+            cands = [it for it in items
+                     if it["модель"].lower() == model
+                     and (not color or color in it["цвет"].lower())
+                     and (not info["размер"] or info["размер"] == it["размер"])]
+            if cands:  # «серый» — точно серый, а не «светло-серый меланж»: точное совпадение, иначе самое короткое
+                exact = [it for it in cands if it["цвет"].lower() == color]
+                return (exact or sorted(cands, key=lambda it: len(it["цвет"])))[0]
+        # не нашли (или артикул в листе разобран неверно): баркоды WB всех кабинетов в листе «главный»,
+        # затем — из заказов WB, которые портал уже сопоставил с товаром (S-1, j-12, j-13…)
+        name = article_index()["barcodes"].get(v) or order_barcodes().get(v)
+        return _STOCK["index"].get(name.lower()) if name else None
     low = v.lower()
     codes = (load_master().get("codes") or {})
     if low in codes:
@@ -1616,6 +1629,15 @@ def receipt_xlsx(day: str = "", supplier: str = ALL_SUPPLIERS, batch: str = ALL_
     return buf.getvalue()
 
 
+def _located() -> dict:
+    """Сколько штук товара лежит по адресам (как на Главной: «на местах»); без адресов — пусто."""
+    try:
+        import addresses
+        return addresses.located()
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def full_xlsx() -> bytes:
     """Весь склад одной книгой: остатки + приход, размещение и отгрузки из PostgreSQL."""
     import io
@@ -1639,12 +1661,13 @@ def full_xlsx() -> bytes:
         for i, w in enumerate(widths):
             ws.column_dimensions[chr(65 + i)].width = w
 
-    items = stock_items()
-    sheet("Остатки", ["Наименование", "Категория", "Модель", "Цвет", "Размер", "Остаток", "Ждёт размещения",
-                      "Приход", "Отгружено", "из них FBS", "Адрес"],
-          ([i["наименование"], i["категория"], i["модель"], i["цвет"], i["размер"], i["остаток"], i["ожидает"],
+    items, loc = stock_items(), _located()
+    sheet("Остатки", ["Наименование", "Категория", "Модель", "Цвет", "Размер", "Остаток", "На местах",
+                      "В размещении", "Приход", "Отгружено", "из них FBS", "Адрес"],
+          ([i["наименование"], i["категория"], i["модель"], i["цвет"], i["размер"], i["остаток"],
+            loc.get(i["наименование"], 0.0), round(max(0.0, i["остаток"] - loc.get(i["наименование"], 0.0)), 2),
             i["приход"], i["отгружено"], i["фbs"], i["адрес"]] for i in items),
-          (34, 14, 10, 20, 8, 10, 12, 10, 10, 10, 16))
+          (34, 14, 10, 20, 8, 10, 10, 12, 10, 10, 10, 16))
     con = sqldb.connect()
     try:
         q = lambda sql: con.execute(sql).fetchall()
@@ -1686,18 +1709,120 @@ def model_xlsx(cat=(), model=(), color=(), size=()) -> bytes:
     wb = Workbook()
     ws = wb.active
     ws.title = (", ".join(model or cat) or "Склад")[:31].replace("/", "-")
-    ws.append(["Полное наименование", "Категория", "Модель", "Цвет", "Размер", "Остаток", "Адрес"])
+    ws.append(["Полное наименование", "Категория", "Модель", "Цвет", "Размер", "Остаток", "На местах",
+               "В размещении", "Адрес"])
     for c in ws[1]:
         c.font = Font(bold=True)
-    for i in rows:
-        ws.append([i["наименование"], i["категория"], i["модель"], i["цвет"], i["размер"], i["остаток"], i["адрес"]])
+    loc = _located()
+    on = [loc.get(i["наименование"], 0.0) for i in rows]
+    wait = [round(max(0.0, i["остаток"] - o), 2) for i, o in zip(rows, on)]
+    for i, o, w in zip(rows, on, wait):
+        ws.append([i["наименование"], i["категория"], i["модель"], i["цвет"], i["размер"], i["остаток"], o, w, i["адрес"]])
     ws.append([])
-    ws.append(["Итого", "", "", "", f"{len(rows)} поз.", round(sum(i["остаток"] for i in rows), 2)])
-    ws.cell(ws.max_row, 1).font = ws.cell(ws.max_row, 6).font = Font(bold=True)
+    ws.append(["Итого", "", "", "", f"{len(rows)} поз.", round(sum(i["остаток"] for i in rows), 2),
+               round(sum(on), 2), round(sum(wait), 2)])
+    for col in (1, 6, 7, 8):
+        ws.cell(ws.max_row, col).font = Font(bold=True)
     ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:G{len(rows) + 1}"
-    for col, w in zip("ABCDEFG", (44, 14, 18, 24, 10, 10, 16)):
+    ws.auto_filter.ref = f"A1:I{len(rows) + 1}"
+    for col, w in zip("ABCDEFGHI", (44, 14, 18, 24, 10, 10, 10, 13, 16)):
         ws.column_dimensions[col].width = w
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+def receipt_edit(supplier: str, batch: str, rows: list[dict], who: str = "") -> dict:
+    """Правка принятой партии: rows — [{наименование, количество}] — НОВЫЕ итоги по товару в партии.
+    История не переписывается: дописываем разницу (+ или −) в ту же партию — приход и размещение
+    «без адреса», как при приёмке «сразу на склад». Уменьшить ниже уже отгруженного нельзя."""
+    import hashlib
+    import sys
+    import uuid
+    if str(BASE / "sql") not in sys.path:
+        sys.path.insert(0, str(BASE / "sql"))
+    import db as sqldb  # noqa: WPS433
+    import fbs_stock
+    supplier, batch = _clean(supplier), _clean(batch)
+    con = sqldb.connect()
+    try:
+        have: dict[str, float] = {}
+        for r in con.execute("""SELECT p.name AS name, SUM(pu.qty) AS q FROM purchases pu JOIN products p ON p.id = pu.product_id
+                                WHERE pu.source = 'shadow' AND COALESCE(pu.supplier, '') = ? AND COALESCE(pu.batch, '') = ?
+                                GROUP BY p.name""", (supplier, batch)).fetchall():
+            have[r["name"]] = float(r["q"] or 0)
+        fact = fbs_stock.fact_by_name() or {}
+        plan, errors = [], []
+        for row in rows:
+            item = resolve_product(_clean(row.get("наименование")))
+            if not item:
+                errors.append(f"«{row.get('наименование')}» нет в справочнике")
+                continue
+            name, new = item["наименование"], _num(row.get("количество"))
+            if new < 0:
+                errors.append(f"{name}: количество не может быть меньше нуля")
+                continue
+            delta = round(new - have.get(name, 0.0), 3)
+            if not delta:
+                continue
+            if delta < 0 and fact.get(name, 0.0) + delta < -1e-9:
+                errors.append(f"{name}: на складе {fact.get(name, 0):g} шт — уменьшить на {-delta:g} нельзя, часть уже отгружена")
+                continue
+            pid = con.execute("SELECT id FROM products WHERE name = ?", (name,)).fetchone()["id"]
+            plan.append((name, pid, delta))
+        if errors:
+            raise ValueError("; ".join(errors))
+        if not plan:
+            return {"изменено": 0, "плюс": 0, "минус": 0}
+        uid, now = uuid.uuid4().hex[:12], sqldb.now()
+        con.execute("INSERT INTO locations(id, code) VALUES (?,?) ON CONFLICT(code) DO NOTHING", ("loc-no-address", NO_ADDRESS))
+        con.execute("BEGIN")
+        try:
+            for name, pid, delta in plan:
+                ext = f"shadow:правка:{uid}:{name}"
+                con.execute("""INSERT INTO purchases(id, ts, supplier, batch, product_id, qty, defect, source, external_uuid)
+                               VALUES (?,?,?,?,?,?,?,?,?)""",
+                            (hashlib.sha1(ext.encode()).hexdigest()[:20], now, supplier, batch, pid, delta, 0, "shadow", ext))
+                con.execute("""INSERT INTO placements(id, ts, location_code, product_id, qty, external_uuid, source_sheet)
+                               VALUES (?,?,?,?,?,?,?)""",
+                            (hashlib.sha1((ext + ":адрес").encode()).hexdigest()[:20], now, NO_ADDRESS, pid, delta,
+                             ext + ":адрес", "правка прихода"))
+            sqldb.audit(con, who, "receipt_edit", "purchases", f"{supplier}|{batch}",
+                        {"позиции": [{"товар": n, "разница": d} for n, _, d in plan]})
+            con.execute("COMMIT")
+        except Exception:
+            con.execute("ROLLBACK")
+            raise
+    finally:
+        con.close()
+    fbs_stock._FACT["ts"] = 0
+    return {"изменено": len(plan), "плюс": sum(d for _, _, d in plan if d > 0),
+            "минус": -sum(d for _, _, d in plan if d < 0)}
+
+
+_ORDER_BC = {"ts": 0.0, "data": {}}
+
+
+def order_barcodes() -> dict[str, str]:
+    """Баркод → наименование из заказов WB (FBS), где портал уже знает товар. Кэш 5 минут.
+    Так сканер узнаёт модели, чьих баркодов нет в справочниках книги (S-1, j-12, j-13…)."""
+    if time.time() - _ORDER_BC["ts"] < 300:
+        return _ORDER_BC["data"]
+    data: dict[str, str] = {}
+    try:
+        import fbs_stock  # noqa: F401 — кладёт sql/ в путь
+        import db as sqldb
+        con = sqldb.connect()
+        try:
+            for r in con.execute("""SELECT i.external_sku AS sku, p.name AS name FROM order_items i
+                                    JOIN products p ON p.id = i.product_id
+                                    WHERE i.external_sku IS NOT NULL AND i.external_sku <> ''""").fetchall():
+                for bc in _barcode_text(r["sku"]):
+                    if re.fullmatch(r"\d{8,14}", bc):
+                        data.setdefault(bc, r["name"])
+        finally:
+            con.close()
+    except Exception:  # noqa: BLE001 — без базы просто не помогаем
+        pass
+    _ORDER_BC.update(ts=time.time(), data=data)
+    return data

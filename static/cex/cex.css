@@ -21,7 +21,7 @@
 .cx-user { margin-left: auto; display: flex; align-items: center; gap: 9px; font-size: 12.5px; color: var(--ink-2); }
 .cx-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
 
-.cx-main { max-width: 1200px; margin: 0 auto; padding: 24px 24px 72px; }
+.cx-main { max-width: none; margin: 0 auto; padding: 24px 32px 72px; }  /* на широком мониторе — вся ширина, сетки растягиваются сами */
 
 .cx-loading { display: flex; align-items: center; gap: 10px; color: var(--ink-3); font-size: 13.5px; padding: 40px 0; }
 .cx-spin { width: 15px; height: 15px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--blue); animation: cxspin .8s linear infinite; }
@@ -651,3 +651,27 @@ body.ux-dirty .ux-badge { opacity: 1; transform: none; }
   .cx-gfoot .btn { flex: 1 1 auto; }
   #cx-cart #cx-submit { max-width: none; }
 }
+
+/* новый заказ, широкий экран: позиция слева, состав заказа справа и всегда на виду */
+.cx-gsz { display: none; }
+@media (min-width: 1500px) {
+  .cx-new { max-width: none; display: grid; grid-template-columns: minmax(0, 1fr) minmax(380px, 30%); gap: 0 16px; align-items: start; }
+  .cx-new > .cx-card { grid-column: 1; }
+  .cx-new > #cx-cart { grid-column: 2; grid-row: 1 / span 2; position: sticky; top: 76px; max-height: calc(100vh - 96px); overflow: auto; }
+}
+/* телефон: вместо широкой таблицы — карточка на каждый цвет, размеры переносятся строками (без прокрутки вбок) */
+@media (max-width: 620px) {
+  .cx-new .cx-gwrap { max-height: none; overflow: visible; }
+  .cx-gtable, .cx-gtable tbody { display: block; }
+  .cx-gtable thead { display: none; }
+  .cx-gtable tr { display: grid; grid-template-columns: repeat(auto-fill, minmax(62px, 1fr)); gap: 8px 6px; padding: 12px; border-bottom: 1px solid var(--line-2); }
+  .cx-gtable tr[hidden] { display: none; }
+  .cx-gtable th, .cx-gtable td { border: 0; padding: 0; }
+  .cx-gtable .cx-gcolor { grid-column: 1 / -1; position: static; min-width: 0; padding: 0 0 2px; font-size: 15px; }
+  .cx-gtable td { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+  .cx-gsz { display: block; font-size: 12px; color: var(--ink-3); }
+  .cx-gtable .cx-gin { width: 100%; max-width: none; }
+  .cx-gtable .cx-gsum { grid-column: 1 / -1; align-items: flex-end; }
+  .cx-gtable .cx-gsum:empty { display: none; }
+}
+@media (max-width: 620px) { .cx-gtable .cx-gcolor { background: none; text-transform: none; letter-spacing: 0; } }

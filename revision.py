@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
-"""Ревизия склада: пересчитываем товар, сверяем с базой, проводим разницу.
+"""Ревизия склада: сканируем товар и вписываем поправку (+1 — лишняя штука, −2 — не хватает двух).
 
 Остаток = размещено − отгружено. Проведение ревизии пишет разницу так же, как обычные операции:
 излишек — размещение в ячейку «ревизия», недостача — отгрузка получателю «РЕВИЗИЯ».
-Правятся только пересчитанные позиции; не тронутые в ревизии остаются как были."""
+Правятся только позиции с поправкой; остальные остаются как были.
+Пока ревизия открыта, revision_items.counted хранит поправку; при проведении туда пишется итог
+(остаток + поправка), а в system — остаток до ревизии, поэтому история читается как «было → стало»."""
 from __future__ import annotations
 
 import hashlib
@@ -66,31 +68,33 @@ def start(scope: str, actor: str) -> dict:
         con.close()
 
 
-def count(rev_id: str, name: str, actor: str, qty: float | None = None, add: float = 0) -> dict:
-    """Факт по товару: qty — задать число (None — убрать из ревизии), add — прибавить (скан)."""
+def count(rev_id: str, name: str, actor: str, delta: float | None = None) -> dict:
+    """Поправка по товару: +N — лишние, −N — не хватает; None или 0 — убрать из ревизии; без поправки — просто найти."""
     con = _con()
     try:
         rev = con.execute("SELECT status FROM revisions WHERE id=?", (rev_id,)).fetchone()
         if not rev or rev["status"] != "открыта":
             raise ValueError("Ревизия уже закрыта")
-        p = con.execute("SELECT id FROM products WHERE name=?", (name,)).fetchone()
+        p = con.execute(f"SELECT p.id AS id, {_STOCK_SQL} AS sys FROM products p WHERE p.name=?", (name,)).fetchone()
         if not p:
             raise ValueError(f"Товар не найден: {name}")
+        sys_q = float(p["sys"] or 0)
         have = con.execute("SELECT counted FROM revision_items WHERE revision_id=? AND product_id=?",
                            (rev_id, p["id"])).fetchone()
-        if qty is None and not add:
+        if delta is None and have is None:
+            return {"наименование": name, "система": sys_q, "поправка": None}
+        if not delta:
             con.execute("DELETE FROM revision_items WHERE revision_id=? AND product_id=?", (rev_id, p["id"]))
-            return {"наименование": name, "факт": None}
-        value = (have["counted"] if have else 0) + add if add else qty
-        if value < 0:
-            raise ValueError("Факт не может быть меньше нуля")
+            return {"наименование": name, "система": sys_q, "поправка": None}
+        if sys_q + delta < 0:
+            raise ValueError(f"По базе всего {sys_q:g} шт — списать {-delta:g} нельзя")
         if have:
             con.execute("UPDATE revision_items SET counted=?, updated_at=?, updated_by=? "
-                        "WHERE revision_id=? AND product_id=?", (value, _now(), actor, rev_id, p["id"]))
+                        "WHERE revision_id=? AND product_id=?", (delta, _now(), actor, rev_id, p["id"]))
         else:
             con.execute("INSERT INTO revision_items(revision_id, product_id, counted, updated_at, updated_by) "
-                        "VALUES (?,?,?,?,?)", (rev_id, p["id"], value, _now(), actor))
-        return {"наименование": name, "факт": value}
+                        "VALUES (?,?,?,?,?)", (rev_id, p["id"], delta, _now(), actor))
+        return {"наименование": name, "система": sys_q, "поправка": delta}
     finally:
         con.close()
 
@@ -112,11 +116,11 @@ def current() -> dict | None:
         items = []
         for r in rows:
             sys_q = float(r["sys"] or 0)
-            c = None if r["counted"] is None else float(r["counted"])
-            if c is None and sys_q == 0:
-                continue  # нулевые непересчитанные не показываем — их можно найти сканом
-            items.append({"наименование": r["name"], "система": sys_q, "факт": c,
-                          "разница": None if c is None else c - sys_q})
+            d = None if r["counted"] is None else float(r["counted"])
+            if d is None and sys_q == 0:
+                continue  # нулевые без поправки не показываем — их можно найти сканом
+            items.append({"наименование": r["name"], "система": sys_q, "поправка": d,
+                          "станет": None if d is None else sys_q + d})
         return {"id": rev["id"], "категория": rev["scope"], "начата": rev["created_at"],
                 "кто": rev["created_by"], "товары": items}
     finally:
@@ -124,7 +128,7 @@ def current() -> dict | None:
 
 
 def apply(rev_id: str, actor: str) -> dict:
-    """Провести: по каждой пересчитанной позиции довести остаток в базе до факта."""
+    """Провести: по каждой позиции с поправкой прибавить или списать её."""
     con = _con()
     try:
         rev = con.execute("SELECT status FROM revisions WHERE id=?", (rev_id,)).fetchone()
@@ -136,9 +140,12 @@ def apply(rev_id: str, actor: str) -> dict:
             WHERE ri.revision_id = ?""", (rev_id,)).fetchall()
         ts = _now()
         plus = minus = 0.0
+        low = [r for r in rows if float(r["sys"] or 0) + float(r["counted"]) < 0]
+        if low:  # остаток успел уменьшиться (отгрузка) — минуса не допускаем
+            raise ValueError("Остаток изменился, поправка уведёт в минус — проверьте позиции и проведите снова")
         for r in rows:
             sys_q = float(r["sys"] or 0)
-            diff = float(r["counted"]) - sys_q
+            diff = float(r["counted"])
             ext = f"rev:{rev_id}:{r['pid']}"
             if diff > 0:
                 con.execute("""INSERT INTO placements(id, ts, location_code, product_id, qty, external_uuid, source_sheet)
@@ -150,8 +157,8 @@ def apply(rev_id: str, actor: str) -> dict:
                                VALUES (?,?,?,?,?,?,?,?,?)""",
                             (_id(ext), ts, TARGET, r["pid"], -diff, rev_id, actor, ext, "ревизия"))
                 minus += -diff
-            con.execute("UPDATE revision_items SET system=? WHERE revision_id=? AND product_id=?",
-                        (sys_q, rev_id, r["pid"]))
+            con.execute("UPDATE revision_items SET system=?, counted=? WHERE revision_id=? AND product_id=?",
+                        (sys_q, sys_q + diff, rev_id, r["pid"]))
         con.execute("UPDATE revisions SET status='проведена', closed_at=?, closed_by=? WHERE id=?",
                     (ts, actor, rev_id))
         sqldb.audit(con, actor, "revision_apply", "revision", rev_id,
@@ -170,6 +177,34 @@ def cancel(rev_id: str, actor: str) -> dict:
         return {"id": rev_id}
     finally:
         con.close()
+
+
+def undo(rev_id: str, actor: str) -> dict:
+    """Откатить проведённую ревизию: убрать её излишки и недостачи, остаток — как до неё.
+    Запись ревизии остаётся в истории со статусом «откатена»."""
+    con = _con()
+    try:
+        rev = con.execute("SELECT status FROM revisions WHERE id=?", (rev_id,)).fetchone()
+        if not rev or rev["status"] != "проведена":
+            raise ValueError("Откатить можно только проведённую ревизию")
+        like = f"rev:{rev_id}:%"
+        back: dict[str, float] = {}  # товар → на сколько изменится остаток при откате
+        for r in con.execute("SELECT product_id, qty FROM placements WHERE external_uuid LIKE ?", (like,)).fetchall():
+            back[r["product_id"]] = back.get(r["product_id"], 0.0) - float(r["qty"])
+        for r in con.execute("SELECT product_id, qty FROM shipments WHERE external_uuid LIKE ?", (like,)).fetchall():
+            back[r["product_id"]] = back.get(r["product_id"], 0.0) + float(r["qty"])
+        for pid, d in back.items():
+            p = con.execute(f"SELECT p.name AS name, {_STOCK_SQL} AS sys FROM products p WHERE p.id=?", (pid,)).fetchone()
+            if float(p["sys"] or 0) + d < 0:  # излишек уже отгрузили — откат увёл бы в минус
+                raise ValueError(f"«{p['name']}»: излишек ревизии уже ушёл, остаток стал бы {float(p['sys'] or 0) + d:g}")
+        con.execute("DELETE FROM placements WHERE external_uuid LIKE ?", (like,))
+        con.execute("DELETE FROM shipments WHERE external_uuid LIKE ?", (like,))
+        con.execute("UPDATE revisions SET status='откатена' WHERE id=?", (rev_id,))
+        sqldb.audit(con, actor, "revision_undo", "revision", rev_id, {"позиций": len(back)})
+    finally:
+        con.close()
+    _reset_stock_cache()
+    return {"id": rev_id, "позиций": len(back)}
 
 
 def history(limit: int = 20) -> list[dict]:

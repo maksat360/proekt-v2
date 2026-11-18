@@ -39,8 +39,10 @@ class AddressTests(unittest.TestCase):
 
     def test_box_moves_whole_and_opens_into_cell(self):
         k = ad.issue("t", "K", 1)[0]
+        with self.assertRaisesRegex(ValueError, "По базе на складе всего 30 шт.*ревизию"):
+            ad.put("t", k, BR, 31)  # по адресам ничего — значит, на полке больше, чем в базе
         ad.put("t", k, BR, 20)
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, "Без адреса только 10 шт.*ещё 20 шт уже лежит по адресам"):
             ad.put("t", "P1-1-01", BR, 11)  # без адреса осталось 10
         ad.box_to("t", k, "N-2-05")
         ad.box_to("t", k, "N-3-01")
@@ -52,6 +54,24 @@ class AddressTests(unittest.TestCase):
         self.assertEqual((ad.state(k)["содержимое"], ad.state(k)["где"]), ([], ""), "пустая коробка свободна")
         with self.assertRaises(ValueError):
             ad.box_to("t", k, "N-1-01")  # пустую наружу не ставим
+        # ошибочно положили — убрать обратно «без адреса»; больше, чем лежит, — нельзя
+        with self.assertRaises(ValueError):
+            ad.take_out("t", "P1-1-01", [{"наименование": BR, "количество": 21}])
+        self.assertEqual(ad.take_out("t", "P1-1-01", [{"наименование": BR, "количество": 5}])["штук"], 5)
+        self.assertEqual(ad.where(BR)["без_адреса"], 15)
+
+    def test_set_qty_in_box(self):
+        k = ad.issue("t", "K", 1)[0]
+        ad.put("t", k, BR, 20)
+        ad.box_to("t", k, "N-1-03")
+        self.assertEqual(ad.set_qty("t", k, BR, 18)["было"], 20)  # принесли меньше
+        self.assertEqual(ad.where(BR)["без_адреса"], 12)
+        ad.set_qty("t", k, BR, 25)  # больше — из «без адреса»
+        self.assertEqual(ad.where(BR)["без_адреса"], 5)
+        with self.assertRaisesRegex(ValueError, "Без адреса только 5"):
+            ad.set_qty("t", k, BR, 31)
+        ad.set_qty("t", k, BR, 0)
+        self.assertEqual((ad.state(k)["содержимое"], ad.state(k)["где"]), ([], ""), "пустая коробка свободна")
 
     def test_bag_partial_and_relabel(self):
         m = ad.issue("t", "M", 1)[0]

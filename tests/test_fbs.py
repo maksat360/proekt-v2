@@ -296,6 +296,29 @@ class PickTests(unittest.TestCase):
             "SELECT * FROM order_status_history WHERE order_id='o201' ORDER BY id")]
         self.assertEqual(hist[-1]["to_status"], "processing")
 
+    def test_kit_order_deducts_three_colors(self):
+        """Комплект «264-ч-ф-ссм» 52: заказ сопоставлен с гримеланж 52, а списываются 3 цвета по 52."""
+        for pid, color, qty in (("k1", "гримеланж", 4), ("k2", "фуме", 2), ("k3", "чёрный", 7)):
+            self.con.execute("INSERT INTO products(id, name, created_at) VALUES (?,?,?)",
+                             (pid, f"Футболка ХБ/264/{color}/52", sqldb.now()))
+            self.con.execute("""INSERT INTO placements(id, ts, location_code, product_id, qty, external_uuid)
+                                VALUES (?, ?, 'x', ?, ?, ?)""", ("pl" + pid, sqldb.now(), pid, qty, "pl" + pid))
+        self.con.execute("""INSERT INTO orders(id, ts, client, status, type, cabinet_id, external_id)
+                            VALUES ('o301',?,'ЖСК','new','fbs','zhsk','301')""", (sqldb.now(),))
+        self.con.execute("""INSERT INTO order_items(id, order_id, product_id, qty, shipped, title, external_id)
+                            VALUES ('i301','o301','k1',1,0,'264-ч-ф-ссм','301')""")
+        self.con.commit()
+        row = next(x for x in wb_sync.pickable() if x["id"] == "o301")
+        self.assertEqual(row["stock"], 2, "комплектов столько, сколько самой малой составляющей (фуме)")
+        wb_sync.confirm(["o301"], actor="sklad")
+        got = {r["product_id"]: r["qty"] for r in self.con.execute(
+            "SELECT product_id, qty FROM shipments WHERE order_ref='o301'")}
+        self.assertEqual(got, {"k1": 1, "k2": 1, "k3": 1})
+        self.assertEqual([wb_sync._stock_sql(self.con, k) for k in ("k1", "k2", "k3")], [3, 1, 6])
+        wb_sync._deduct(self.con, "o301")
+        self.assertEqual(self.con.execute("SELECT COUNT(*) c FROM shipments WHERE order_ref='o301'").fetchone()["c"],
+                         3, "повторно не списывает")
+
     def test_pick_reserves_but_does_not_deduct(self):
         self.assertEqual(wb_sync.pickable()[0]["stock"], 5)
         wb_sync.pick("o201", actor="sklad")
@@ -417,9 +440,6 @@ class AggregateTests(unittest.TestCase):
         self.assertIn("не найдена", res["ошибки"][0]["ошибка"])
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
 
 class BarcodeMatchTests(unittest.TestCase):
     """Баркоды WB пишутся в колонку T «главного» (по артикулу B и размеру C); FBS ищет только по ним."""
@@ -510,3 +530,23 @@ class WbStagesTests(unittest.TestCase):
         st = {r[0]: r[1] for r in con.execute("SELECT external_id, status FROM orders")}
         self.assertEqual(st, {"1": "shipped", "2": "done", "3": "picking", "9": "processing"})
         self.assertEqual((res["подтянуто"], res["отправлено"], res["завершено"]), (1, 1, 1))
+
+
+class RouteAddrTest(unittest.TestCase):
+    """Сборка по маршруту: внутри (P) раньше наружи (N), коробка — по своей ячейке, без адреса — нет."""
+
+    def test_route_order(self):
+        import addresses
+        real = addresses.where_map
+        addresses.where_map = lambda: {"a": ["N-1-01"], "b": ["K-0001@P2-1-03", "N-2-01"], "c": ["P1-3-08"]}
+        try:
+            r = wb_sync._route_addr(["a", "b", "c", "d"])
+        finally:
+            addresses.where_map = real
+        self.assertEqual([r[n]["адрес"] for n in sorted(r, key=lambda n: r[n]["маршрут"])],
+                         ["P1-3-08", "K-0001@P2-1-03", "N-1-01"])
+        self.assertNotIn("d", r)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

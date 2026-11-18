@@ -79,17 +79,23 @@ class FullExportTests(unittest.TestCase):
         con = sqldb.connect(os.path.join(tmp, "t.db"))
         sqldb.migrate(con)
         con.close()
-        old = (warehouse.stock_items, sqldb.connect)
+        old = (warehouse.stock_items, sqldb.connect, warehouse._located)
         warehouse.stock_items = lambda: [{"наименование": "Брюки/1/чёрный/42", "категория": "Брюки", "модель": "1",
                                           "цвет": "чёрный", "размер": "42", "остаток": 3, "ожидает": 0, "приход": 5,
                                           "отгружено": 2, "фbs": 1, "адрес": "А1"}]
+        warehouse._located = lambda: {"Брюки/1/чёрный/42": 2.0}  # 2 на местах, 1 ждёт размещения
         sqldb.connect = lambda *a, **k: old[1](os.path.join(tmp, "t.db"))
         try:
             wb = load_workbook(io.BytesIO(warehouse.full_xlsx()))
+            one = load_workbook(io.BytesIO(warehouse.model_xlsx(model=["1"]))).active
         finally:
-            warehouse.stock_items, sqldb.connect = old
+            warehouse.stock_items, sqldb.connect, warehouse._located = old
         self.assertEqual(wb.sheetnames, ["Остатки", "Приход", "Размещение", "Отгрузки"])
-        self.assertEqual(wb["Остатки"]["F2"].value, 3)
+        st = wb["Остатки"]
+        self.assertEqual((st["F2"].value, st["G1"].value, st["G2"].value, st["H1"].value, st["H2"].value),
+                         (3, "На местах", 2, "В размещении", 1))
+        self.assertEqual([c.value for c in one[2]][5:8], [3, 2, 1])
+        self.assertEqual([c.value for c in one[4]][5:8], [3, 2, 1], "итого")
 
 
 if __name__ == "__main__":

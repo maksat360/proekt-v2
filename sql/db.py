@@ -250,7 +250,8 @@ def _testing() -> bool:
     """Запуск тестов (python -m unittest / pytest) — рабочую базу не трогаем."""
     import sys
     argv0 = os.path.basename(sys.argv[0] if sys.argv else "")
-    return "unittest" in argv0 or "pytest" in argv0
+    # файл теста, запущенный напрямую (python3 tests/test_fbs.py), — тоже тест: иначе он пишет в живую базу
+    return "unittest" in argv0 or "pytest" in argv0 or argv0.startswith("test_")
 
 
 def use_pg(path=None) -> bool:

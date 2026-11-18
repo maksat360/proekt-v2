@@ -66,7 +66,7 @@
   .jv-ctrl{display:flex;gap:16px}
   .jv-cb{width:52px;height:52px;border-radius:50%;border:0;cursor:pointer;font-size:20px;color:#fff;background:#1b2440}
   .jv-cb.end{background:#e5484d}
-  @media (max-width:760px){#jv-btn{bottom:84px}#jv-panel{bottom:150px;height:min(480px,calc(100vh - 200px))}}`;
+  @media (max-width:820px){#jv-btn{right:12px;bottom:calc(14px + env(safe-area-inset-bottom,0px));width:58px;height:58px}#jv-panel{bottom:150px;height:min(480px,calc(100vh - 200px))}body:has(.tabbar) .tabbar{right:78px}body:has(.sheet-wrap:not([hidden])) #jv-btn{display:none}body:has(.shell.pickmode) #jv-btn{bottom:84px}}`;
 
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
