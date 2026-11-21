@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import hashlib
+import hmac
 import json
 import mimetypes
 import os
@@ -21,6 +22,7 @@ import secrets
 import shutil
 import sys
 import threading
+import time
 from datetime import date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -288,7 +290,34 @@ def hash_password(raw: str) -> str:
 
 def check_password(raw: str, stored: str) -> bool:
     stored = str(stored)
-    return stored == hash_password(raw) if len(stored) == 64 else stored == raw
+    want = hash_password(raw) if len(stored) == 64 else raw
+    return hmac.compare_digest(stored.encode("utf-8"), want.encode("utf-8"))
+
+
+# перебор паролей: 5 ошибок по логину или 20 с одного адреса за 15 минут — пауза до конца окна
+LOGIN_WINDOW, LOGIN_MAX_USER, LOGIN_MAX_IP = 900, 5, 20
+_LOGIN_FAILS: dict[str, list[float]] = {}
+_LOGIN_LOCK = threading.Lock()
+
+
+def login_wait(keys: list[tuple[str, int]], now: float | None = None) -> int:
+    """Сколько секунд ещё ждать (0 — можно пробовать). keys — [(ключ, лимит)]."""
+    now = time.time() if now is None else now
+    wait = 0
+    with _LOGIN_LOCK:
+        for key, limit in keys:
+            ts = [t for t in _LOGIN_FAILS.get(key, []) if now - t < LOGIN_WINDOW]
+            _LOGIN_FAILS[key] = ts
+            if len(ts) >= limit:
+                wait = max(wait, int(ts[-limit] + LOGIN_WINDOW - now) + 1)
+    return wait
+
+
+def login_failed(keys: list[str], now: float | None = None) -> None:
+    now = time.time() if now is None else now
+    with _LOGIN_LOCK:
+        for key in keys:
+            _LOGIN_FAILS.setdefault(key, []).append(now)
 
 
 def staff_users() -> list[dict]:
@@ -772,6 +801,27 @@ class Handler(BaseHTTPRequestHandler):
         self._send(json.dumps(obj, ensure_ascii=False).encode("utf-8"),
                    "application/json; charset=utf-8", code)
 
+    def _client_ip(self) -> str:
+        """Адрес клиента; за прокси на этом же Mac (Tailscale Funnel) — из X-Forwarded-For."""
+        ip = self.client_address[0] if self.client_address else ""
+        fwd = self.headers.get("X-Forwarded-For", "")
+        if ip in ("127.0.0.1", "::1") and fwd:
+            return fwd.split(",")[-1].strip()
+        return ip
+
+    def _is_https(self) -> bool:
+        if hasattr(self.connection, "getpeercert"):  # свой https-порт
+            return True
+        h = getattr(self, "headers", None) or {}
+        host = (h.get("Host") or "").split(":")[0].lower()
+        return (h.get("X-Forwarded-Proto") or "").lower() == "https" or host.endswith(".ts.net")
+
+    def send_header(self, keyword, value):
+        # cookie по https — только по https; по http в Wi-Fi (приложения, старые ссылки) без Secure, иначе не войти
+        if keyword.lower() == "set-cookie" and "secure" not in value.lower() and self._is_https():
+            value += "; Secure"
+        super().send_header(keyword, value)
+
     def _err(self, message: str, code: int = 400):
         self._json({"ok": False, "error": message}, code)
 
@@ -1058,10 +1108,18 @@ class Handler(BaseHTTPRequestHandler):
             if not active_company(company):
                 self._err("Цех не найден", 404)
                 return
+            k_user, k_ip = f"u:{company}:{login.lower()}", f"ip:{self._client_ip()}"
+            wait = login_wait([(k_user, LOGIN_MAX_USER), (k_ip, LOGIN_MAX_IP)])
+            if wait:
+                self._err(f"Слишком много неверных попыток. Попробуйте через {max(1, round(wait / 60))} мин.", 429)
+                return
             user = find_user(login, company)
             if not user or not check_password(str(body.get("пароль", "")), user.get("пароль", "")):
+                login_failed([k_user, k_ip])
                 self._err("Неверный логин или пароль", 401)
                 return
+            with _LOGIN_LOCK:
+                _LOGIN_FAILS.pop(k_user, None)
             if str(user.get("активен", "1")) not in ("1", "True", "true"):
                 self._err("Доступ закрыт: обратитесь к начальнику", 403)
                 return
