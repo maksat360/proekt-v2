@@ -179,6 +179,9 @@ MIGRATIONS: list[tuple[int, str, list[str]]] = [
             PRIMARY KEY (place, product))""",
         "CREATE INDEX IF NOT EXISTS ix_wh_contents_product ON wh_contents(product)",
     ]),
+    (8, "адреса: коробку вскрыли при сборке — напомнить положить её во внутреннюю ячейку", [
+        "ALTER TABLE wh_places ADD COLUMN opened_at TEXT",
+    ]),
 ]
 
 

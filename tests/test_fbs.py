@@ -123,6 +123,36 @@ class FbsTests(unittest.TestCase):
         self.assertEqual(by_ext["103"], "p1", "вторая позиция того же заказа")
         self.assertIsNone(by_ext["102"], "неизвестный артикул остаётся без товара")
 
+    def test_barcode_creates_missing_product(self):
+        import warehouse  # баркод известен, а товара в базе ещё нет — раньше падало с NameError
+        warehouse.resolve_by_barcode = lambda bc: "Брюки/999/синий/50" if bc == "bc-new" else None
+        pid = wb_sync._resolve_product(self.con, "zhsk", ["bc-new"])
+        row = self.con.execute("SELECT name, model, size FROM products WHERE id=?", (pid,)).fetchone()
+        self.assertEqual(tuple(row), ("Брюки/999/синий/50", "999", "50"))
+
+    def test_substitute_when_own_color_out(self):
+        import warehouse, substitutes
+        rules = {"Брюки/477/синий": "Брюки/477/темно-синий"}
+        old_load, old_res = substitutes.load, warehouse.resolve_by_barcode
+        substitutes.load = lambda: rules
+        warehouse.resolve_by_barcode = lambda bc: {"bc-blue": "Брюки/477/синий/58"}.get(bc)
+        try:
+            dark = wb_sync._product_row(self.con, "Брюки/477/темно-синий/58")["id"]
+            self.con.execute("""INSERT INTO placements(id, ts, location_code, product_id, qty, external_uuid)
+                                VALUES ('pl-d', ?, 's', ?, 1, 'pl-d')""", (sqldb.now(), dark))
+            self.assertEqual(wb_sync._resolve_product(self.con, "zhsk", ["bc-blue"], "w1"), dark,
+                             "синего нет — заказ на тёмно-синий")
+            blue = wb_sync._product_row(self.con, "Брюки/477/синий/58")["id"]
+            self.con.execute("""INSERT INTO placements(id, ts, location_code, product_id, qty, external_uuid)
+                                VALUES ('pl-b', ?, 's', ?, 1, 'pl-b')""", (sqldb.now(), blue))
+            self.assertEqual(wb_sync._resolve_product(self.con, "zhsk", ["bc-blue"], "w2"), blue,
+                             "синий есть — заказ на синий")
+            self.con.execute("DELETE FROM placements WHERE id IN ('pl-b','pl-d')")
+            self.assertEqual(wb_sync._resolve_product(self.con, "zhsk", ["bc-blue"], "w3"), blue,
+                             "нет ни того ни другого — остаётся синий")
+        finally:
+            substitutes.load, warehouse.resolve_by_barcode = old_load, old_res
+
     def test_history_written(self):
         wb_sync.sync()
         rows = self.con.execute("SELECT * FROM order_status_history").fetchall()

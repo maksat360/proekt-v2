@@ -165,6 +165,34 @@ def import_barcodes(path: str | Path) -> dict:
             "нет_в_главном": [(a, s, ", ".join(b)) for (a, s), b in miss]}
 
 
+def link_barcodes(links: dict[str, list[str]]) -> list[str]:
+    """Дописать баркоды WB в колонку T «главного»: {наименование: [баркоды]} → какие строки нашлись."""
+    done = []
+    with BOOK_LOCK:
+        wb = sheets.workbook(BOOK)
+        ws = wb["главный"]
+        for r in range(5, ws.max_row + 1):
+            name = _clean(ws.cell(r, 12).value)
+            if name in links and name not in done:
+                have = _barcode_text(ws.cell(r, BARCODE_COL).value)
+                ws.cell(r, BARCODE_COL, value="; ".join(have + [b for b in links[name] if b not in have]))
+                done.append(name)
+        if done:
+            sheets.save(BOOK, wb)
+    _ART_CACHE["key"] = None
+    return done
+
+
+def product_names() -> list[str]:
+    """Все наименования из «главного» (колонка L)."""
+    wb = sheets.View(BOOK)
+    try:
+        return [_clean(r[11]) for r in list(wb["главный"].iter_rows(values_only=True))[4:]
+                if r and len(r) > 11 and _clean(r[11])]
+    finally:
+        wb.close()
+
+
 # --- сопоставление с выгрузкой WB, где артикул — просто модель («477»), а цвет — отдельная колонка (ЖСК)
 def _nn(v) -> str:
     return re.sub(r"\s+", " ", str(v or "").strip().lower().replace("ё", "е").replace("-", " "))

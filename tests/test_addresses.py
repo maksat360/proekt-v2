@@ -73,6 +73,32 @@ class AddressTests(unittest.TestCase):
         ad.set_qty("t", k, BR, 0)
         self.assertEqual((ad.state(k)["содержимое"], ad.state(k)["где"]), ([], ""), "пустая коробка свободна")
 
+    def test_pick_order_and_opened_box(self):
+        k, m = ad.issue("t", "K", 1)[0], ad.issue("t", "M", 1)[0]
+        ad.put("t", m, BR, 5)
+        ad.put("t", k, BR, 10)
+        self.assertEqual([(o["код"], o["штук"]) for o in ad.unplaced()], [(k, 10)], "заполнена, но не в ячейке")
+        ad.box_to("t", k, "N-2-01")
+        self.assertEqual(ad.unplaced(), [])
+        ad.put("t", "P1-3-02", BR, 4)
+        # порядок сборки: ячейка внутри → коробка снаружи → мешок
+        self.assertEqual([x["код"] for x in ad.where_many([BR])[BR]], ["P1-3-02", k, m])
+        with self.assertRaisesRegex(ValueError, "нет столько"):
+            ad.pick("t", [{"место": "P1-3-02", "наименование": BR, "количество": 5}])
+        res = ad.pick("t", [{"место": "P1-3-02", "наименование": BR, "количество": 4},
+                            {"место": k, "наименование": BR, "количество": 3}])
+        self.assertEqual((res["штук"], res["вскрыты"]), (7, [k]))
+        self.assertEqual([(o["код"], o["где"], o["штук"]) for o in ad.opened()], [(k, "N-2-01", 7)])
+        ad.box_to("t", k, "N-3-01")  # переставили снаружи — всё ещё вскрыта
+        self.assertEqual(len(ad.opened()), 1)
+        ad.box_to("t", k, "P1-3-02")  # положили во внутреннюю ячейку — напоминание снято
+        self.assertEqual(ad.opened(), [])
+        self.assertEqual(ad.state("P1-3-02")["содержимое"], [{"наименование": BR, "количество": 7}])
+        k2 = ad.issue("t", "K", 1)[0]
+        ad.put("t", k2, BR, 2)
+        self.assertEqual(ad.pick("t", [{"место": k2, "наименование": BR, "количество": 2}])["вскрыты"], [],
+                         "взяли всё — коробка пустая и свободна, не вскрыта")
+
     def test_bag_partial_and_relabel(self):
         m = ad.issue("t", "M", 1)[0]
         ad.put("t", m, BR, 12)

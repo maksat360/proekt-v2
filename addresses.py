@@ -106,7 +106,7 @@ def _add(con, place: str, product: str, qty: float) -> None:
 def _free_box_if_empty(con, code: str) -> None:
     """Опустевшая коробка освобождает ячейку — её наполняют заново тем же кодом."""
     if code.startswith("K-") and not _contents(con, code):
-        con.execute("UPDATE wh_places SET at=NULL, updated_at=? WHERE code=?", (sqldb.now(), code))
+        con.execute("UPDATE wh_places SET at=NULL, opened_at=NULL, updated_at=? WHERE code=?", (sqldb.now(), code))
 
 
 def located() -> dict[str, float]:
@@ -273,6 +273,33 @@ def where(product: str) -> dict:
         con.close()
 
 
+def _pick_order(x: dict) -> tuple:
+    """Откуда брать при сборке: ячейки P → коробки K (по их ячейке N) → мешки M в последнюю очередь."""
+    if x["тип"] == "M":
+        return (8, 0, 0, 0, x["код"])
+    if x["тип"] == "K" and not x["где"]:
+        return (7, 0, 0, 0, x["код"])
+    return route_key(x["где"] or x["код"])
+
+
+def where_many(names) -> dict[str, list[dict]]:
+    """Сборка: для каждого товара — места с количеством, по порядку обхода."""
+    names = sorted({str(n or "").strip() for n in names or []} - {""})
+    if not names:
+        return {}
+    con = _con()
+    try:
+        out: dict[str, list] = {}
+        ph = ",".join("?" * len(names))
+        for r in con.execute(f"SELECT c.product, c.place, c.qty, p.kind, p.at FROM wh_contents c "
+                             f"JOIN wh_places p ON p.code=c.place WHERE c.qty > 0 AND c.product IN ({ph})", names):
+            out.setdefault(r["product"], []).append(
+                {"код": r["place"], "тип": r["kind"], "где": r["at"] or "", "количество": round(r["qty"], 3)})
+        return {k: sorted(v, key=_pick_order) for k, v in out.items()}
+    finally:
+        con.close()
+
+
 def where_map() -> dict[str, list[str]]:
     """Наименование → коды мест (для колонки «Адрес» в остатках)."""
     con = _con()
@@ -339,6 +366,68 @@ def set_qty(actor: str, place, product: str, qty: float) -> dict:
                 sqldb.audit(con, actor, "addr_set", "wh_places", row["code"], {"товар": product, "было": was, "стало": qty})
             return {"код": row["code"], "было": was, "стало": qty, "содержимое": _contents(con, row["code"])}
         return _tx(con, run)
+    finally:
+        con.close()
+
+
+def pick(actor: str, rows: list[dict]) -> dict:
+    """Сборка: товар взят из ячейки P, коробки K или мешка M — списать из этого места.
+    Коробка с остатком помечается «вскрыта»: после сборки её кладут во внутреннюю ячейку (box_to)."""
+    con = _con()
+    try:
+        def run():
+            boxes, places, total = set(), set(), 0.0
+            for it in rows or []:
+                product, qty = str(it.get("наименование") or "").strip(), float(it.get("количество") or 0)
+                if not product or qty <= 0:
+                    continue
+                row = _need(con, it.get("место"), "PKM", "ячейка внутри, коробка или мешок")
+                _add(con, row["code"], product, -qty)  # не даст взять больше, чем лежит
+                places.add(row["code"])
+                total += qty
+                if row["kind"] == "K":
+                    boxes.add(row["code"])
+            if not total:
+                raise ValueError("Нечего списывать из адресов")
+            opened = []
+            for code in sorted(boxes):
+                if _contents(con, code):
+                    con.execute("UPDATE wh_places SET opened_at=?, updated_at=? WHERE code=?", (sqldb.now(), sqldb.now(), code))
+                    opened.append(code)
+                else:
+                    _free_box_if_empty(con, code)
+            sqldb.audit(con, actor, "addr_pick", "wh_places", ",".join(sorted(places)), {"позиции": rows})
+            return {"штук": total, "вскрыты": opened}
+        return _tx(con, run)
+    finally:
+        con.close()
+
+
+def opened() -> list[dict]:
+    """Коробки, вскрытые при сборке и ещё не положенные во внутреннюю ячейку."""
+    con = _con()
+    try:
+        rows = con.execute("SELECT code, at, opened_at FROM wh_places WHERE kind='K' AND status='active' "
+                           "AND opened_at IS NOT NULL ORDER BY opened_at").fetchall()
+        return [{"код": r["code"], "где": r["at"] or "", "когда": r["opened_at"],
+                 "штук": sum(i["количество"] for i in _contents(con, r["code"]))} for r in rows]
+    finally:
+        con.close()
+
+
+def unplaced() -> list[dict]:
+    """Коробки с товаром, которые не поставили в ячейку: на сборке их не найти по адресу."""
+    con = _con()
+    try:
+        rows = con.execute("SELECT code FROM wh_places WHERE kind='K' AND status='active' AND at IS NULL "
+                           "AND EXISTS (SELECT 1 FROM wh_contents c WHERE c.place=wh_places.code AND c.qty > 0) "
+                           "ORDER BY code").fetchall()
+        out = []
+        for r in rows:
+            items = _contents(con, r["code"])
+            out.append({"код": r["code"], "штук": sum(i["количество"] for i in items),
+                        "товары": [i["наименование"] for i in items]})
+        return out
     finally:
         con.close()
 

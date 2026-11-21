@@ -406,6 +406,7 @@ async function go(route, param) {
     }
   }
   LAST_HASH = location.hash || '#/dash';
+  Object.keys(SUB).forEach((k) => delete SUB[k]);
   if (SHOP.timer) { clearInterval(SHOP.timer); SHOP.timer = null; }
   STATE.route = route;
   syncLoad();
@@ -2356,7 +2357,11 @@ PAGES.fbs = async () => {
   const canManage = STATE.caps && STATE.caps['wb.manage'];
   const pulled = (await api('/api/fbs/pulled' + (cab ? '?кабинет=' + encodeURIComponent(cab) : '')).catch(() => ({ data: [] }))).data || [];
 
-  return `
+  if (SUB.fbs === 'sup') return subBack('fbs', 'Поставки') + fbsSuppliesHtml(res['поставки'] || []);
+  if (SUB.fbs === 'links' && canManage) return subBack('fbs', 'Связи товаров') + wbLinksHtml(await api('/api/wb/links' + (LINKS.cab ? '?кабинет=' + encodeURIComponent(LINKS.cab) : '')));
+  if (SUB.fbs === 'stocks' && canManage) return subBack('fbs', 'Остатки в WB') + wbStocksHtml((await api('/api/wb/stocks')).data);
+  if (SUB.fbs === 'plan' && canManage) return subBack('fbs', 'План пошива') + await sewPlanHtml();
+  return `${SUB.fbs ? subBack('fbs', 'Кабинеты и ключи WB') : `
     <div class="hero fbs-hero">
       <div><h1>Заказы Wildberries</h1>
         <div class="sub">FBS${cab ? ' · ' + esc(FBSPAGE.names[cab] || cab) : ''} · ${nf(counts['всего'])} заказов · новые ${nf(st['new'] || 0)}</div>
@@ -2376,8 +2381,12 @@ PAGES.fbs = async () => {
     </div></div>
     ${fbsPulledHtml(pulled, canManage)}
     <div id="fbs-list">${fbsListHtml(rows, canManage)}</div>
-    ${fbsSuppliesHtml(res['поставки'] || [])}
-    ${canManage ? `      <details class="card" id="cabinets-card">
+    ${subTiles('fbs', [['sup', 'Поставки', `${nf((res['поставки'] || []).length)} · Excel по дням`],
+      canManage && ['stocks', 'Остатки в WB', 'сверка раз в 10 минут'],
+      canManage && ['plan', 'План пошива', 'подсказка: сколько дошить · Excel'],
+      canManage && ['links', 'Связи товаров', 'карточки WB ↔ наш товар · замены'],
+      canManage && ['keys', 'Кабинеты и ключи WB', `${nf(cabs.length)} кабинета · токены`]])}`}
+    ${canManage && SUB.fbs === 'keys' ? `      <details class="card" id="cabinets-card" open>
         <summary class="card-h" style="cursor:pointer"><h3>Кабинеты и ключи WB</h3><div class="spacer"></div>
           <span class="hint">ключи хранятся только на этом Mac</span></summary>
         <div class="card-b" id="cab-list"><span class="muted">загружаю…</span></div>
@@ -2404,6 +2413,141 @@ PAGES.fbs = async () => {
       </details>
 ` : ''}`;
 };
+
+// связи товаров: карточку WB, которую сайт не узнал, — к нашему товару; «нет своего — отправить похожий»
+const LINKS = { cab: '' };
+function wbLinksHtml(r) {
+  LINKS.cab = r['кабинет'] || '';
+  const list = `<datalist id="links-goods">${(r['товары'] || []).map((t) => `<option value="${esc(t)}">`).join('')}</datalist>`;
+  const sizes = (c) => c['размеры'].map((z) => `<span class="pick-place ${z['связан'] ? 'gone' : ''}" title="${esc(z['связан'] || 'не связан')}">${esc(z['размер'])}${z['в_wb'] ? ' · ' + nf(z['в_wb']) : ''}</span>`).join(' ');
+  const card = (c, hidden) => `<div class="order-row" style="flex-wrap:wrap;gap:8px;align-items:center">
+      <b style="min-width:120px">${esc(c['артикул'])}</b>
+      <span class="muted">в WB ${nf(c['в_wb'])} шт</span>
+      <div style="flex-basis:100%">${sizes(c)}</div>
+      ${hidden ? `<button class="btn sm" data-link="unignore" data-art="${esc(c['артикул'])}">Вернуть</button>` : `
+      <input class="input" list="links-goods" placeholder="наш товар: Худи/263/шоколад" data-link-to="${esc(c['артикул'])}" style="flex:1;min-width:200px">
+      <button class="btn sm primary" data-link="link" data-art="${esc(c['артикул'])}">Связать</button>
+      <button class="btn sm" data-link="ignore" data-art="${esc(c['артикул'])}">Не наше</button>`}
+    </div>`;
+  const subs = Object.entries(r['замены'] || {});
+  return `${list}
+    <div class="card"><div class="card-h"><h3>Карточки WB, которые сайт не узнал</h3></div><div class="card-b">
+      <div class="tabs" style="margin:0 0 8px">${(r['кабинеты'] || []).map((c) => `<button class="tab ${c.id === LINKS.cab ? 'on' : ''}" data-link="cab" data-v="${esc(c.id)}">${esc(c.name)}</button>`).join('')}</div>
+      <div class="hint" style="margin-bottom:8px">Выберите наш товар (категория/модель/цвет) — размеры сопоставятся сами. После этого заказы с карточки придут на этот товар, а остаток в WB будет вести сверка. Названия нигде не меняются.</div>
+      ${(r['карточки'] || []).length ? r['карточки'].map((c) => card(c, false)).join('') : '<p class="muted">Все карточки связаны.</p>'}
+      ${(r['не_наше'] || []).length ? `<details style="margin-top:10px"><summary class="muted" style="cursor:pointer">Не наше: ${r['не_наше'].length}</summary>${r['не_наше'].map((c) => card(c, true)).join('')}</details>` : ''}
+    </div></div>
+    <div class="card"><div class="card-h"><h3>Замены</h3></div><div class="card-b">
+      <div class="hint" style="margin-bottom:8px">Своего размера не осталось — заказ уходит на похожий товар того же размера, а карточка в WB показывает его остаток.</div>
+      ${subs.length ? subs.map(([a, b]) => `<div class="order-row"><span>${esc(a)} → <b>${esc(b)}</b></span><div class="spacer"></div>
+        <button class="btn sm" data-link="unsub" data-v="${esc(a)}" title="Убрать замену">✕</button></div>`).join('') : '<p class="muted">Замен нет.</p>'}
+      <div class="grid2" style="margin-top:10px">
+        <div class="field"><label>Если нет</label><input class="input" list="links-goods" id="sub-from" placeholder="Брюки/477/синий"></div>
+        <div class="field"><label>Отправить</label><input class="input" list="links-goods" id="sub-to" placeholder="Брюки/477/темно-синий"></div>
+      </div>
+      <button class="btn primary" data-link="sub" style="margin-top:8px">Добавить замену</button>
+    </div></div>`;
+}
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-link]');
+  if (!b) return;
+  const act = b.dataset.link, art = b.dataset.art || '';
+  const post = (path, body) => api('/api/wb/links/' + path, { method: 'POST', body: JSON.stringify(body) });
+  try {
+    if (act === 'cab') { LINKS.cab = b.dataset.v; }
+    else if (act === 'link') {
+      const inp = [...document.querySelectorAll('[data-link-to]')].find((x) => x.dataset.linkTo === art);
+      const to = (inp && inp.value || '').trim();
+      if (!to) { toast('Выберите наш товар из списка', 'err'); inp && inp.focus(); return; }
+      b.disabled = true;
+      const res = await post('link', { кабинет: LINKS.cab, артикул: art, товар: to });
+      toast(`Связано размеров: ${res['связано']}` + ((res['нет_размера'] || []).length ? ` · у нас нет: ${res['нет_размера'].join(', ')}` : ''));
+    } else if (act === 'ignore' || act === 'unignore') {
+      await post('ignore', { кабинет: LINKS.cab, артикул: art, вкл: act === 'ignore' });
+    } else if (act === 'sub') {
+      await post('sub', { товар: $('#sub-from').value, замена: $('#sub-to').value });
+      toast('Замена добавлена');
+    } else if (act === 'unsub') {
+      if (!confirm(`Убрать замену для «${b.dataset.v}»?`)) return;
+      await post('sub', { товар: b.dataset.v, замена: '' });
+    }
+    await redraw('fbs');
+  } catch (err) { toast(err.message, 'err'); b.disabled = false; }
+});
+
+// остатки FBS в кабинетах WB: сервер раз в 10 мин сверяет и пишет только расхождения
+function wbStocksHtml(st) {
+  const on = !!st['вкл'];
+  const cabs = Object.values(st['кабинеты'] || {});
+  return `<div class="card"><div class="card-h"><h3>Остатки в WB</h3><div class="spacer"></div>
+      <button class="btn sm" data-wbst="run">Проверить сейчас</button>
+      <button class="btn sm ${on ? '' : 'primary'}" data-wbst="${on ? 'off' : 'on'}">${on ? 'Выключить запись' : 'Включить запись'}</button></div>
+    <div class="card-b">
+      <div class="hint">Раз в 10 минут сайт сравнивает остаток FBS в каждом кабинете с нашим складом и меняет только то, что разошлось. Совпадает — ничего не пишет.</div>
+      <p><b>${on ? 'Запись включена' : 'Запись выключена'}</b> — ${on ? 'расхождения исправляются в WB' : 'сайт только показывает, что бы поменял'}${st['когда'] ? ' · проверка ' + esc(st['когда']) : ''}</p>
+      ${st['ошибка'] ? `<p style="color:var(--red)">${esc(st['ошибка'])}</p>` : ''}
+      ${cabs.length ? '' : '<p class="muted">Ещё не проверяли — нажмите «Проверить сейчас».</p>'}
+      ${cabs.map((c) => `<div class="card" style="margin-top:10px"><div class="card-b">
+        <b>${esc(c['имя'])}</b> <span class="muted">· ${esc(c['когда'])}</span>
+        ${c['ошибка'] ? `<p style="color:var(--red)">${esc(c['ошибка'])}</p>` : `<p>Размеров в карточках: ${nf(c['размеров'])} · расходится: <b>${nf(c['расходится'])}</b>${c['записано'] ? ' · записано: ' + nf(c['записано']) : ''}${c['без_сопоставления'] ? ' · не нашли у нас: ' + nf(c['без_сопоставления']) : ''}</p>`}
+        ${c['склад'] ? `<div class="hint">${esc(c['склад'])}</div>` : ''}
+        ${(c['изменения'] || []).length ? `<table class="resp" style="margin-top:6px"><thead><tr><th>Товар</th><th>В WB</th><th>У нас</th></tr></thead><tbody>
+          ${c['изменения'].map((x) => `<tr><td data-l="Товар">${esc(x['товар'])}</td><td data-l="В WB">${nf(x['в_wb'])}</td><td data-l="У нас"><b>${nf(x['у_нас'])}</b></td></tr>`).join('')}</tbody></table>` : ''}
+      </div></div>`).join('')}
+    </div></div>`;
+}
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-wbst]');
+  if (!b) return;
+  const act = b.dataset.wbst;
+  if (act === 'on' && !confirm('Включить запись? Сайт сам будет менять остатки FBS во всех кабинетах WB.')) return;
+  b.disabled = true;
+  try {
+    if (act === 'run') { toast('Проверяю кабинеты…'); await api('/api/wb/stocks/run', { method: 'POST', body: '{}' }); }
+    else await api('/api/wb/stocks', { method: 'POST', body: JSON.stringify({ вкл: act === 'on' }) });
+    await redraw('fbs');
+  } catch (err) { toast(err.message, 'err'); b.disabled = false; }
+});
+
+// план пошива — подсказка: норма модели делится по заказам WB, минус склад
+const SEWPLAN = { модель: '477', норма: '5000', не_шьём: 'бежевый, синий' };
+async function sewPlanHtml() {
+  const q = new URLSearchParams(SEWPLAN).toString();
+  const form = `<div class="card"><div class="card-h"><h3>План пошива</h3><div class="spacer"></div>
+      <a class="btn sm" href="/api/sew-plan.xlsx?${q}" download>Скачать Excel</a></div>
+    <div class="card-b">
+      <div class="hint">Подсказка, а не приказ. Сайт делит норму по цветам и размерам — чем чаще заказывают на WB (последние 30 дней), тем больше держим. Из нормы вычитает то, что уже лежит на складе: разница — «Сшить». Лишнее не шьём — оно распродаётся. Числа округлены до 10.</div>
+      <div class="grid2" style="margin-top:10px">
+        <div class="field"><label>Модель</label><input class="input" id="sp-model" value="${esc(SEWPLAN.модель)}"></div>
+        <div class="field"><label>Держать на складе, шт</label><input class="input" id="sp-total" inputmode="numeric" value="${esc(SEWPLAN.норма)}"></div>
+      </div>
+      <div class="field"><label>Не шьём <span class="muted">(цвета через запятую; если есть замена — их заказы считаются на замену)</span></label>
+        <input class="input" id="sp-off" value="${esc(SEWPLAN.не_шьём)}"></div>
+      <button class="btn primary" data-sewplan="calc">Посчитать</button>
+    </div></div>`;
+  let r;
+  try { r = (await api('/api/sew-plan?' + q)).data; } catch (err) { return form + `<div class="card"><div class="card-b" style="color:var(--red)">${esc(err.message)}</div></div>`; }
+  const t = r['итого'];
+  return form + `<div class="kpis">
+      ${kpi('Сшить', nf(t['шить']) + ' шт', 'чего не хватает до нормы', 'ok')}
+      ${kpi('Сейчас на складе', nf(t['есть']) + ' шт', 'лишнего ' + nf(t['лишнее']) + ' — распродаётся')}
+      ${kpi('После пошива', nf(r['после']) + ' шт', 'со временем придёт к ' + nf(r['норма']))}</div>
+    ${r['цвета'].filter((c) => c['норма'] || c['есть']).map((c) => `<details class="card" ${c['шить'] ? 'open' : ''}>
+      <summary class="card-h" style="cursor:pointer"><h3>${esc(c['цвет'])}</h3><div class="spacer"></div>
+        <span class="hint">${c['не_шьём'] ? 'не шьём' + (c['замена'] ? ' · заказы → ' + esc(c['замена']) : '') + ' · ' : ''}${(c['плюс_заказы'] || []).length ? 'держим и за ' + esc(c['плюс_заказы'].join(', ')) + ' · ' : ''}держать ${nf(c['норма'])} · есть ${nf(c['есть'])} · <b>сшить ${nf(c['шить'])}</b></span></summary>
+      <div class="card-b"><table class="resp"><thead><tr><th>Размер</th><th>Заказали за 30 дн.</th><th>Держать</th><th>Есть</th><th>Сшить</th></tr></thead><tbody>
+        ${r['строки'].filter((x) => x['цвет'] === c['цвет']).map((x) => `<tr><td data-l="Размер"><b>${esc(x['размер'])}</b></td>
+          <td data-l="Заказали">${nf(x['заказали'])}</td><td data-l="Держать">${nf(x['норма'])}</td><td data-l="Есть">${nf(x['есть'])}</td>
+          <td data-l="Сшить">${x['шить'] ? '<b>' + nf(x['шить']) + '</b>' : '<span class="muted">—</span>'}</td></tr>`).join('')}
+      </tbody></table></div></details>`).join('')}`;
+}
+document.addEventListener('click', async (e) => {
+  if (!e.target.closest('[data-sewplan]')) return;
+  SEWPLAN.модель = document.getElementById('sp-model').value.trim();
+  SEWPLAN.норма = document.getElementById('sp-total').value.replace(/\D/g, '');
+  SEWPLAN.не_шьём = document.getElementById('sp-off').value;
+  await redraw('fbs');
+});
 
 // заказ перевели в поставку в кабинете WB раньше, чем его подтвердили у нас: товар со склада не списан
 function fbsPulledHtml(list, canManage) {
@@ -3003,6 +3147,7 @@ PAGES.wh = async (param) => {
   let m = location.hash.match(/#\/wh\/pick\/([\w-]+)/);
   if (m) return pickPage(m[1]);
   const tab = param || 'stock';
+  if (tab !== WH.tab && typeof AD !== 'undefined') AD.view = '';  // пришли на «Адрес» с другой вкладки — сразу сканер
   WH.tab = tab;
   const meta = await whMeta();
   const head = tab !== 'stock' ? whTabs(tab) : `
@@ -3017,7 +3162,8 @@ PAGES.wh = async (param) => {
     try { WH.fromCex = (await api('/api/wh/from_cex')).data || []; } catch (e) { WH.fromCex = []; }
     let receipts = [];
     try { receipts = (await api('/api/wh/receipts')).data || []; } catch (e) { receipts = []; }
-    return head + whIn(meta) + whReceiptsHtml(receipts);
+    if (SUB.in === 'done') return head + subBack('in', 'Принятые партии') + whReceiptsHtml(receipts);
+    return head + whIn(meta) + subTiles('in', [['done', 'Принятые партии', `${nf(receipts.length)} · смотреть, Excel, изменить`]]);
   }
   if (tab === 'addr') return head + await whAddrPage(meta);
   if (tab === 'out') return head + await whOut(meta);
@@ -3037,6 +3183,7 @@ async function revHtml(meta) {
   const cur = res.data;
   const hist = res['история'] || [];
   const sign = (d) => d == null ? '' : `<b style="color:${d > 0 ? 'var(--green)' : d < 0 ? '#d12e2e' : 'inherit'}">${d > 0 ? '+' : ''}${nf(d)}</b>`;
+  const histTile = hist.length ? subTiles('rev', [['hist', 'Прошлые ревизии', `${nf(hist.length)} · расхождения, откат`]]) : '';
   const histHtml = hist.length ? `<div class="card"><div class="card-h"><h3>Прошлые ревизии</h3></div>
     <div class="card-b tight tablescroll"><table class="resp"><thead><tr><th>Дата</th><th>Категория</th><th>Статус</th><th class="num">Позиций</th><th class="num">Излишек</th><th class="num">Недостача</th></tr></thead>
     <tbody>${hist.map((h) => `<tr>
@@ -3049,6 +3196,7 @@ async function revHtml(meta) {
       <td data-l="Недостача" class="num">${h['недостача'] ? '−' + nf(h['недостача']) : '0'}</td></tr>
       ${h['расхождения'].length ? `<tr><td colspan="6" class="cell-sub">${h['расхождения'].map((d) => `${esc(d['наименование'])}: ${nf(d['система'])} → ${nf(d['факт'])} (${d['разница'] > 0 ? '+' : ''}${nf(d['разница'])})`).join(' · ')}</td></tr>` : ''}`).join('')}</tbody></table></div></div>` : '';
 
+  if (SUB.rev === 'hist') return subBack('rev', 'Прошлые ревизии') + (histHtml || '<div class="card"><div class="empty">Пока пусто</div></div>');
   if (!cur) {
     return `<div class="card"><div class="card-h"><h3>Новая ревизия</h3></div><div class="card-b">
       <div class="field"><label>Что пересчитываем</label>
@@ -3056,7 +3204,7 @@ async function revHtml(meta) {
           ${meta['категории'].map((c) => `<option>${esc(c)}</option>`).join('')}</select></div>
       <button class="btn primary big" data-rev="start">Начать ревизию</button>
       <div class="hint" style="margin-top:10px">Сканируйте товар и впишите поправку: +1 — нашлась лишняя штука, −2 — не хватает двух. Пустое поле — без изменений.</div>
-    </div></div>` + histHtml;
+    </div></div>` + histTile;
   }
   const items = cur['товары'];
   const done = items.filter((i) => i['поправка'] != null);
@@ -3087,7 +3235,7 @@ async function revHtml(meta) {
         <td data-l="Поправка ±" class="num"><input class="input" type="text" style="width:90px;text-align:right"
             data-rev-qty="${esc(i['наименование'])}" value="${i['поправка'] == null ? '' : (i['поправка'] > 0 ? '+' : '') + i['поправка']}" placeholder="+1 / −1"></td>
         <td data-l="Станет" class="num">${i['станет'] == null ? '' : `${sign(i['поправка'])} → <b>${nf(i['станет'])}</b>`}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">Ничего не найдено</td></tr>'}</tbody>
-    </table>${rows.length > shown.length ? `<div class="hint" style="padding:10px 14px">Показано ${shown.length} из ${rows.length} — уточните поиск</div>` : ''}</div></div>` + histHtml;
+    </table>${rows.length > shown.length ? `<div class="hint" style="padding:10px 14px">Показано ${shown.length} из ${rows.length} — уточните поиск</div>` : ''}</div></div>` + histTile;
 }
 
 async function revRefresh(focusScan) {
@@ -3175,11 +3323,17 @@ async function whStock(meta) {
     if (f) { sessionStorage.removeItem('jv-filter'); WH.ф = { ...WH.ф, cat: f.cat || [], model: f.model || [], color: f.color || [], size: f.size || [], only: false }; }
   } catch (e) { /* без памяти */ }
   const q = '?только=' + (WH.ф.only ? '1' : '0');
-  try {
-    const res = await api('/api/wh/stock' + q);
-    WH.stock = res.data;
-  } catch (e) {
-    WH.stock = localItems().filter((i) => (WH.ф.only ? (i['остаток'] || 0) !== 0 : true));
+  // фильтры перерисовывают из уже загруженного — без «Загрузка…»; «Все товары» после «только с остатком» — грузим
+  const reuse = WH.keepStock && WH.stock && (WH.stockAll || WH.ф.only);
+  WH.keepStock = false;
+  if (!reuse) {
+    try {
+      const res = await api('/api/wh/stock' + q);
+      WH.stock = res.data;
+    } catch (e) {
+      WH.stock = localItems().filter((i) => (WH.ф.only ? (i['остаток'] || 0) !== 0 : true));
+    }
+    WH.stockAll = !WH.ф.only;
   }
   // фильтры как в Excel: несколько значений; варианты каждого — из товаров, подходящих под фильтры выше
   const f = WH.ф;
@@ -3214,7 +3368,8 @@ async function whStock(meta) {
   const xlsxLabel = (f.model.length ? f.model : f.cat).join(', ');
 
   const nf_ = WH_F.filter(([key]) => f[key].length).length;
-  return `
+  const warn = reuse ? (WH.boxWarn || '') : (WH.boxWarn = await adOpenedHtml(true));  // фильтры не перезапрашивают
+  return `${warn}
     <div class="card" style="overflow:visible;z-index:5">
       <div class="card-b" style="padding-top:16px">
         <input class="input scan" id="wh-q" placeholder="поиск: 477 черн 42 или штрихкод" autocomplete="off" value="${esc(WH.q || '')}">
@@ -3236,6 +3391,35 @@ async function whStock(meta) {
     </div>
     <div id="wh-list">${whListHtml()}</div>`;
 }
+
+// перерисовать страницу на месте: старое видно, пока грузится новое, — без «Загрузка…» и прыжка вверх
+async function redraw(route, param) {
+  const page = $('#page');
+  const y = window.scrollY;
+  try {
+    const html = await PAGES[route](param);
+    page.innerHTML = html;
+    bind(route, param);
+    enhanceSelects(page);
+    window.scrollTo(0, y);
+  } catch (e) { await go(route, param); }
+}
+// служебные разделы экранов (архивы, история, настройки) — за плитками; SUB[экран] = открытый раздел
+const SUB = {};
+const subTiles = (key, tiles) => `<div class="ad-tiles sub-tiles">${tiles.filter(Boolean).map(([id, title, sub]) =>
+  `<button type="button" class="ad-tile" data-sub="${key}:${id}"><b>${esc(title)}</b><span>${sub}</span></button>`).join('')}</div>`;
+// заголовок у самого раздела — здесь только возврат (title — для подсказки)
+const subBack = (key, title) => `<div class="sub-back"><button class="btn sm" data-sub="${key}:" title="${esc(title)}">← Назад</button></div>`;
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-sub]');
+  if (!b) return;
+  const [key, id] = b.dataset.sub.split(':');
+  SUB[key] = id;
+  redraw(STATE.route, STATE.route === 'wh' ? WH.tab : undefined).then(() => window.scrollTo(0, 0));
+});
+
+// фильтры склада: остатки уже загружены — только перерисовать
+async function whRedraw() { WH.keepStock = true; await redraw('wh', WH.tab); }
 
 // ячейка, где лежит: «K-0016@P1-3-08» → «P1-3-08», у мешка/ячейки — сам код
 const whPlace = (c) => String(c).split('@').pop();
@@ -3304,9 +3488,8 @@ function whIn(meta) {
         <td class="num"><b>${nf(c['штук'])}</b> шт</td>
         <td><button class="btn primary sm" data-wh-cex="${i}">Принять</button></td></tr>`).join('')}</tbody></table></div></div>` : '';
 
-  if (!st.cat || !st.model || !st.color) {
+  if (!st.cat || !st.model || !st.ready) {  // таблица — только после «Далее», когда партия уже указана
     const models = st.cat ? Object.keys(meta['дерево'][st.cat] || {}) : [];
-    const colors = st.cat && st.model ? Object.keys(meta['дерево'][st.cat][st.model] || {}) : [];
     return cexCard + head + `
         <div class="grid2">
           <div class="field"><label>Поставщик</label>
@@ -3314,7 +3497,7 @@ function whIn(meta) {
               <option value="">Выберите</option>
               ${meta['поставщики'].map((x) => `<option ${st.supplier === x ? 'selected' : ''}>${esc(x)}</option>`).join('')}
             </select></div>
-          <div class="field"><label>Партия (если свой цех)</label>
+          <div class="field"><label>Партия <span style="color:var(--red)">*</span></label>
             <input class="input scan" id="in-batch" placeholder="например 75" value="${esc(st.batch || '')}" ${st.edit ? 'disabled' : ''}></div>
           <div class="field"><label>Категория</label>
             <select class="input scan" id="in-cat">
@@ -3326,40 +3509,38 @@ function whIn(meta) {
               <option value="">${models.length ? 'Выберите' : '—'}</option>
               ${models.map((m) => `<option ${st.model === m ? 'selected' : ''}>${esc(m)}</option>`).join('')}
             </select></div>
-          <div class="field"><label>Цвет</label>
-            <select class="input scan" id="in-color" ${colors.length ? '' : 'disabled'}>
-              <option value="">${colors.length ? 'Выберите' : '—'}</option>
-              ${colors.map((c) => `<option ${st.color === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}
-            </select></div>
         </div>
         <button class="btn primary big" data-wh="next">Далее → размеры</button>
-        <div class="hint" style="margin-top:10px">Размер на этом шаге не нужен — количества вводятся в следующей таблице.</div>
+        <div class="hint" style="margin-top:10px">Цвет и размер на этом шаге не нужны — все цвета модели будут в следующей таблице.</div>
       </div></div>`;
   }
 
-  const sizes = ((meta['дерево'][st.cat] || {})[st.model] || {})[st.color] || [];
-  const missing = st.cex ? Object.keys(st.cex['размеры']).filter((z) => !sizes.map(String).includes(z)) : [];
+  const tree = (meta['дерево'][st.cat] || {})[st.model] || {};
+  const cexSizes = st.cex ? (tree[st.cex['цвет']] || []).map(String) : [];
+  const missing = st.cex ? Object.keys(st.cex['размеры']).filter((z) => !cexSizes.includes(z)) : [];
   return head + `
         <div class="wh-headline">
-          <b>${esc(st.cat)} · ${esc(st.model)} · ${esc(st.color)}</b>
+          <b>${esc(st.cat)} · ${esc(st.model)}</b><span class="hint">партия ${esc(st.batch || '—')} · ${esc(st.supplier || '—')}</span>
           <button class="btn sm" data-wh="back">← изменить</button>
         </div>
         ${st.cex ? `<div class="hint" style="margin-bottom:8px">Из цеха: партия <b>${esc(st.cex['партия'])}</b> · упаковано ${nf(st.cex['штук'])} шт. Пересчитайте и исправьте, если пришло иначе.</div>
           ${missing.length ? `<div class="hint" style="color:var(--red)">Нет в справочнике склада: ${esc(missing.join(', '))} — добавьте на «главный»</div>` : ''}` : ''}
+        ${Object.entries(tree).map(([color, sizes]) => `
+        <div class="in-color"><b>${esc(color)}</b></div>
         <div class="size-grid">
-          ${sizes.map((size) => `
+          ${sizes.map((size) => { const k = `${color}/${size}`; return `
             <label class="size-cell">
               <span>${esc(size)}</span>
               <input class="input scan" type="number" min="0" inputmode="numeric"
-                     data-size="${esc(size)}" value="${st.sizes[size] || ''}" placeholder="—">
-            </label>`).join('') || '<div class="empty">У этой модели нет размеров в справочнике</div>'}
-        </div>
+                     data-size="${esc(k)}" value="${st.sizes[k] || ''}" placeholder="—">
+            </label>`; }).join('')}
+        </div>`).join('') || '<div class="empty">У этой модели нет цветов и размеров в справочнике</div>'}
         <div class="wh-total">Итого к приёму: <b id="in-total">${nf(Object.values(st.sizes).reduce((a, b) => a + (num(b) || 0), 0))}</b> шт</div>
         ${st.edit ? `<button class="btn primary big" data-wh="edit-save" style="margin-top:10px">Сохранить изменения</button>
         <div class="hint" style="margin-top:8px">Плюс — добавится на склад, минус — уберётся (не ниже уже отгруженного). Очистите клетку — размер уйдёт из партии.</div>` : `
         <div class="hint" style="margin:10px 0">Товар сразу в остатке «без адреса» — потом разложите его по адресам.</div>
         <button class="btn primary big" data-wh="accept">Принять товар</button>`}
-        <div class="hint" style="margin-top:10px">Пустые ячейки пропускаются — заполняйте только те размеры, что пришли.</div>
+        <div class="hint" style="margin-top:10px">Пустые ячейки пропускаются — заполняйте только те цвета и размеры, что пришли.</div>
       </div></div>`;
 }
 
@@ -3395,15 +3576,15 @@ async function receiptLoad(sup, batch) {
 async function receiptEdit(sup, batch) {
   const have = await receiptLoad(sup, batch);
   WH.in = { cat: '', model: '', color: '', supplier: sup, batch, defect: 0, sizes: {}, edit: { sup, batch, have } };
-  const keys = [...new Set(Object.keys(have).filter((n) => have[n]).map((n) => n.split('/').slice(0, 3).join('/')))];
-  if (keys.length === 1) { const [c, m, col] = keys[0].split('/'); Object.assign(WH.in, { cat: c, model: m, color: col }); }
+  const keys = [...new Set(Object.keys(have).filter((n) => have[n]).map((n) => n.split('/').slice(0, 2).join('/')))];
+  if (keys.length === 1) { const [c, m] = keys[0].split('/'); Object.assign(WH.in, { cat: c, model: m, ready: true }); }
   await go('wh', 'in');
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
-// в режиме правки размеры выбранного цвета заполняются принятым количеством (один раз на цвет)
+// в режиме правки клетки модели заполняются принятым количеством (один раз на модель)
 function editPrefill(st) {
-  if (!st.edit || !st.cat || !st.model || !st.color) return;
-  const key = `${st.cat}/${st.model}/${st.color}`;
+  if (!st.edit || !st.cat || !st.model) return;
+  const key = `${st.cat}/${st.model}`;
   if (st.editKey === key) return;
   st.editKey = key;
   st.sizes = {};
@@ -3412,10 +3593,10 @@ function editPrefill(st) {
 function editBanner(st) {
   if (!st.edit) return '';
   const groups = {};
-  Object.entries(st.edit.have).forEach(([n, q]) => { if (!q) return; const k = n.split('/').slice(0, 3).join('/'); groups[k] = (groups[k] || 0) + q; });
-  const cur = `${st.cat}/${st.model}/${st.color}`;
+  Object.entries(st.edit.have).forEach(([n, q]) => { if (!q) return; const k = n.split('/').slice(0, 2).join('/'); groups[k] = (groups[k] || 0) + q; });
+  const cur = `${st.cat}/${st.model}`;
   return `<div class="notice" style="margin-bottom:12px"><b>Изменение партии ${esc(st.edit.batch || '—')} · ${esc(st.edit.sup || '—')}</b>
-      — выберите модель и цвет: в размерах уже стоит принятое. Меняйте числа или выберите новый цвет и размер, затем «Сохранить изменения».
+      — выберите модель: в клетках уже стоит принятое. Меняйте числа, затем «Сохранить изменения».
       <div class="btn-row" style="margin-top:8px">${Object.entries(groups).map(([k, q]) => `<button class="btn sm ${k === cur ? 'primary' : ''}" data-wh-editpick="${esc(k)}">${esc(k.split('/').slice(1).join(' · '))} — ${nf(q)} шт</button>`).join('')}
         <span style="margin-left:auto"></span><button class="btn sm" data-wh="edit-exit">Готово, выйти</button></div></div>`;
 }
@@ -3460,9 +3641,11 @@ async function whOut(meta) {
   try { supplies = (await api('/api/wb/supplies')).data || []; } catch (e) { supplies = []; }
   const open = orders.filter((o) => (o['статус'] || 'новый') === 'новый');
   const archive = orders.filter((o) => (o['статус'] || 'новый') !== 'новый');
+  const opened = await adOpenedHtml(true);
 
-  return `
-    ${fbsList.map((fbs) => {
+  const outTitles = { arch: 'Архив заказов', sup: 'Архив поставок FBS', ship: 'Отгружено в ' + target };
+  return `${SUB.out ? subBack('out', outTitles[SUB.out] || '') : opened}
+    ${!SUB.out ? `${fbsList.map((fbs) => {
       const noCat = fbs['позиции'].filter((p) => !p['в_каталоге']).length;
       return `
     <div class="card">
@@ -3505,7 +3688,10 @@ async function whOut(meta) {
           </div>`).join('') : '<div class="empty">Новых заказов нет</div>'}
       </div>
     </div>
-    <div class="card">
+    ${subTiles('out', [['arch', 'Архив заказов', `${nf(archive.length)} · собранные и отменённые`],
+      ['sup', 'Архив поставок FBS', `${nf(supplies.length)} · Excel по дням`],
+      ['ship', 'Отгружено в ' + target, `${nf(rows.length)} записей`]])}` : ''}
+    ${SUB.out === 'arch' ? `<div class="card">
       <div class="card-h"><h3>Архив заказов</h3><div class="spacer"></div>
         <span class="hint">${archive.length} записей · заказы не удаляются</span></div>
       <div class="card-b tight tablescroll">
@@ -3521,9 +3707,9 @@ async function whOut(meta) {
           </tr>`).join('') || '<tr><td colspan="6" class="empty">Пока пусто</td></tr>'}</tbody>
         </table>
       </div>
-    </div>
-    ${fbsSuppliesHtml(supplies, 'Архив поставок FBS')}
-    <div class="card">
+    </div>` : ''}
+    ${SUB.out === 'sup' ? fbsSuppliesHtml(supplies, 'Архив поставок FBS') : ''}
+    ${SUB.out === 'ship' ? `<div class="card">
       <div class="card-h"><h3>Отгружено в ${target}</h3><div class="spacer"></div><span class="hint">${rows.length} записей</span></div>
       <div class="card-b tight tablescroll">
         <table class="resp">
@@ -3537,7 +3723,7 @@ async function whOut(meta) {
           </tr>`).join('') || '<tr><td colspan="5" class="empty">Пока ничего не отгружали</td></tr>'}</tbody>
         </table>
       </div>
-    </div>`;
+    </div>` : ''}`;
 }
 
 // ---------- Журнал ----------
@@ -3587,10 +3773,36 @@ async function whLog() {
 
 // ---------- экран сборки заказа: слева штрихкод, справа количество ----------
 // qty/subs живут вне DOM — фильтр и сортировка не сбрасывают собранное; subs: строка → отправленная замена
-const PICK = { order: null, filter: '', qty: {}, subs: {} };
+// places: товар → места с количеством (P → K → M); from: товар → {место: взято}; cur: товар → отсканированное место
+const PICK = { order: null, filter: '', qty: {}, subs: {}, places: {}, from: {}, cur: {} };
 
 function pickReset(order) {
-  Object.assign(PICK, { order, filter: '', qty: {}, subs: {} });
+  Object.assign(PICK, { order, filter: '', qty: {}, subs: {}, places: {}, from: {}, cur: {} });
+}
+
+async function pickLoadPlaces() {
+  const names = [...new Set((PICK.order['позиции'] || []).map((p) => p['наименование']).filter(Boolean))];
+  try {
+    PICK.places = names.length ? (await api('/api/wh/addr/where_many?товары=' + encodeURIComponent(JSON.stringify(names)))).data || {} : {};
+  } catch (e) { PICK.places = {}; }  // офлайн — собираем как раньше, без мест
+}
+const pickTaken = (name, code) => num((PICK.from[name] || {})[code]);
+const pickPlaced = (name) => Object.values(PICK.from[name] || {}).reduce((a, b) => a + num(b), 0);
+const pickLeftIn = (r, code) => { const x = r.места.find((m) => m.код === code); return x ? x.количество - pickTaken(r.наименование, code) : 0; };
+const pickNextPlace = (r) => r.места.find((m) => m.количество - pickTaken(r.наименование, m.код) > 0);
+const pickPlaceLabel = (m) => (m.тип === 'K' && m.где ? `${m.код} в ${m.где}` : m.код);
+function pickPlacesHtml(r) {
+  if (!r.места.length) return r.адрес ? `<b>${esc(r.адрес.replace('@', ' в '))}</b> · ` : '<span class="muted">без адреса</span> · ';
+  const cur = PICK.cur[r.наименование];
+  return r.места.map((m) => {
+    const left = m.количество - pickTaken(r.наименование, m.код);
+    return `<span class="pick-place${m.код === cur ? ' cur' : ''}${left <= 0 ? ' gone' : ''}">${esc(pickPlaceLabel(m))}: ${nf(left)}</span>`;
+  }).join(' ') + ' · ';
+}
+function pickRefreshMeta(row) {
+  const r = pickAllRows().find((x) => x.наименование === row.dataset.name);
+  const meta = $('.pick-meta', row);
+  if (r && meta) meta.innerHTML = pickPlacesHtml(r) + (r.осталось > 0 ? 'осталось ' + nf(r.осталось) : 'собрано');
 }
 
 // все строки сборки (одинаковые товары агрегата — одной строкой), без фильтров
@@ -3612,6 +3824,7 @@ function pickAllRows() {
     собрано: num(p['отгружено']),
     осталось: num(p['количество']) - num(p['отгружено']),
     адрес: p['адрес'] || '',
+    места: PICK.places[p['наименование']] || [],
     маршрут: p['маршрут'] == null ? 1e6 : p['маршрут'],
   }));
 }
@@ -3641,7 +3854,7 @@ function pickRowsHtml() {
       <div class="pick-name">${esc(r.наименование)}</div>
       <input class="input pick-qty" type="number" min="0" inputmode="numeric"
              max="${r.осталось}" placeholder="0" value="${esc(PICK.qty[r.наименование] || '')}" ${r.осталось <= 0 ? 'disabled' : ''}>
-      <div class="pick-meta">${r.адрес ? `<b>${esc(r.адрес.replace('@', ' в '))}</b> · ` : ''}${r.осталось > 0 ? 'осталось ' + nf(r.осталось) : 'собрано'}</div>
+      <div class="pick-meta">${pickPlacesHtml(r)}${r.осталось > 0 ? 'осталось ' + nf(r.осталось) : 'собрано'}</div>
     </div>`).join('');
 }
 
@@ -3652,11 +3865,12 @@ async function pickPage(orderId) {
     const agg = res.data;
     if (!agg) return `<div class="card"><div class="empty">Новых позиций FBS нет</div></div>`;
     pickReset(agg);
+    await pickLoadPlaces();
     return `
       <div class="hero">
         <div><h1>Сборка FBS${agg['кабинет'] ? ' · ' + esc(agg['клиент'].split(' · ').pop()) : ''}</h1>
           <div class="sub">${agg['позиции'].length} позиций · Wildberries</div>
-          <div class="hint">Сканируйте товары подряд, внизу — одно подтверждение. Не тот товар — можно отправить вместо заказанного.</div></div>
+          <div class="hint">В каждой строке: место (ячейка, коробка, мешок), потом товар. Внизу — одно подтверждение. Не тот товар — можно отправить вместо заказанного.</div></div>
         <div class="actions"><a class="btn" href="#/wh/out">← Поставка</a></div>
       </div>
       <div class="card pick-page">
@@ -3676,6 +3890,7 @@ async function pickPage(orderId) {
   const order = orders.find((o) => String(o['id']) === String(orderId));
   if (!order) return `<div class="card"><div class="empty">Заказ не найден — вернитесь в поставку</div></div>`;
   pickReset(order);
+  await pickLoadPlaces();
   return `
     <div class="hero">
       <div><h1>Сборка №${esc(order['external_id'] || order['id'])} · ${esc(order['клиент'])}</h1>
@@ -3736,7 +3951,52 @@ async function resolvePickCode(code) {
   return local ? local['наименование'] : null;
 }
 
+// скан места в строке: ячейка P, коробка K или мешок M — дальше товар спишется оттуда
+function pickPlaceScan(code, input) {
+  const row = input && input.closest('.pick-row');
+  if (!row) return;
+  const r = pickAllRows().find((x) => x.наименование === row.dataset.name);
+  const bad = (msg) => { toast(msg, 'err'); input.classList.add('bad'); input.select(); };
+  if (code.startsWith('N')) return bad(`${code} — наружная ячейка: сканируйте коробку в ней`);
+  const m = r.места.find((x) => x.код === code);
+  if (!m) return bad(`В ${code} по системе нет «${r.наименование.split('/').slice(1).join('/')}»`);
+  if (pickLeftIn(r, code) <= 0) return bad(`Из ${code} уже всё взято`);
+  PICK.cur[r.наименование] = code;
+  input.value = '';
+  input.classList.remove('bad');
+  pickRefreshMeta(row);
+  pickMark(row, '', `Место ${pickPlaceLabel(m)} — теперь сканируйте товар`);
+}
+
+// товар отсканирован в своей строке: берём из текущего места; false — строка ещё не собрана, фокус остаётся
+function pickTake(owner, input) {
+  const name = owner.dataset.name;
+  const qty = owner.querySelector('.pick-qty');
+  const r = pickAllRows().find((x) => x.наименование === name);
+  const need = num(qty.max) - (num(qty.value) || 0);
+  if (PICK.subs[name] || !r || !r.места.length || need <= 0) { qty.value = qty.max; return true; }
+  const cur = PICK.cur[name];
+  if (!cur) {
+    const nxt = pickNextPlace(r);
+    if (!nxt) { qty.value = qty.max; return true; }  // по местам всё взято — остальное «без адреса»
+    toast(`Сначала сканируйте место: ${pickPlaceLabel(nxt)}`, 'err');
+    if (input) { input.classList.add('bad'); input.select(); }
+    return null;
+  }
+  const add = Math.min(need, pickLeftIn(r, cur));
+  PICK.from[name] = { ...(PICK.from[name] || {}), [cur]: pickTaken(name, cur) + add };
+  qty.value = (num(qty.value) || 0) + add;
+  if (pickLeftIn(r, cur) <= 0) delete PICK.cur[name];
+  if (num(qty.value) >= num(qty.max)) return true;
+  const nxt = pickNextPlace(r);
+  toast(nxt ? `Взято ${nf(add)}, в ${cur} больше нет — сканируйте ${pickPlaceLabel(nxt)}`
+    : `Взято ${nf(add)}, по местам больше нет — остальное без адреса: сканируйте товар ещё раз`, 'warn');
+  return false;
+}
+
 async function applyScan(code, input) {
+  const place = adNorm(code);
+  if (AD_RX.test(place)) return pickPlaceScan(place, input);
   const rows = Array.from(document.querySelectorAll('.pick-row'));
   const name = await resolvePickCode(code);
 
@@ -3774,12 +4034,15 @@ async function applyScan(code, input) {
     return;
   }
   const qty = owner.querySelector('.pick-qty');
-  qty.value = qty.max;
+  const full = pickTake(owner, input);
+  if (full === null) return;  // сначала место
   PICK.qty[owner.dataset.name] = qty.value;
   pickCheckQty(owner);
+  pickRefreshMeta(owner);
   updatePickTotal();
   if (input) input.value = '';
   owner.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  if (!full) { const c = owner.querySelector('.pick-code'); if (c) c.focus(); return; }
 
   // фокус на следующую строку, где ещё что-то осталось
   const idx = rows.indexOf(owner);
@@ -3818,6 +4081,16 @@ async function shipPicked() {
     'проверка': got(r) === r.осталось ? 'Nice✅' : 'Ошибка❌',
   })).filter((x) => x['количество'] > 0);
   if (!items.length) { toast('Укажите количество хотя бы по одной позиции', 'err'); return; }
+  // откуда взяли: по строкам, не больше собранного; замены (не тот товар) — без мест
+  const placeRows = [];
+  rowsAll.forEach((r) => {
+    if (PICK.subs[r.наименование]) return;
+    let left = got(r);
+    Object.entries(PICK.from[r.наименование] || {}).forEach(([code, q]) => {
+      const t = Math.min(num(q), left);
+      if (t > 0) { placeRows.push({ 'место': code, 'наименование': r.наименование, 'количество': t }); left -= t; }
+    });
+  });
   const btn = $('#pick-ship');
   btn.disabled = true;
   try {
@@ -3841,9 +4114,10 @@ async function shipPicked() {
       if (nSub && !confirm(`${nSub} шт уходят заменой (не тот товар). Отправить?`)) { btn.disabled = false; return; }
       const r = await api('/api/wb/confirm-items', { method: 'POST', body: JSON.stringify({ items: ids, замены: subs }) });
       if (r['ошибки'] && r['ошибки'].length) {
-        toast(`Ушло ${r['подтверждено']}, ошибок ${r['ошибки'].length}`, 'warn');
+        toast(`Ушло ${r['подтверждено']}, ошибок ${r['ошибки'].length} — места не списаны, поправьте в «Адрес»`, 'warn');
       } else {
         toast(`Сборка подтверждена, списано со склада: ${r['подтверждено']} шт`, 'ok');
+        await pickAfterShip(placeRows, false);
       }
       WH.meta = null;
       await go('wh', 'out');
@@ -3853,6 +4127,7 @@ async function shipPicked() {
       const r = await api('/api/wb/confirm', { method: 'POST', body: JSON.stringify({ ids: [PICK.order['id']] }) });
       if (r['ошибки'] && r['ошибки'].length) throw new Error(r['ошибки'][0]['ошибка']);
       toast('Сборка подтверждена, товар списан со склада', 'ok');
+      await pickAfterShip(placeRows, false);
       WH.meta = null;
       await go('wh', 'out');
       return;
@@ -3861,12 +4136,24 @@ async function shipPicked() {
       { 'id': PICK.order['id'], 'позиции': items },
       'отгрузка_заказа', { 'id': PICK.order['id'], 'позиции': items }, 'сборка');
     if (!res.offline) toast('Собрано ' + res['принято'] + ' позиций · ' + nf(res['штук']) + ' шт', 'ok');
+    await pickAfterShip(placeRows, !!res.offline);
     WH.meta = null;
     await go('wh', 'out');
   } catch (e) {
     toast(e.message, 'err');
     btn.disabled = false;
   }
+}
+
+// товар уже списан со склада — убрать его из ячеек/коробок/мешков; вскрытые коробки — напомнить
+async function pickAfterShip(rows, offline) {
+  if (!rows.length) return;
+  // shortcut: без сети места не уходят в очередь — поправить вручную в «Адрес»
+  if (offline) { toast('Нет сети: товар списан, а места (ячейки, коробки) не обновлены — поправьте в «Адрес»', 'warn'); return; }
+  try {
+    const r = await api('/api/wh/addr/pick', { method: 'POST', body: JSON.stringify({ 'позиции': rows }) });
+    if ((r['вскрыты'] || []).length) toast(`Вскрыты коробки: ${r['вскрыты'].join(', ')} — положите во внутреннюю ячейку`, 'warn');
+  } catch (e) { toast('Товар списан, но места не обновились: ' + e.message, 'err'); }
 }
 
 function bindPickPage() {
@@ -3927,6 +4214,11 @@ function bindPickRows() {
       const row = inp.closest('.pick-row');
       PICK.qty[row.dataset.name] = inp.value;
       if (num(inp.value) <= 0) delete PICK.subs[row.dataset.name];
+      if (num(inp.value) < pickPlaced(row.dataset.name)) {
+        delete PICK.from[row.dataset.name]; delete PICK.cur[row.dataset.name];
+        pickRefreshMeta(row);
+        toast('Места сброшены — отсканируйте место и товар заново', 'warn');
+      }
       pickCheckQty(row);
       updatePickTotal();
     });
@@ -3953,11 +4245,11 @@ function bindFbs() {
   const page = $('#page');
   $$('[data-fbs="filter"]', page).forEach((b) => b.addEventListener('click', async () => {
     FBSPAGE.status = b.dataset.v;
-    await go('fbs');
+    await redraw('fbs');
   }));
   $$('[data-fbs="cab"]', page).forEach((b) => b.addEventListener('click', async () => {
     FBSPAGE.cab = b.dataset.v;
-    await go('fbs');
+    await redraw('fbs');
   }));
   $$('[data-fbs="sync"]', page).forEach((b) => b.addEventListener('click', async () => {
     b.disabled = true;
@@ -4015,12 +4307,12 @@ function bindWh() {
     });
     all.addEventListener('change', () => boxes().forEach((b) => { if (b.closest('.xf-row').style.display !== 'none') b.checked = all.checked; }));
     d.addEventListener('change', (e) => { if (e.target !== all) all.checked = boxes().every((b) => b.checked); });
-    $('[data-xf-reset]', d).addEventListener('click', async () => { WH.ф[d.dataset.xf] = []; await go('wh'); });
+    $('[data-xf-reset]', d).addEventListener('click', async () => { WH.ф[d.dataset.xf] = []; await whRedraw(); });
     $('[data-xf-ok]', d).addEventListener('click', async () => {
       const on = boxes().filter((b) => b.checked).map((b) => b.value);
       if (!on.length) { toast('Отметьте хотя бы одно значение', 'err'); return; }
       WH.ф[d.dataset.xf] = on.length === boxes().length ? [] : on;  // всё отмечено = без фильтра
-      await go('wh');
+      await whRedraw();
     });
   });
   const whQ = $('#wh-q', page);
@@ -4040,8 +4332,8 @@ function bindWh() {
       } catch (err) { /* не штрихкод — остаётся «ничего не найдено» */ }
     });
   }
-  $$('[data-wh="only"]', page).forEach((b) => b.addEventListener('click', async () => { WH.ф.only = true; await go('wh'); }));
-  $$('[data-wh="all"]', page).forEach((b) => b.addEventListener('click', async () => { WH.ф.only = false; await go('wh'); }));
+  $$('[data-wh="only"]', page).forEach((b) => b.addEventListener('click', async () => { WH.ф.only = true; await whRedraw(); }));
+  $$('[data-wh="all"]', page).forEach((b) => b.addEventListener('click', async () => { WH.ф.only = false; await whRedraw(); }));
 
   // ---- приход: шаг 1 ----
   const st = () => (WH.in || (WH.in = { cat: '', model: '', color: '', supplier: '', batch: '', defect: 0, sizes: {} }));
@@ -4053,10 +4345,6 @@ function bindWh() {
   if (modelSel) modelSel.addEventListener('change', async () => {
     WH.in = { ...st(), model: modelSel.value, color: '', sizes: {} }; await go('wh', 'in');
   });
-  const colorSel = $('#in-color');
-  if (colorSel) colorSel.addEventListener('change', async () => {
-    WH.in = { ...st(), color: colorSel.value, sizes: {} }; await go('wh', 'in');
-  });
   const supSel = $('#in-supplier');
   if (supSel) supSel.addEventListener('change', () => { st().supplier = supSel.value; });
   const batchIn = $('#in-batch');
@@ -4066,18 +4354,21 @@ function bindWh() {
 
   $$('[data-wh-cex]', page).forEach((b) => b.addEventListener('click', async () => {
     const c = (WH.fromCex || [])[Number(b.dataset.whCex)];
-    WH.in = { cat: c['категория'], model: c['модель'], color: c['цвет'], supplier: 'свой цех', batch: c['партия'],
-      defect: 0, sizes: { ...c['размеры'] }, cex: c };
+    const sizes = Object.fromEntries(Object.entries(c['размеры']).map(([z, q]) => [`${c['цвет']}/${z}`, q]));
+    WH.in = { cat: c['категория'], model: c['модель'], color: '', supplier: 'свой цех', batch: c['партия'],
+      defect: 0, sizes, cex: c, ready: true };
     await go('wh', 'in');
   }));
   $$('[data-wh="next"]', page).forEach((b) => b.addEventListener('click', async () => {
     const x = st();
-    if (!x.cat || !x.model || !x.color) return toast('Выберите категорию, модель и цвет', 'err');
+    if (!x.cat || !x.model) return toast('Выберите категорию и модель', 'err');
     if (!x.supplier) return toast('Выберите поставщика', 'err');
+    if (!x.edit && !String(x.batch || '').trim()) return toast('Укажите партию', 'err');
+    x.ready = true;
     await go('wh', 'in');
   }));
   $$('[data-wh="back"]', page).forEach((b) => b.addEventListener('click', async () => {
-    WH.in = { ...st(), cat: '', model: '', color: '', sizes: {}, cex: null };
+    WH.in = { ...st(), cat: '', model: '', color: '', sizes: {}, cex: null, ready: false };
     await go('wh', 'in');
   }));
   $$('input[data-size]', page).forEach((inp) => inp.addEventListener('input', () => {
@@ -4091,8 +4382,8 @@ function bindWh() {
   }));
 
   $$('[data-wh-editpick]', page).forEach((b) => b.addEventListener('click', async () => {
-    const [c, m, col] = b.dataset.whEditpick.split('/');
-    WH.in = { ...st(), cat: c, model: m, color: col, sizes: {}, editKey: '' };
+    const [c, m] = b.dataset.whEditpick.split('/');
+    WH.in = { ...st(), cat: c, model: m, sizes: {}, editKey: '', ready: true };
     await go('wh', 'in');
   }));
   $$('[data-wh="edit-exit"]', page).forEach((b) => b.addEventListener('click', async () => {
@@ -4101,15 +4392,15 @@ function bindWh() {
   }));
   $$('[data-wh="edit-save"]', page).forEach((b) => b.addEventListener('click', async () => {
     const x = st();
-    const key = `${x.cat}/${x.model}/${x.color}`;
-    const sizes = [...new Set($$('input[data-size]', page).map((i) => i.dataset.size))];
+    const key = `${x.cat}/${x.model}`;
+    const sizes = [...new Set($$('input[data-size]', page).map((i) => i.dataset.size))];  // «цвет/размер»
     const rows = sizes.map((z) => ({ 'наименование': `${key}/${z}`, 'количество': num(x.sizes[z] || 0), was: x.edit.have[`${key}/${z}`] || 0 }))
       .filter((r) => r['количество'] !== r.was).map(({ was, ...r }) => r);
-    if (!rows.length) return toast('По этому цвету ничего не изменилось');
+    if (!rows.length) return toast('По этой модели ничего не изменилось');
     b.disabled = true;
     try {
       const r = await api('/api/wh/receipt/edit', { method: 'POST', body: JSON.stringify({ 'поставщик': x.edit.sup, 'партия': x.edit.batch, 'позиции': rows }) });
-      toast(`Партия ${x.edit.batch || '—'}: ${x.model} ${x.color} — +${nf(r['плюс'])} / −${nf(r['минус'])} шт`, 'ok');
+      toast(`Партия ${x.edit.batch || '—'}: ${x.model} — +${nf(r['плюс'])} / −${nf(r['минус'])} шт`, 'ok');
       x.edit.have = await receiptLoad(x.edit.sup, x.edit.batch);  // остаёмся в правке с обновлёнными цифрами
       x.editKey = '';
       WH.meta = null;
@@ -4119,10 +4410,11 @@ function bindWh() {
   $$('[data-wh="accept"]', page).forEach((b) => b.addEventListener('click', async () => {
     const x = st();
     const позиции = Object.entries(x.sizes).map(([size, qty]) => ({
-      'наименование': `${x.cat}/${x.model}/${x.color}/${size}`,
+      'наименование': `${x.cat}/${x.model}/${size}`,  // size = «цвет/размер»
       'количество': num(qty),
     }));
     if (!позиции.length) return toast('Заполните количество хотя бы по одному размеру', 'err');
+    if (!String(x.batch || '').trim()) return toast('Укажите партию', 'err');
     b.disabled = true;
     try {
       // приход всегда в остаток «без адреса», дальше — адресное хранение (без этого товар не виден в остатке)
@@ -4225,7 +4517,7 @@ function bindWh() {
     b.disabled = false;
   }));
   const logSel = $('#wh-log-kind');
-  if (logSel) logSel.addEventListener('change', async () => { WH.logKind = logSel.value; await go('wh', 'log'); });
+  if (logSel) logSel.addEventListener('change', async () => { WH.logKind = logSel.value; await redraw('wh', 'log'); });
 
   loadAddresses();
   loadCabinets();

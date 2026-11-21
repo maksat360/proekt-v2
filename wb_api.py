@@ -45,7 +45,7 @@ class WbError(Exception):
         self.status = status
 
 
-def _request(path: str, token: str, method: str = "GET", payload=None) -> dict:
+def _request(path: str, token: str, method: str = "GET", payload=None, base: str = BASE) -> dict:
     if not token:
         raise WbError("не задан токен кабинета", 401)
     if not token.isascii():
@@ -58,7 +58,7 @@ def _request(path: str, token: str, method: str = "GET", payload=None) -> dict:
 
     last = None
     for attempt in range(RETRIES + 1):
-        req = urllib.request.Request(BASE + path, data=data, headers=headers, method=method)
+        req = urllib.request.Request(base + path, data=data, headers=headers, method=method)
         try:
             with urllib.request.urlopen(req, timeout=TIMEOUT, context=_ssl_context()) as resp:
                 raw = resp.read()
@@ -127,6 +127,51 @@ def order_statuses(token: str, order_ids: list) -> dict[str, dict]:
         for o in data.get("orders") or []:
             out[str(o.get("id"))] = o
     return out
+
+
+CONTENT_BASE = "https://content-api.wildberries.ru"
+
+
+def warehouses(token: str) -> list[dict]:
+    """Склады продавца (FBS) кабинета: [{id, name, ...}]."""
+    data = _request("/api/v3/warehouses", token)
+    return list(data if isinstance(data, list) else data.get("warehouses") or [])
+
+
+def card_sizes(token: str, max_pages: int = 200) -> list[dict]:
+    """Все размеры карточек кабинета: [{chrtId, barcodes, article, size}] (Content API, по 100 карточек)."""
+    out, cursor = [], {"limit": 100}
+    for _ in range(max_pages):
+        data = _request("/content/v2/get/cards/list", token, "POST",
+                        {"settings": {"cursor": cursor, "filter": {"withPhoto": -1}}}, base=CONTENT_BASE)
+        cards = data.get("cards") or []
+        for c in cards:
+            for z in c.get("sizes") or []:
+                if z.get("chrtID"):
+                    out.append({"chrtId": int(z["chrtID"]), "barcodes": [str(b) for b in z.get("skus") or []],
+                                "article": str(c.get("vendorCode") or ""), "size": str(z.get("techSize") or "")})
+        cur = data.get("cursor") or {}
+        if len(cards) < 100 or not cur.get("nmID"):
+            break
+        cursor = {"limit": 100, "updatedAt": cur.get("updatedAt"), "nmID": cur.get("nmID")}
+    return out
+
+
+def stocks(token: str, warehouse_id, chrt_ids: list[int]) -> dict[int, int]:
+    """Остатки на складе продавца: chrtId → штук (нет в ответе — 0)."""
+    out: dict[int, int] = {}
+    for k in range(0, len(chrt_ids), 1000):
+        data = _request(f"/api/v3/stocks/{warehouse_id}", token, "POST", {"chrtIds": chrt_ids[k:k + 1000]})
+        for x in data.get("stocks") or []:
+            out[int(x["chrtId"])] = int(x.get("amount") or 0)
+    return out
+
+
+def set_stocks(token: str, warehouse_id, items: dict[int, int]) -> None:
+    """Записать остатки на склад продавца: chrtId → штук (по 1000 за запрос)."""
+    rows = [{"chrtId": int(c), "amount": int(a)} for c, a in items.items()]
+    for k in range(0, len(rows), 1000):
+        _request(f"/api/v3/stocks/{warehouse_id}", token, "PUT", {"stocks": rows[k:k + 1000]})
 
 
 def ping(token: str) -> dict:

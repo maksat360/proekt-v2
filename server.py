@@ -2047,6 +2047,12 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"ok": True, "data": addresses.state(arg("код"))})
                 elif method == "GET" and sub == "where":
                     self._json({"ok": True, "data": addresses.where(arg("товар"))})
+                elif method == "GET" and sub == "where_many":  # сборка: где лежит каждый товар заказа
+                    self._json({"ok": True, "data": addresses.where_many(json.loads(arg("товары", "[]")))})
+                elif method == "GET" and sub == "opened":  # коробки, вскрытые при сборке
+                    self._json({"ok": True, "data": addresses.opened()})
+                elif method == "GET" and sub == "unplaced":  # коробки с товаром, не поставленные в ячейку
+                    self._json({"ok": True, "data": addresses.unplaced()})
                 elif method == "GET" and sub == "journal":
                     self._json({"ok": True, "data": addresses.journal()})
                 elif method == "GET" and sub == "codes.xlsx":  # печать: стеллаж, тип или новые коды «от»
@@ -2082,6 +2088,8 @@ class Handler(BaseHTTPRequestHandler):
                     elif sub == "set":  # исправить количество в коробке/ячейке/мешке
                         self._json({"ok": True, **addresses.set_qty(who, body.get("код"), str(body.get("наименование", "")),
                                                                     as_num(body.get("количество")))})
+                    elif sub == "pick":  # сборка: списать взятое из ячеек, коробок и мешков
+                        self._json({"ok": True, **addresses.pick(who, body.get("позиции") or [])})
                     elif sub == "out":  # убрать из ячейки обратно «без адреса» (ошибочный скан)
                         self._json({"ok": True, **addresses.take_out(who, body.get("код"), body.get("позиции") or [])})
                     elif sub == "relabel":
@@ -2255,6 +2263,9 @@ class Handler(BaseHTTPRequestHandler):
                     self._json({"ok": True, **res})
                     return
                 if path == "/api/wh/receive_multi":
+                    if not str(body.get("партия", "")).strip():
+                        self._err("Укажите партию", 400)
+                        return
                     res = warehouse.receive_multi(
                         str(body.get("поставщик", "")), str(body.get("партия", "")),
                         as_num(body.get("неликвид")), body.get("позиции") or [],
@@ -2539,6 +2550,84 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True, **res})
             except Exception as exc:  # noqa: BLE001
                 self._err(f"подтверждение: {exc}", 500)
+            return
+
+        if path.startswith("/api/wb/links"):  # связи карточек WB с нашими товарами и замены
+            if not can(me, "wb.manage"):
+                self._err("нет прав", 403)
+                return
+            import wb_links
+            import substitutes
+            who = str(me.get("фио", ""))
+            try:
+                if method == "GET" and path == "/api/wb/links":
+                    cab = query.get("кабинет", [""])[0]
+                    import cabinets_store
+                    cabs = [{"id": c["id"], "name": c["name"]} for c in cabinets_store.cabinets()
+                            if c["active"] and c["token_set"]]
+                    cab = cab if any(c["id"] == cab for c in cabs) else (cabs[0]["id"] if cabs else "")
+                    self._json({"ok": True, "кабинет": cab, "кабинеты": cabs,
+                                **(wb_links.unmatched(cab) if cab else {"карточки": [], "не_наше": []}),
+                                "товары": wb_links.prefixes(), "замены": substitutes.load()})
+                    return
+                body = self._body()
+                if method == "POST" and path == "/api/wb/links/link":
+                    with WRITE_LOCK:
+                        res = wb_links.link(str(body.get("кабинет", "")), str(body.get("артикул", "")),
+                                            str(body.get("товар", "")), who)
+                    self._json({"ok": True, **res})
+                elif method == "POST" and path == "/api/wb/links/ignore":
+                    wb_links.ignore(str(body.get("кабинет", "")), str(body.get("артикул", "")), bool(body.get("вкл")), who)
+                    self._json({"ok": True})
+                elif method == "POST" and path == "/api/wb/links/sub":
+                    self._json({"ok": True, "замены": wb_links.set_sub(str(body.get("товар", "")),
+                                                                       str(body.get("замена", "")), who)})
+                else:
+                    self._err("не найдено", 404)
+            except ValueError as exc:
+                self._err(str(exc))
+            except Exception as exc:  # noqa: BLE001
+                self._err(f"связи товаров: {exc}", 500)
+            return
+
+        if path in ("/api/sew-plan", "/api/sew-plan.xlsx") and method == "GET":  # план пошива — подсказка
+            if not can(me, "wb.manage"):
+                self._err("нет прав", 403)
+                return
+            import sew_plan
+            q = lambda k, d: (query.get(k) or [d])[0]  # noqa: E731
+            try:
+                res = sew_plan.build(q("модель", "477"), int(q("норма", "5000") or 0),
+                                     [c for c in q("не_шьём", "бежевый, синий").split(",") if c.strip()])
+            except ValueError as exc:
+                self._err(str(exc))
+                return
+            except Exception as exc:  # noqa: BLE001
+                self._err(f"план пошива: {exc}", 500)
+                return
+            if path == "/api/sew-plan":
+                self._json({"ok": True, "data": res})
+                return
+            fname = f"План пошива {res['модель']} {datetime.now():%Y-%m-%d}.xlsx"
+            disp = (f"attachment; filename=\"sew_plan_{datetime.now():%Y%m%d}.xlsx\"; "
+                    "filename*=UTF-8''" + quote(fname))
+            self._send(sew_plan.xlsx(res), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                       200, {"Content-Disposition": disp})
+            return
+
+        if path.startswith("/api/wb/stocks"):  # остатки FBS в кабинетах WB = наш остаток
+            if not can(me, "wb.manage"):
+                self._err("нет прав", 403)
+                return
+            import wb_stocks
+            try:
+                if method == "POST" and path == "/api/wb/stocks":
+                    wb_stocks.set_on(bool(self._body().get("вкл")))
+                elif method == "POST" and path == "/api/wb/stocks/run":
+                    wb_stocks.run()
+                self._json({"ok": True, "data": wb_stocks.load()})
+            except Exception as exc:  # noqa: BLE001
+                self._err(f"остатки WB: {exc}", 500)
             return
 
         if path == "/api/wb/cabinets" and method == "GET":
@@ -2835,6 +2924,8 @@ def main():
     threading.Thread(target=_warm_voice, daemon=True).start()
     import wb_report
     threading.Thread(target=wb_report.loop, daemon=True).start()  # история WB копится каждый час
+    import wb_stocks
+    threading.Thread(target=wb_stocks.loop, daemon=True).start()  # остатки FBS в WB: сверка раз в 10 мин
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"Проект V2.1 · http://{args.host}:{args.port}")

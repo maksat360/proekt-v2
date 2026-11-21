@@ -13,6 +13,7 @@ if str(_SQL) not in sys.path:
     sys.path.insert(0, str(_SQL))
 
 import cabinets_store
+import shadow
 import db as sqldb
 import wb_api
 
@@ -51,16 +52,38 @@ def _history(con, order_id: str, from_status: str | None, to_status: str,
         (order_id, from_status, to_status, actor, _now(), comment))
 
 
-def _resolve_product(con, cabinet_id: str, skus: list[str]) -> str | None:
-    """Только по баркоду: баркод → (артикул + размер) → наименование из «главного»."""
+def _product_row(con, name: str):
+    row = con.execute("SELECT id FROM products WHERE lower(name)=lower(?)", (name,)).fetchone()
+    if not row:  # товара ещё нет в базе — создаём по найденному наименованию
+        shadow._product(con, name)
+        row = con.execute("SELECT id FROM products WHERE name=?", (name,)).fetchone()
+    return row
+
+
+def _avail(con, product_id: str, skip_item: str = "") -> float:
+    """Остаток минус все несписанные заказы FBS (новые и собираемые), кроме самой позиции skip_item."""
+    row = con.execute(
+        """SELECT COUNT(*) c FROM order_items i JOIN orders o ON o.id = i.order_id
+           WHERE i.product_id = ? AND o.type='fbs' AND o.status IN ('new','picking')
+             AND COALESCE(i.shipped, 0) = 0 AND COALESCE(i.external_id, '') <> ?""",
+        (product_id, skip_item or "")).fetchone()
+    return _stock_sql(con, product_id) - float(row["c"] or 0)
+
+
+def _resolve_product(con, cabinet_id: str, skus: list[str], skip_item: str = "") -> str | None:
+    """Только по баркоду: баркод → (артикул + размер) → наименование из «главного».
+    Своего не осталось, а у похожего (substitutes.json) есть — заказ идёт на похожий."""
     import warehouse
+    import substitutes
     for sku in skus or []:
         name = warehouse.resolve_by_barcode(sku)
         if name:
-            row = con.execute("SELECT id FROM products WHERE lower(name)=lower(?)", (name,)).fetchone()
-            if not row:  # товара ещё нет в базе — создаём по найденному наименованию
-                _product_id(con, name)
-                row = con.execute("SELECT id FROM products WHERE name=?", (name,)).fetchone()
+            row = _product_row(con, name)
+            if row and _avail(con, row["id"], skip_item) < 1:
+                sub = substitutes.for_name(name)
+                srow = _product_row(con, sub) if sub else None
+                if srow and _avail(con, srow["id"], skip_item) >= 1:
+                    return srow["id"]
             if row:
                 return row["id"]
         row = con.execute("SELECT product_id FROM wb_sku_map WHERE cabinet_id = ? AND external_sku = ?",
@@ -103,7 +126,7 @@ def _upsert_order(con, cabinet: dict, order: dict) -> str:
     price = float(order.get("convertedPrice") or order.get("price") or 0) / 100.0
     created = str(order.get("createdAt") or "")[:19].replace("T", " ") or _now()
     barcode = skus[0] if skus else ""
-    product_id = _resolve_product(con, cabinet_id, skus)
+    product_id = _resolve_product(con, cabinet_id, skus, item_id)
 
     if existing:
         order_id = existing["id"]
